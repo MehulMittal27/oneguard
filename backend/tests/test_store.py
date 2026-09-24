@@ -24,6 +24,7 @@ from oneguard.store.schema import (
     Base,
     Decision,
     Merchant,
+    WorkerState,
 )
 
 DATA = Path(__file__).resolve().parents[2] / "data"
@@ -80,7 +81,7 @@ def test_every_table_in_database_md_exists(engine: Engine) -> None:
         "customers", "accounts", "cards", "merchants", "items", "fx_rates",
         "authorization_history", "scenario_catalogue", "scenario_authorities",
         "policy_drafts", "mandates", "runs", "events_raw", "decisions",
-        "merchant_flags", "viseca_calls",
+        "merchant_flags", "worker_state", "viseca_calls",
     }  # fmt: skip
     assert set(Base.metadata.tables) == expected
     index_columns = {tuple(c.name for c in i.columns) for i in AuthorizationHistory.__table__.indexes}
@@ -178,6 +179,27 @@ def test_pack_hash_mismatch_is_refused(tmp_path: Path) -> None:
         f.write("JPY,CHF,0.006000,2026-08-01,synthetic_fixed\n")
     with pytest.raises(seed_module.PackMismatch, match="fx_rates.csv"):
         seed_module.verify_pack(pack)
+
+
+def test_init_db_adds_a_new_table_to_an_existing_store_and_keeps_its_rows(tmp_path: Path) -> None:
+    """A table added to the schema reaches a live database (Supabase) without a reset."""
+    engine = make_engine(f"sqlite:///{tmp_path / 'existing.sqlite'}")
+    Base.metadata.create_all(engine, tables=[Merchant.__table__])
+    with session(engine) as s:
+        s.add(Merchant(
+            merchant_id="M1", merchant_name="Shop", name_normalised="shop", merchant_category="c",
+            merchant_mcc="5411", merchant_country="CH", merchant_city="Zurich",
+            availability="online", recurring_capable=False,
+        ))  # fmt: skip
+    init_db(engine)
+    init_db(engine)
+    at = datetime(2026, 9, 24, tzinfo=UTC)
+    with session(engine) as s:
+        s.add(WorkerState(key="events_cursor", value=42, updated_at=at))
+    with session(engine) as s:
+        assert s.scalar(select(func.count()).select_from(Merchant)) == 1
+        assert s.get(WorkerState, "events_cursor").value == 42
+    engine.dispose()
 
 
 def test_reset_is_refused_in_prod(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

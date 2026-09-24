@@ -386,6 +386,20 @@ class MerchantFlag(Base):
     reason: Mapped[str] = mapped_column(Text)
 
 
+class WorkerState(Base):
+    """The worker's durable position in Viseca's feeds, one row per ``key``.
+
+    ``events_cursor``: the ``next_cursor`` of the last ``GET /v1/events`` page the worker
+    processed, JSON so an int or a string cursor comes back as it was served.
+    """
+
+    __tablename__ = "worker_state"
+
+    key: Mapped[str] = mapped_column(primary_key=True)
+    value: Mapped[Any] = mapped_column(Json)
+    updated_at: Mapped[datetime]
+
+
 class VisecaCall(Base):
     """Append-only log of Viseca requests: summaries only, never the key, ≤ 4 KB each."""
 
