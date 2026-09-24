@@ -81,8 +81,7 @@ export interface DryRunResult {
     outcome: 'fit' | 'violate' | 'ask'
     reason: string
   }[]
-  // History rows with initiator_type 'agent'. See NewPolicyCheck's
-  // agentHistoryLine for the scope this is rendered under.
+  // History rows with initiator_type 'agent', across the customer's cards.
   agent_history?: { attempts: number; approved: number }
 }
 
