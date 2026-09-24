@@ -104,6 +104,9 @@ CUSTOMER_MESSAGES = {
     "decline": "The customer declined this purchase.",
 }
 OVERRUN_MESSAGE = "We couldn't check this purchase in time; please review it"
+OVERRUN_DECLINE_MESSAGE = (
+    "Declined: we could not finish checking this purchase in time, so nothing was approved."
+)
 FALLBACK_MESSAGE = (
     "Declined: we could not finish checking this purchase before its deadline, "
     "so nothing was approved."
@@ -305,8 +308,8 @@ def default_ledger(db: Engine, history: HistoryIndex) -> Ledger:
 class OverrunClaims:
     """Which decision the ledger keeps for a live id when the engine overruns: first claim wins.
 
-    The worker claims a live id with its pending overrun step-up before posting it; the
-    engine's own ``record`` then stores that step-up instead of its late result. If the
+    The worker claims a live id with its overrun decision before posting it; the
+    engine's own ``record`` then stores that decision instead of its late result. If the
     engine recorded first, the claim fails and the engine's decision is posted. Shared
     between the event loop and the engine thread.
     """
@@ -324,7 +327,7 @@ class OverrunClaims:
             return True
 
     def for_engine(self, entry: LedgerEntry) -> LedgerEntry:
-        """The entry the engine may record: the overrun step-up if one was claimed."""
+        """The entry the engine may record: the overrun decision if one was claimed."""
         with self._lock:
             claimed = self._claimed.pop(entry.live_authorization_id, None)
             if claimed is None:
@@ -332,7 +335,7 @@ class OverrunClaims:
             return claimed or entry
 
     def take(self, live_id: str) -> LedgerEntry | None:
-        """The claimed step-up the engine has not recorded yet."""
+        """The claimed overrun decision the engine has not recorded yet."""
         with self._lock:
             return self._claimed.pop(live_id, None)
 
@@ -974,7 +977,8 @@ class VisecaWorker:
         """The pipeline's decision, or None after posting a decision in its place.
 
         An engine error posts a decline; an engine still running ``POST_MARGIN_S`` before
-        ``deadline_at`` gets an overrun step-up (``_overrun_step_up``).
+        ``deadline_at`` gets the overrun decision its uncertainty setting names
+        (``_overrun_entry``, ``_post_overrun``).
         """
         assert run.ctx is not None
         live_id = data["authorization"]["authorization_id"]
@@ -1012,17 +1016,23 @@ class VisecaWorker:
                         await self._post_stored(data, stored, deadline_at)
                     return None
             future.add_done_callback(partial(_late_result, live_id))
-            await self._overrun_step_up(run, data, entry, deadline_at)
+            await self._post_overrun(run, data, entry, deadline_at)
             return None
         finally:
             self._claims.forget(live_id)
 
     def _overrun_entry(self, run: RunState, data: dict[str, Any]) -> LedgerEntry:
-        """The pending step-up that stands in for an engine over its budget (D3)."""
+        """The decision that stands in for an engine over its budget (D2, D3).
+
+        It follows the uncertainty setting of the policy the worker decides with: ``decline``
+        posts a final decline; ``ask`` and ``approve`` post a pending step-up, because
+        approve is never automatic.
+        """
         assert run.ctx is not None
         auth = data["authorization"]
         detail = f"The engine did not finish within {self._budget_ms} ms."
         decided_at = self._now()
+        decline = overrun_setting(run.ctx.policy) == "decline"
         return LedgerEntry(
             live_authorization_id=auth["authorization_id"],
             run_id=run.run_id,
@@ -1030,9 +1040,9 @@ class VisecaWorker:
             card_id=auth["card_id"],
             customer_id=data["mandate"]["customer_id"],
             ts_sim=datetime.fromisoformat(auth["timestamp"]),
-            outcome="step_up",
-            final=False,
-            uncertain_outcome="pending",
+            outcome="decline" if decline else "step_up",
+            final=decline,
+            uncertain_outcome=None if decline else "pending",
             merchant_id=auth["merchant"]["merchant_id"],
             item_ids=[line["item_id"] for line in auth["items"]],
             billing_amount_chf=auth["billing_amount_chf"],
@@ -1040,23 +1050,24 @@ class VisecaWorker:
             deciding_ids=["engine"],
             reason_codes=["unevaluable"],
             evidence=[EvidenceRow(rule="engine", outcome="uncertain", detail=detail, source="policy")],
-            message=OVERRUN_MESSAGE,
+            message=OVERRUN_DECLINE_MESSAGE if decline else OVERRUN_MESSAGE,
             engine_version=run.ctx.engine_version,
             latency_ms=float(self._budget_ms),
             signals_enabled=run.ctx.signals_enabled,
             decided_at=decided_at,
-            deadline_at=decided_at + timedelta(seconds=run.ctx.human_window_s),
+            deadline_at=None if decline else decided_at + timedelta(seconds=run.ctx.human_window_s),
         )
 
-    async def _overrun_step_up(
+    async def _post_overrun(
         self, run: RunState, data: dict[str, Any], entry: LedgerEntry, deadline_at: datetime
     ) -> None:
-        """POST the claimed overrun step-up, then record it and wait for the customer.
+        """POST the claimed overrun decision, then record it (and, for a step-up, wait).
 
         The POST goes out at once. The ledger thread is still busy with the engine, so the
-        entry (and its reservation) is stored there once the engine returns: by the
-        engine's own ``record`` or by ``_settle_overrun``. From then on it is a pending
-        step-up like any other: C8, expiry at accepted time + human window, redelivery.
+        entry is stored there once the engine returns: by the engine's own ``record`` or by
+        ``_settle_overrun``. A decline is final and counts nothing. A step-up (with its
+        reservation) is from then on a pending step-up like any other: C8, expiry at
+        accepted time + human window, redelivery.
         """
         assert run.ctx is not None
         live_id = entry.live_authorization_id
@@ -1064,7 +1075,7 @@ class VisecaWorker:
         try:
             reply = await self._post(
                 live_id,
-                "step_up",
+                entry.outcome,
                 entry.reason_codes,
                 entry.message,
                 [row.model_dump(mode="json") for row in entry.evidence],
@@ -1073,12 +1084,16 @@ class VisecaWorker:
             )
         except VisecaError as exc:
             reply = None
-            self._note_error(f"overrun step-up of {live_id} not accepted: {exc}")
+            self._note_error(f"overrun {entry.outcome} of {live_id} not accepted: {exc}")
         run.decided.add(live_id)
         stored, view = await self._engine(
             self._settle_overrun, live_id, period_days_of(run.ctx.policy)
         )
-        await self._await_answer(run, to_api_decision(data, stored, view), reply)
+        decision = to_api_decision(data, stored, view)
+        if stored.outcome == "step_up" and not stored.final:
+            await self._await_answer(run, decision, reply)
+        else:
+            self._notify(decision)
 
     def _settle_overrun(self, live_id: str, period_days: int | None) -> tuple[LedgerEntry, LedgerView]:
         claimed = self._claims.take(live_id)
@@ -1455,19 +1470,30 @@ class VisecaWorker:
         log.error("%s", message)
 
 
-def _late_result(live_id: str, future: Future[Any] | asyncio.Future[Any]) -> None:
-    """The engine returned after the overrun step-up was posted; that step-up stands.
+def overrun_setting(policy: Policy) -> Literal["ask", "decline", "approve"]:
+    """The uncertainty setting an overrun follows; missing or unknown reads as ``ask``."""
+    setting = getattr(policy, "uncertainty_policy", None)
+    if setting in ("ask", "decline", "approve"):
+        return setting
+    log.warning(
+        "mandate %s has uncertainty setting %r; an overrun is treated as ask", policy.mandate_id, setting
+    )
+    return "ask"
 
-    The engine's ``record`` stored the claimed step-up, not its own outcome, so nothing
-    is posted or counted again.
+
+def _late_result(live_id: str, future: Future[Any] | asyncio.Future[Any]) -> None:
+    """The engine returned after the overrun decision was posted; that decision stands.
+
+    The engine's ``record`` stored the claimed overrun decision, not its own outcome, so
+    nothing is posted or counted again.
     """
     if future.cancelled():
         return
     exc = future.exception()
     if exc is not None:
-        log.warning("engine failed on %s after the overrun step-up: %r", live_id, exc)
+        log.warning("engine failed on %s after the overrun decision: %r", live_id, exc)
         return
-    log.info("engine finished %s after the overrun step-up; the step-up stands", live_id)
+    log.info("engine finished %s after the overrun decision; that decision stands", live_id)
 
 
 def _resolved_by_row(by: Literal["customer", "timeout"]) -> dict[str, Any]:
