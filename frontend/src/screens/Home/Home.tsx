@@ -26,10 +26,12 @@ export function Home({
   onOpenActivity,
   onGoToApprovals,
   onViewPolicy,
+  onAddPolicy,
 }: {
   onOpenActivity: (filter: FilterId) => void
   onGoToApprovals: () => void
   onViewPolicy: (cardId: string) => void
+  onAddPolicy: (cardId: string) => void
 }) {
   const { signedInAs, logout } = useCustomer()
   const { policiesByCard } = usePolicy()
@@ -307,7 +309,10 @@ export function Home({
                   <button
                     key={cardId}
                     type="button"
-                    onClick={() => onViewPolicy(cardId)}
+                    // Straight into the New policy flow, the same path Accounts'
+                    // "+ Add policy" takes. Routing to Card detail instead left a
+                    // customer with no policy staring at "Nothing found for card".
+                    onClick={() => onAddPolicy(cardId)}
                     className="flex min-h-16 w-full items-center gap-4 rounded-row px-4 py-3 text-left"
                   >
                     <span className="flex size-9.5 shrink-0 items-center justify-center rounded-full bg-asked-tint text-asked">

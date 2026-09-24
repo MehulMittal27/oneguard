@@ -122,6 +122,7 @@ function SignedInShell() {
                   onOpenActivity={openActivity}
                   onGoToApprovals={goToApprovals}
                   onViewPolicy={setCardDetailId}
+                  onAddPolicy={setFlowCardId}
                 />
               )}
               {tab === 'accounts' && (
