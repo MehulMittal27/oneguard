@@ -259,7 +259,7 @@ export function Home({
                     onClick={() => onViewPolicy(cardId)}
                     className="flex min-h-16 w-full items-center gap-4 rounded-row px-4 py-3 text-left"
                   >
-                    <span className="flex size-[38px] shrink-0 items-center justify-center rounded-full bg-approved-tint text-approved">
+                    <span className="flex size-9.5 shrink-0 items-center justify-center rounded-full bg-approved-tint text-approved">
                       <AccountsIcon size={20} strokeWidth={1.8} />
                     </span>
                     <span className="min-w-0 flex-1">

@@ -14,14 +14,12 @@ function AiSwitchVisual({ on }: { on: boolean }) {
   return (
     <span
       aria-hidden="true"
-      className={`relative h-[32px] w-[52px] shrink-0 rounded-pill transition-colors ${
-        on ? 'bg-ink' : 'bg-[#8a8478]'
-      }`}
+      className={`relative h-[32px] w-13 shrink-0 rounded-pill transition-colors ${on ? 'bg-ink' : 'bg-[#8a8478]'
+        }`}
     >
       <span
-        className={`absolute top-[4px] size-[24px] rounded-full transition-transform ${
-          on ? 'translate-x-[26px] bg-ground' : 'translate-x-[4px] bg-surface'
-        }`}
+        className={`absolute top-[4px] size-[24px] rounded-full transition-transform ${on ? 'translate-x-6.5 bg-ground' : 'translate-x-[4px] bg-surface'
+          }`}
       />
     </span>
   )
