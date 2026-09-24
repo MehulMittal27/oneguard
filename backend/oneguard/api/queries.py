@@ -28,7 +28,13 @@ from oneguard.store.schema import (
     Mandate,
     PolicyDraft,
     Run,
+    ScenarioCatalogue,
+    ScenarioProfile,
+    WorkerState,
 )
+
+SERVED_SCENARIOS_KEY = "served_scenarios"
+"""``worker_state`` row the worker writes at start (``viseca.worker.SERVED_SCENARIOS_KEY``)."""
 
 _CENT = Decimal("0.01")
 _MONEY_COLUMNS = ("reserved_chf", "spent_chf", "billing_amount_chf")
@@ -94,6 +100,38 @@ def card_customer(db: Engine, card_id: str) -> str | None:
             .join(Card, Card.account_id == Account.account_id)
             .where(Card.card_id == card_id)
         )
+
+
+def customer_names(db: Engine, customer_ids: Iterable[str]) -> dict[str, str]:
+    ids = sorted(set(customer_ids))
+    if not ids:
+        return {}
+    with session(db) as s:
+        rows = s.execute(select(Customer.customer_id, Customer.persona_name).where(Customer.customer_id.in_(ids)))
+        return {r[0]: r[1] for r in rows}
+
+
+# Scenarios (operator data: routes_dev and C12 only) --------------------------------------
+
+
+def scenario_catalogue(db: Engine) -> list[ScenarioCatalogue]:
+    with session(db) as s:
+        return list(s.scalars(select(ScenarioCatalogue).order_by(ScenarioCatalogue.scenario_id)))
+
+
+def scenario_profiles(db: Engine) -> list[ScenarioProfile]:
+    """The platform's scenario → customer / card bindings the worker stored."""
+    with session(db) as s:
+        return list(s.scalars(select(ScenarioProfile).order_by(ScenarioProfile.scenario_id)))
+
+
+def served_scenarios(db: Engine) -> list[str] | None:
+    """The scenario ids the platform served at the worker's last start; None if it never read them."""
+    with session(db) as s:
+        row = s.get(WorkerState, SERVED_SCENARIOS_KEY)
+    if row is None or not isinstance(row.value, list):
+        return None
+    return [v for v in row.value if isinstance(v, str)]
 
 
 # Decisions ------------------------------------------------------------------------------
@@ -244,6 +282,42 @@ def confirm_draft(db: Engine, draft_id: str, mandate: Mandate, viseca_draft_id: 
     return replaced
 
 
+def move_mandate(
+    db: Engine, mandate_id: str, card_id: str, customer_id: str, at: datetime, new_id: str
+) -> tuple[Mandate, list[Mandate]]:
+    """D3: the platform ran a mandate's scenario on another card than the one it was
+    confirmed on. The policy moves to that card: a copy (same instruction, rules and
+    Viseca mandate) becomes the card's active mandate and the original is marked revoked
+    here only, since the same Viseca mandate stays in force. Returns the copy and the
+    card's earlier active mandates, revoked, which the caller revokes at the platform."""
+    with session(db) as s:
+        source = s.get(Mandate, mandate_id)
+        assert source is not None
+        replaced = list(s.scalars(select(Mandate).where(Mandate.card_id == card_id, Mandate.status == "active")))
+        for old in replaced:
+            old.status = "revoked"
+            old.revoked_at = at
+        source.status = "revoked"
+        source.revoked_at = at
+        moved = Mandate(
+            mandate_id=new_id,
+            viseca_mandate_id=source.viseca_mandate_id,
+            card_id=card_id,
+            customer_id=customer_id,
+            instruction=source.instruction,
+            rules=source.rules,
+            checks=source.checks,
+            uncertainty_policy=source.uncertainty_policy,
+            open_questions=source.open_questions,
+            status="active",
+            confirmed_at=source.confirmed_at,
+            revoked_at=None,
+        )
+        s.add(moved)
+        s.flush()
+        return moved, replaced
+
+
 def update_mandate(db: Engine, mandate_id: str, **fields: Any) -> Mandate:
     with session(db) as s:
         row = s.get(Mandate, mandate_id)
@@ -268,6 +342,18 @@ def newest_run(db: Engine) -> Run | None:
 def run_row(db: Engine, run_id: str) -> Run | None:
     with session(db) as s:
         return s.get(Run, run_id)
+
+
+def unfinished_live_runs(db: Engine) -> list[Run]:
+    """Live runs the store last saw starting or running."""
+    with session(db) as s:
+        return list(
+            s.scalars(
+                select(Run)
+                .where(Run.kind == "live", Run.state.in_(("starting", "running")))
+                .order_by(Run.started_at.desc())
+            )
+        )
 
 
 def live_run_row(db: Engine, viseca_run_id: str) -> Run | None:

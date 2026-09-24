@@ -321,6 +321,11 @@ class ReplayStatus(ApiModel):
 
 
 class LiveRun(ApiModel):
+    """D3, D4, D7. ``customer_id`` / ``customer_name``: who holds ``card_id`` (the card the
+    platform's fixture profile runs the scenario on), once known."""
+
+    _omit_if_none = frozenset({"customer_id", "customer_name"})
+
     run_id: str
     scenario_id: str
     card_id: str
@@ -332,6 +337,32 @@ class LiveRun(ApiModel):
     total: int = Field(ge=0)
     worker_ok: bool
     last_error: str | None
+    customer_id: str | None = None
+    customer_name: str | None = None
+
+
+class ScenarioProfile(ApiModel):
+    """D8: the customer and card a scenario runs on, and who said so (``pack``: the local
+    data pack's authorities; the others: the platform, see ``store.schema.ScenarioProfile``)."""
+
+    customer_id: str
+    name: str
+    card_id: str
+    profile_id: str | None
+    source: Literal["pack", "bootstrap", "run", "authorization"]
+
+
+class Scenario(ApiModel):
+    """D8. ``served``: the platform serves it now; ``profile`` null until a bootstrap
+    profile or a run of it names its card; ``active_run_id``: a run of it still in
+    progress (running, or with purchases still open at the platform), else null."""
+
+    scenario_id: str
+    scenario_name: str
+    cardholder_instruction: str
+    served: bool
+    profile: ScenarioProfile | None
+    active_run_id: str | None
 
 
 class LedgerSnapshotEntry(ApiModel):
@@ -429,10 +460,19 @@ class ReplayRestartRequest(ApiModel):
 
 
 class CreateRunRequest(ApiModel):
-    """D3."""
+    """D3. ``force``: start even while the scenario (or another) has a run in progress."""
+
+    _omit_if_none = frozenset({"force"})
 
     scenario_id: str
     card_id: str
+    force: bool | None = None
+
+
+class ScenariosResponse(ApiModel):
+    """D8."""
+
+    scenarios: list[Scenario]
 
 
 class SoftSignalsToggle(ApiModel):
@@ -455,6 +495,7 @@ ErrorCode = Literal[
     "compiler_timeout",
     "internal",
     "runs_disabled",
+    "run_active",
 ]
 
 

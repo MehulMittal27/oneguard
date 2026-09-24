@@ -1,4 +1,4 @@
-"""Operator endpoints D1–D6 (docs/api-contract.md §1.2). Never called by the UI.
+"""Operator endpoints D1–D8 (docs/api-contract.md §1.2). Never called by the UI.
 
 This module and ``replay/`` are the only places that know about scenarios (CLAUDE.md
 rule 3): which customer and card a scenario runs on, and its events. D1/D2 replay the
@@ -8,18 +8,20 @@ follow a Viseca run; D5 switches the models off or on; D6 shows the ledger itsel
 D2 replays only what the local pack has purchases for. D3 accepts any scenario in the
 store's catalogue, which the worker syncs from ``/v1/reference-data`` at start, so the
 scenarios Viseca serves (a judging pack the local ``data/`` lacks) can be run on any
-card in the store; a scenario whose card is known (the pack's, or the one the served
-bootstrap profile names) must run on that card.
+card in the store; a scenario whose card is known (the pack's, or one the platform named:
+its bootstrap profile, a run's ``fixture_profiles``, an authorization) must run on that
+card. D8 lists every scenario with that binding, so ``make demo-live`` knows whom to sign
+in as.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from collections import defaultdict
 from datetime import datetime, timedelta
 from functools import cache
-from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -30,7 +32,7 @@ from oneguard.api import models as api
 from oneguard.api import policies, queries
 from oneguard.api.errors import ApiError, not_found
 from oneguard.api.offline import live_ids
-from oneguard.api.routes_customer import reply, services
+from oneguard.api.routes_customer import reply, revoke_at_platform, services
 from oneguard.api.services import ScenarioBinding, Services
 from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import LedgerEntry
@@ -38,8 +40,8 @@ from oneguard.engine.types import CompiledDraft, Policy
 from oneguard.replay.events import Pack, build_events
 from oneguard.store.db import session
 from oneguard.store.schema import Run, ScenarioCatalogue
-from oneguard.viseca.client import RUNS_DISABLED_MESSAGE, runs_allowed
-from oneguard.viseca.worker import first_value, served_profile
+from oneguard.viseca.client import RUNS_DISABLED_MESSAGE, VisecaError, runs_allowed
+from oneguard.viseca.worker import PLATFORM_PENDING, first_value, run_finished
 
 log = logging.getLogger(__name__)
 
@@ -67,28 +69,6 @@ def scenario_bindings(data: Pack | None = None) -> dict[str, list[ScenarioBindin
     }
 
 
-def profile_bindings(bootstrap: Any) -> dict[str, list[ScenarioBinding]]:
-    """customer id → the scenario the served bootstrap profile runs on its card."""
-    profile = served_profile(bootstrap)
-    if profile is None:
-        return {}
-    return {profile.customer_id: [ScenarioBinding(scenario_id=profile.scenario_id, card_id=profile.card_id)]}
-
-
-def merge_bindings(
-    base: dict[str, list[ScenarioBinding]], extra: dict[str, list[ScenarioBinding]]
-) -> dict[str, list[ScenarioBinding]]:
-    """``base`` plus the bindings of ``extra`` whose scenario ``base`` does not bind yet."""
-    bound = {b.scenario_id for bindings in base.values() for b in bindings}
-    merged = {customer: list(bindings) for customer, bindings in base.items()}
-    for customer, bindings in extra.items():
-        for binding in bindings:
-            if binding.scenario_id not in bound:
-                merged.setdefault(customer, []).append(binding)
-                bound.add(binding.scenario_id)
-    return merged
-
-
 def _catalogued(db: Engine, scenario_id: str) -> bool:
     with session(db) as s:
         return s.get(ScenarioCatalogue, scenario_id) is not None
@@ -98,7 +78,7 @@ async def _live_scenario(s: Services, scenario_id: str, card_id: str) -> str:
     """D3: the card's customer; 404 unknown scenario or card, 422 the scenario's card is another."""
     if not await s.db(_catalogued, s.db_engine, scenario_id):
         raise not_found(f"No scenario {scenario_id}.")
-    cards = {b.card_id for bindings in s.scenarios.values() for b in bindings if b.scenario_id == scenario_id}
+    cards = {b.card_id for bindings in (await s.bindings()).values() for b in bindings if b.scenario_id == scenario_id}
     if cards and card_id not in cards:
         raise ApiError(422, "validation", f"Scenario {scenario_id} runs on card {min(cards)}, not {card_id}.")
     customer_id = await s.db(queries.card_customer, s.db_engine, card_id)
@@ -194,11 +174,20 @@ async def replay_restart(body: api.ReplayRestartRequest, request: Request) -> JS
 async def create_run(body: api.CreateRunRequest, request: Request) -> JSONResponse:
     """D3: a Viseca run under the card's active policy, followed by the worker.
 
-    Refused with 409 ``runs_disabled`` before anything else while ``ONEGUARD_ALLOW_RUNS=false``.
+    Refused with 409 ``runs_disabled`` before anything else while ``ONEGUARD_ALLOW_RUNS=false``,
+    and, unless ``force``, with 409 ``run_active`` while the worker still follows an
+    unfinished run (one run at a time: the customer answers one run's step-ups) or the
+    scenario has a run in progress anywhere (``active_runs``). The platform's reply names the card
+    the run uses (``fixture_profiles``); that binding is stored, and when it is another
+    card than the one asked for (a scenario never run before, whose card nobody knew) the
+    policy moves to that card (``queries.move_mandate``), so its holder sees it. The reply
+    names the card's holder (``customer_id``, ``customer_name``).
     """
     if not runs_allowed():
         raise ApiError(409, "runs_disabled", RUNS_DISABLED_MESSAGE)
     s = services(request)
+    if not body.force:
+        await _refuse_while_running(s, body.scenario_id)
     await _live_scenario(s, body.scenario_id, body.card_id)
     row = await s.db(queries.latest_mandate, s.db_engine, body.card_id)
     if row is None or row.status != "active" or not row.viseca_mandate_id:
@@ -215,9 +204,103 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
         viseca_mandate_id=row.viseca_mandate_id,
         total=total if isinstance(total, int) and not isinstance(total, bool) else None,
     )
+    profiles = [p for p in await s.worker.remember_profiles(started, "run") if p.scenario_id == body.scenario_id]
+    card_id = profiles[0].card_id if profiles else body.card_id
+    mandate_id = row.mandate_id
+    if card_id != body.card_id and profiles and profiles[0].customer_id:
+        mandate_id = await _move_policy(s, row.mandate_id, card_id, profiles[0].customer_id)
     live = s.worker.live_run(run_id)
     assert live is not None
-    return reply(live.model_copy(update={"card_id": live.card_id or body.card_id, "mandate_id": row.mandate_id}))
+    return reply(
+        await _with_customer(s, live.model_copy(update={"card_id": live.card_id or card_id, "mandate_id": mandate_id}))
+    )
+
+
+async def active_runs(s: Services) -> dict[str, str]:
+    """scenario id → one of its runs still in progress, by the Viseca run id.
+
+    In progress: a run the worker follows that is not finished; a live run the store last
+    saw starting or running, unless the platform's progress says it is over; a run with a
+    purchase still open at the platform (awaiting a decision or a step-up answer), whoever
+    started it. An unreadable platform leaves the store's word standing.
+    """
+    found: dict[str, str] = {}
+    if s.worker is not None:
+        for r in s.worker.status().runs:
+            if r.state in ("starting", "running") and r.scenario_id:
+                found.setdefault(r.scenario_id, r.viseca_run_id)
+    for row in await s.db(queries.unfinished_live_runs, s.db_engine):
+        if not row.scenario_id or not row.viseca_run_id or row.scenario_id in found:
+            continue
+        if s.client is not None:
+            try:
+                if run_finished(await s.platform(s.client.get_run(row.viseca_run_id))):
+                    continue
+            except VisecaError as exc:
+                log.warning("progress of run %s unavailable: %s", row.viseca_run_id, exc)
+        found[row.scenario_id] = row.viseca_run_id
+    if s.client is not None:
+        try:
+            items = await s.platform(s.client.list_authorizations())
+        except VisecaError as exc:
+            log.warning("platform authorizations unavailable: %s", exc)
+            items = []
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict) or item.get("status") not in PLATFORM_PENDING:
+                continue
+            scenario_id, run_id = item.get("scenario_id"), item.get("run_id")
+            if isinstance(scenario_id, str) and isinstance(run_id, str):
+                found.setdefault(scenario_id, run_id)
+    return found
+
+
+async def _refuse_while_running(s: Services, scenario_id: str) -> None:
+    """D3 without ``force``: 409 ``run_active`` naming the run in progress."""
+    followed = [r for r in s.worker.status().runs if r.state in ("starting", "running")] if s.worker else []
+    if followed:
+        run = followed[0]
+        raise ApiError(
+            409,
+            "run_active",
+            f"Run {run.viseca_run_id} ({run.scenario_id or 'unknown scenario'}) is still running: "
+            f"{run.decided}/{run.total} decided, {run.pending_human} waiting for the customer.",
+            {"run_id": run.viseca_run_id, "scenario_id": run.scenario_id},
+        )
+    run_id = (await active_runs(s)).get(scenario_id)
+    if run_id is not None:
+        raise ApiError(
+            409,
+            "run_active",
+            f"{scenario_id} already has run {run_id} in progress (running, or purchases still open at the "
+            "platform). Send force: true to start another anyway.",
+            {"run_id": run_id, "scenario_id": scenario_id},
+        )
+
+
+async def _move_policy(s: Services, mandate_id: str, card_id: str, customer_id: str) -> str:
+    """The run's card differs from the policy's: move the policy there (D3)."""
+    async with s.policy_lock:
+        moved, replaced = await s.db(
+            queries.move_mandate, s.db_engine, mandate_id, card_id, customer_id, s.now(), f"md_{secrets.token_hex(8)}"
+        )
+        log.info("the platform runs mandate %s on card %s; policy moved there as %s", mandate_id, card_id, moved.mandate_id)
+        for old in replaced:
+            s.bind_mandate(old)
+            if old.viseca_mandate_id and old.viseca_mandate_id != moved.viseca_mandate_id:
+                await revoke_at_platform(s, old, strict=False)
+        s.bind_mandate(moved)
+    return moved.mandate_id
+
+
+async def _with_customer(s: Services, live: api.LiveRun) -> api.LiveRun:
+    """``live`` with the holder of its card, when the store knows the card."""
+    if not live.card_id:
+        return live
+    customer_id = await s.db(queries.card_customer, s.db_engine, live.card_id)
+    if customer_id is None:
+        return live
+    names = await s.db(queries.customer_names, s.db_engine, [customer_id])
+    return live.model_copy(update={"customer_id": customer_id, "customer_name": names.get(customer_id)})
 
 
 def _stored_live_run(run_id: str, row: Run) -> api.LiveRun:
@@ -259,11 +342,11 @@ async def current_run(request: Request) -> JSONResponse:
     if kind == "live":
         live = s.worker.live_run(run_id) if s.worker is not None else None
         if live is not None:
-            return reply(live)
+            return reply(await _with_customer(s, live))
         stored = await s.db(queries.live_run_row, s.db_engine, run_id)
         if stored is None:
             raise not_found(f"No run {run_id}.")
-        return reply(_stored_live_run(run_id, stored))
+        return reply(await _with_customer(s, _stored_live_run(run_id, stored)))
     if replay is not None and replay[0] == run_id:
         status = s.offline.status()
         assert status is not None
@@ -289,11 +372,51 @@ async def get_run(run_id: str, request: Request) -> JSONResponse:
     s = services(request)
     live = s.worker.live_run(run_id) if s.worker is not None else None
     if live is not None:
-        return reply(live)
+        return reply(await _with_customer(s, live))
     row = await s.db(queries.live_run_row, s.db_engine, run_id)
     if row is None:
         raise not_found(f"No run {run_id}.")
-    return reply(_stored_live_run(run_id, row))
+    return reply(await _with_customer(s, _stored_live_run(run_id, row)))
+
+
+# D8 -------------------------------------------------------------------------------------
+
+
+@router.get("/scenarios", response_model=api.ScenariosResponse)
+async def list_scenarios(request: Request) -> JSONResponse:
+    """D8: every scenario in the store's catalogue, whether the platform serves it now, the
+    customer and card it runs on when known (``Services.bindings``) and a run of it still in
+    progress (``active_runs``). Reads only."""
+    s = services(request)
+    catalogue = await s.db(queries.scenario_catalogue, s.db_engine)
+    served = await s.db(queries.served_scenarios, s.db_engine)
+    active = await active_runs(s)
+    bound = {b.scenario_id: (customer, b) for customer, bs in (await s.bindings()).items() for b in bs}
+    names = await s.db(queries.customer_names, s.db_engine, [c for c, _ in bound.values()])
+    scenarios = []
+    for row in catalogue:
+        found = bound.get(row.scenario_id)
+        profile = None
+        if found is not None:
+            customer, binding = found
+            profile = api.ScenarioProfile(
+                customer_id=customer,
+                name=names.get(customer, customer),
+                card_id=binding.card_id,
+                profile_id=binding.profile_id,
+                source=binding.source,  # type: ignore[arg-type]
+            )
+        scenarios.append(
+            api.Scenario(
+                scenario_id=row.scenario_id,
+                scenario_name=row.scenario_name,
+                cardholder_instruction=row.cardholder_instruction,
+                served=served is not None and row.scenario_id in served,
+                profile=profile,
+                active_run_id=active.get(row.scenario_id),
+            )
+        )
+    return reply(api.ScenariosResponse(scenarios=scenarios))
 
 
 # D5 -------------------------------------------------------------------------------------
