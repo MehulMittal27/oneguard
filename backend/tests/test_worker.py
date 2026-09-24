@@ -56,6 +56,8 @@ from tests.fake_viseca import FakeConfig, FakeViseca, judging_pack
 
 REPO = Path(__file__).resolve().parents[2]
 ALL_STUBS = {"implementations": stubs.STUBS, "stubbed": frozenset(stubs.STUBS)}
+START_READ = [{"run_id": None, "status": None}]
+"""The one ``GET /v1/authorizations`` the worker makes at start (``_reconcile_platform``)."""
 
 
 @pytest.fixture(scope="module")
@@ -437,7 +439,7 @@ def test_an_unanswered_step_up_is_declined_at_the_window(db: Engine, history: St
             assert worker.run_status(run_id).redeliveries == 0  # type: ignore[union-attr]
             assert worker.status().last_error is None
             # the platform was read first, narrowed to the run
-            assert fake.authorization_reads == [{"run_id": run_id, "status": None}]
+            assert fake.authorization_reads == START_READ + [{"run_id": run_id, "status": None}]
 
     asyncio.run(scenario())
 
@@ -470,7 +472,7 @@ def test_a_step_up_the_platform_already_expired_is_recorded_without_a_resolve(
             _, run_id = await start_run(client, worker, "SCEN0000")
             auth, _ = await closed_by_the_window(fake, worker, run_id, seen)
             assert auth.resolutions == []  # nothing posted
-            assert fake.authorization_reads == [{"run_id": run_id, "status": None}]
+            assert fake.authorization_reads == START_READ + [{"run_id": run_id, "status": None}]
 
     asyncio.run(scenario())
 
@@ -489,7 +491,62 @@ def test_a_step_up_the_platform_expires_between_read_and_resolve_gets_one_resolv
             (resolution,) = auth.resolutions  # the one /resolve, answered 409
             assert resolution["rejected"] and resolution["customer_message"] == timeout_message(1.0)
             # read before the /resolve, and again after its 409
-            assert fake.authorization_reads == [{"run_id": run_id, "status": None}] * 2
+            assert fake.authorization_reads == START_READ + [{"run_id": run_id, "status": None}] * 2
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("ledger_kind", ["store"], indirect=True)
+def test_start_sends_the_timeout_decline_the_platform_never_got(db: Engine, history: StoreHistoryIndex) -> None:
+    """The timeout ``/resolve`` never reached the platform (a failed call, then a restart):
+    the ledger has the step-up expired, the platform still serves it as waiting. The next
+    start sends that timeout decline, once. A waiting step-up the ledger does not know is
+    another decider's and is left alone."""
+
+    async def lost(*args: Any, **kwargs: Any) -> None:
+        raise VisecaError(503, "upstream_unavailable", "the resolve was lost")
+
+    async def scenario() -> None:
+        seen: list[api.Decision] = []
+        config = fast(human_window_s=1.0, platform_expiry_offset_s=600.0)  # the platform waits on
+        async with harness(db, config, history=history) as (fake, client, worker):
+            worker.add_listener(seen.append)
+            resolve = client.resolve
+            client.resolve = lost  # type: ignore[method-assign]
+            await worker.start()
+            _, run_id = await start_run(client, worker, "SCEN0000")
+            (auth,) = fake.runs[run_id].auths
+            await wait_until(lambda: len(seen) == 2, timeout=10)
+            (entry,) = await worker.ledger_entries([auth.live_id])
+            assert (entry.final, entry.uncertain_outcome, entry.resolved_by) == (True, "expired", "timeout")
+            assert auth.status == "pending" and auth.resolutions == []  # never reached the platform
+            await worker.stop()
+            client.resolve = resolve  # type: ignore[method-assign]
+
+            # another decider's step-up, waiting on the platform, unknown to this ledger
+            draft = await client.create_mandate("Another decider's policy.", [], "ask")
+            mandate = await client.confirm_mandate(draft["draft_id"])
+            other = await client.create_run("SCEN0000", mandate["mandate_id"])
+            request = await client.next_decision_request(wait=1)
+            assert request is not None and request["run_id"] == other["run_id"]
+            await client.post_decision(request["authorization_id"], "step_up")
+            (foreign,) = fake.runs[other["run_id"]].auths
+            assert foreign.status == "pending"
+
+            restarted = VisecaWorker(client, db=db, history=history, **ALL_STUBS, poll_wait_s=0.2)
+            try:
+                await restarted.start()
+                (resolution,) = auth.resolutions
+                assert (resolution["decision"], resolution["customer_message"]) == ("decline", timeout_message(1.0))
+                assert resolution["evidence"] == [
+                    {"rule": "resolved_by", "outcome": "info", "detail": "timeout", "source": "ledger"}
+                ]
+                assert auth.status == "declined" and "rejected" not in resolution
+                assert foreign.resolutions == [] and foreign.status == "pending"
+                (after,) = await restarted.ledger_entries([auth.live_id])
+                assert after == entry  # the ledger already had it right; nothing is counted
+            finally:
+                await restarted.stop()
 
     asyncio.run(scenario())
 

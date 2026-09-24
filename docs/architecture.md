@@ -85,8 +85,11 @@ oneguard/
   `/healthz` worker block: `state`, `ok`, `last_poll_at`, `events_cursor`,
   `human_window_s`, `pending_step_ups`, `history_reseeded`, `last_error`, `runs`.
 - Every Viseca call is summarised in `viseca_calls` (no key, bodies ≤ 4 KB) by
-  `oneguard/viseca/client.py`. `make demo-live SCEN=…` runs one scenario end to end
-  (`oneguard/viseca/demo.py`); it needs `VISECA_API_KEY`.
+  `oneguard/viseca/client.py`. `make demo-live SCEN=…` (`oneguard/viseca/demo.py`) starts
+  one scenario through the server at `ONEGUARD_API` (default `https://oneguard.fly.dev`; C1,
+  C2, D3), prints whom to sign in as and follows the run read-only: the server's worker
+  decides. Only with no OneGuard server answering there does it run a worker itself (it then
+  needs `VISECA_API_KEY`).
 
 ## Deployment (Plan C)
 
