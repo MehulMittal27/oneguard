@@ -5,12 +5,16 @@
 1. redelivery of a stored live ``authorization_id`` → the stored result, nothing counted (M7)
 2. ``build_facts``
 3. ``Ledger.view``; ``facts.merchant_known`` / ``merchant_known_on_card`` from it (Q7, C9)
+   - a policy that is no longer active (revoked, expired, superseded) is declined here
+     with ``card_or_authority_inactive`` without running rules or signals (§4 step 1,
+     T6, Q6); this holds whatever the engine functions are, stubs included
 4. ``evaluate_rules``
 5. ``resolve_unknowns`` only if a rule is unknown and a provider is configured (tier 2),
    then ``evaluate_rules`` again on the new facts
 6. ``protections``, ``warning_signs``, ``soft_signals`` (only when signals are enabled)
 7. ``decide``, then ``explain``
-8. ``Ledger.record`` (and ``flag_merchant`` when A1 triggered)
+8. ``Ledger.record`` (and ``flag_merchant`` when A1 triggered), with any ``extra_evidence``
+   (the worker's ``info`` reconciliation rows) appended to the explanation's evidence
 9. mapped to the API ``Decision``
 
 Functions are resolved by name through ``engine/stubs.py`` (``ONEGUARD_STUBS``). Tier 2
@@ -24,7 +28,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -35,6 +39,7 @@ from oneguard.engine import stubs
 from oneguard.engine.ledger_base import Ledger, LedgerEntry
 from oneguard.engine.types import (
     EngineDecision,
+    EvidenceRow,
     Explanation,
     Facts,
     HistoryIndex,
@@ -104,7 +109,8 @@ class PipelineContext:
         return version
 
 
-def _period_days(policy: Policy) -> int | None:
+def period_days_of(policy: Policy) -> int | None:
+    """The shortest period window among the policy's period rules, or None (C2)."""
     days = [r.period_days for r in policy.rules if r.scope == "period" and r.period_days]
     return min(days) if days else None
 
@@ -117,10 +123,39 @@ def _optional_stage(name: str, fn: Callable[[], Any], fallback: Any) -> Any:
         return fallback
 
 
+def _inactive_policy(policy: Policy) -> tuple[EngineDecision, Explanation]:
+    """§4 step 1 for our own mandate: nothing is approved once it is not active (T6, Q6)."""
+    reason = "you revoked this policy" if policy.status == "revoked" else f"this policy is {policy.status}"
+    return (
+        EngineDecision(
+            outcome="decline",
+            reason_codes=["card_or_authority_inactive"],
+            step=1,
+            deciding_ids=["policy_status"],
+        ),
+        Explanation(
+            message=f"Declined: {reason}, so nothing is approved under it.",
+            counterfactual="Confirm a new policy to let purchases like this go ahead.",
+            evidence=[
+                EvidenceRow(
+                    rule="policy_status",
+                    outcome="fail",
+                    detail=f"Mandate {policy.mandate_id} status is {policy.status}.",
+                    source="policy",
+                )
+            ],
+        ),
+    )
+
+
 def decide_event(
-    event: dict, ctx: PipelineContext
+    event: dict, ctx: PipelineContext, extra_evidence: Sequence[EvidenceRow] = ()
 ) -> tuple[EngineDecision, Explanation, api.Decision]:
-    """Decide one ``authorization.request`` event (already schema-validated)."""
+    """Decide one ``authorization.request`` event (already schema-validated).
+
+    ``extra_evidence`` rows are appended to a new decision's evidence (never to a
+    redelivered one); they never change the outcome.
+    """
     started = time.perf_counter()
     fn = ctx.functions
     auth = event["authorization"]
@@ -134,7 +169,7 @@ def decide_event(
             customer_id=customer_id,
             card_id=card_id,
             at=stored.ts_sim,
-            period_days=_period_days(ctx.policy),
+            period_days=period_days_of(ctx.policy),
         )
         engine, explanation = _from_entry(stored)
         return engine, explanation, to_api_decision(event, stored, view)
@@ -148,7 +183,7 @@ def decide_event(
         customer_id=customer_id,
         card_id=card_id,
         at=facts.timestamp,
-        period_days=_period_days(ctx.policy),
+        period_days=period_days_of(ctx.policy),
     )
     facts = facts.model_copy(
         update={
@@ -156,6 +191,10 @@ def decide_event(
             "merchant_known_on_card": facts.merchant_id in view.known_merchant_ids_on_card,
         }
     )
+    if ctx.policy.status != "active":
+        engine, explanation = _inactive_policy(ctx.policy)
+        return _record(event, ctx, facts, view, engine, explanation, extra_evidence, started, [])
+
     rules: list[RuleResult] = fn["evaluate_rules"](facts, ctx.policy)
 
     if any(r.outcome == "unknown" for r in rules) and provider_available(ctx.provider):
@@ -180,6 +219,22 @@ def decide_event(
     explanation: Explanation = fn["explain"](
         engine, facts, ctx.policy, rules, [*protections, *warnings, *soft]
     )
+    return _record(event, ctx, facts, view, engine, explanation, extra_evidence, started, protections)
+
+
+def _record(
+    event: dict,
+    ctx: PipelineContext,
+    facts: Facts,
+    view: LedgerView,
+    engine: EngineDecision,
+    explanation: Explanation,
+    extra_evidence: Sequence[EvidenceRow],
+    started: float,
+    protections: list[Signal],
+) -> tuple[EngineDecision, Explanation, api.Decision]:
+    card_id = event["authorization"]["card_id"]
+    customer_id = event["mandate"]["customer_id"]
     latency_ms = round((time.perf_counter() - started) * 1000, 3)
 
     decided_at = ctx.now()
@@ -203,7 +258,7 @@ def decide_event(
         step=engine.step,
         deciding_ids=engine.deciding_ids,
         reason_codes=engine.reason_codes,
-        evidence=explanation.evidence,
+        evidence=[*explanation.evidence, *extra_evidence],
         message=explanation.message,
         counterfactual=explanation.counterfactual,
         explanation_source=explanation.source,

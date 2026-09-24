@@ -60,8 +60,11 @@ reads it to build `Decision` responses and `Mandate.usage`. Nobody else writes i
   `item_price_range(item_id) -> (min, typical, max)` for W6.
   Refunds and cash withdrawals are excluded from familiarity; card-level counts are also
   exposed (`known_merchants_on_card(card_id)`) so Q7 can flip without code changes.
-- P2 `ledger.py`: `Ledger(session)`; `view()` combines `decisions` (this run's finals and
-  reservations) with `HistoryIndex` (customer-level history) into `LedgerView`.
+- P2 `ledger.py`: `Ledger(session, history=history)` (the worker constructs it so);
+  `view()` combines `decisions` (this run's finals and reservations) with `HistoryIndex`
+  (customer-level history) into `LedgerView`. `set_deadline(live_id, deadline_at)` moves a
+  pending step-up's `deadline_at` to the Viseca-accepted time + human window
+  (`engine/ledger_base.py`; without it the worker keeps the local default).
 - P4 `dryrun.py`: reads `history.recent_rows(card_id, 90)`; no pandas over CSV.
 - P5 `warnings.py`: reads only `LedgerView` (already merged), never the store directly.
 - P5 `replay/`: builds events from CSV (test tooling) but writes `events_raw` and reads

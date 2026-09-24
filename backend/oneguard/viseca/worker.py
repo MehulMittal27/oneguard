@@ -1,0 +1,1314 @@
+"""The long-poll worker between the Viseca sandbox and the pipeline.
+
+Runs as an asyncio task inside the API process (docs/architecture.md Runtime). One
+loop, never blocked by a human:
+
+- ``start``: ``GET /v1/bootstrap`` (human window, decision deadline) and
+  ``GET /v1/reference-data``. If the served history-file SHA-256 differs from the one
+  the seed checked (``data/metadata.json``), ``authorization_history`` is re-seeded from
+  ``/v1/reference-data/authorization-history.csv`` and that is logged loudly.
+- loop: long-poll ``/v1/decision-requests/next?wait=25``. 204 → read the progress of
+  every tracked run and the event feed, poll again. 200 → validate ``data`` against the
+  event schema, remember the live → source id map (and the live related id), store the
+  full event in ``events_raw``, reconcile ``context.approved_spend_in_period_chf``
+  against the ledger, run ``pipeline.decide_event`` within ``ONEGUARD_ENGINE_BUDGET_MS``
+  and POST the decision before ``deadline_at``.
+- redelivery of a known live id posts the stored decision again and counts nothing (M7).
+- a ``step_up`` accepted by Viseca gets ``deadline_at`` = accepted time + the bootstrap
+  human window and an expiry task. The loop never waits for it. Unanswered at the
+  deadline → ``POST /resolve`` ``decline`` with the timeout message, ``resolved_by:
+  timeout``, and the ledger marks it expired and releases the reservation (rules.md Q2,
+  api-contract §3.5).
+- a customer answer (C8) goes through ``resolve_by_customer``; it and the expiry are
+  serialised, so exactly one of them closes a step-up.
+- ``revoke``: our policy flips to revoked at once, then ``DELETE /v1/mandates/{id}``;
+  anything delivered afterwards is declined with ``card_or_authority_inactive``
+  (rules.md T6, Q6; pipeline step 3).
+- after each decision the feed ``GET /v1/events?since=<cursor>`` is compared with the
+  ledger; a mismatch becomes an ``info`` evidence row on the next decision.
+
+``status()`` is what ``/healthz`` reports: state, last poll, events cursor, runs.
+
+All ledger and pipeline calls run on one dedicated thread, so a SQL ledger session is
+never used from two threads at once. Store writes (``events_raw``, ``runs``) use their
+own short sessions.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import importlib
+import logging
+import math
+from collections import deque
+from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from decimal import ROUND_HALF_EVEN, Decimal
+from functools import partial
+from pathlib import Path
+from typing import Any, Literal, TypeVar
+
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import Engine, select
+from sqlalchemy.orm import Session
+
+from oneguard import __version__
+from oneguard.api import models as api
+from oneguard.engine.ledger_base import InMemoryLedger, Ledger, LedgerEntry
+from oneguard.engine.types import EvidenceRow, HistoryIndex, Policy, Rule, RuleKind
+from oneguard.llm.provider import Provider
+from oneguard.pipeline import (
+    PipelineContext,
+    budget_ms_from_env,
+    decide_event,
+    period_days_of,
+    to_api_decision,
+)
+from oneguard.store import seed as seed_module
+from oneguard.store.db import get_engine, session
+from oneguard.store.history import StoreHistoryIndex
+from oneguard.store.schema import EventRaw, Mandate, Run
+from oneguard.viseca.client import VisecaClient, VisecaError, cap
+from oneguard.viseca.schema import event_errors
+
+log = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+POLL_WAIT_S = 25.0
+DEFAULT_HUMAN_WINDOW_S = 120.0
+POST_MARGIN_S = 0.5
+"""Time kept free before ``deadline_at`` to POST when the engine overruns its budget."""
+POST_RETRY_DELAYS_S = (0.2, 0.5, 1.0)
+LOOP_BACKOFF_MAX_S = 10.0
+RECONCILE_TOLERANCE_CHF = Decimal("0.005")
+HISTORY_FILE = "authorization_history.csv"
+
+TIMEOUT_MESSAGE = "No answer within {seconds} s; nothing was approved"
+"""rules.md Q2 / api-contract §3.1, §3.5, with the human window from /v1/bootstrap."""
+CUSTOMER_MESSAGES = {
+    "approve": "The customer confirmed this purchase.",
+    "decline": "The customer declined this purchase.",
+}
+FALLBACK_MESSAGE = (
+    "Declined: we could not finish checking this purchase before its deadline, "
+    "so nothing was approved."
+)
+INVALID_EVENT_MESSAGE = (
+    "Declined: the purchase request was incomplete, so it could not be checked "
+    "and nothing was approved."
+)
+
+_DONE_STATES = {"completed", "complete", "done", "finished"}
+_ERROR_STATES = {"failed", "error", "errored", "cancelled", "canceled", "aborted"}
+_FEED_FINAL = {
+    "approved": "approved",
+    "approve": "approved",
+    "declined": "declined",
+    "decline": "declined",
+    "expired": "declined",
+    "cancelled": "declined",
+    "canceled": "declined",
+}
+_ACCEPTED_KEYS = ("accepted_at", "decided_at", "recorded_at", "created_at", "updated_at")
+
+
+def timeout_message(window_s: float) -> str:
+    """The expiry message; exactly the docs' wording for the default 120 s window."""
+    seconds = int(window_s) if float(window_s).is_integer() else f"{window_s:g}"
+    return TIMEOUT_MESSAGE.format(seconds=seconds)
+
+
+class NotAwaitingAnswer(Exception):
+    """The authorization is not a pending step-up (C8 409 ``not_awaiting_answer``)."""
+
+
+class WindowClosed(NotAwaitingAnswer):
+    """The human window has passed (C8 409 ``window_closed``)."""
+
+
+# Tolerant readers for platform payloads whose exact shape the docs do not fix -------------
+
+
+def walk_json(obj: Any) -> Iterator[tuple[str, Any, dict[str, Any]]]:
+    """Every ``(key, value, parent)`` in ``obj``, breadth first (top-level keys win)."""
+    queue: deque[Any] = deque([obj])
+    while queue:
+        node = queue.popleft()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                yield str(key), value, node
+                if isinstance(value, (dict, list)):
+                    queue.append(value)
+        elif isinstance(node, list):
+            queue.extend(x for x in node if isinstance(x, (dict, list)))
+
+
+def first_value(obj: Any, *keys: str) -> Any:
+    for key, value, _ in walk_json(obj):
+        if key in keys and value is not None:
+            return value
+    return None
+
+
+def seconds_setting(
+    obj: Any, must: tuple[str, ...], any_of: tuple[str, ...], default: float | None
+) -> float | None:
+    """A duration in seconds from the first numeric key naming all of ``must`` and one of
+    ``any_of`` (``_ms`` and ``_minutes`` suffixes converted)."""
+    for key, value, _ in walk_json(obj):
+        k = key.lower()
+        if not (all(m in k for m in must) and any(a in k for a in any_of)):
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            continue
+        if k.endswith("_ms") or "millis" in k:
+            return value / 1000
+        if k.endswith(("_minutes", "_min", "_mins")):
+            return value * 60.0
+        return float(value)
+    return default
+
+
+def find_history_metadata(reference: Any) -> dict[str, Any] | None:
+    """The served history-file metadata: a dict with a SHA-256 that names the history file."""
+    queue: deque[tuple[str, Any]] = deque([("", reference)])
+    while queue:
+        key, node = queue.popleft()
+        if isinstance(node, dict):
+            if "sha256" in node:
+                names = [key, *(v for v in node.values() if isinstance(v, str))]
+                if any("authorization_history" in n.lower().replace("-", "_") for n in names):
+                    return node
+                if "history" in key.lower():
+                    return node
+            queue.extend((str(k), v) for k, v in node.items() if isinstance(v, (dict, list)))
+        elif isinstance(node, list):
+            queue.extend((key, v) for v in node if isinstance(v, (dict, list)))
+    return None
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+# Policy from the platform's mandate snapshot ----------------------------------------------
+
+
+def _rule_kind(raw: Mapping[str, Any]) -> RuleKind:
+    field_name = str(raw["field"])
+    if raw.get("scope") == "period":
+        return "period"
+    if "billing_amount" in field_name:
+        return "amount"
+    if field_name.startswith("merchant."):
+        return "merchant"
+    if field_name.startswith("items["):
+        return "item"
+    if field_name.startswith("order."):
+        return "terms"
+    return "other"
+
+
+def _rule_text(raw: Mapping[str, Any]) -> str:
+    value = raw["value"]
+    shown = ", ".join(value) if isinstance(value, list) else str(value)
+    text = f"{raw['field']} {raw['operator']} {shown}"
+    if raw.get("currency"):
+        text += f" {raw['currency']}"
+    if raw.get("scope") == "period" and raw.get("period_days"):
+        text += f" across any {raw['period_days']} days"
+    return text
+
+
+def policy_from_snapshot(mandate: Mapping[str, Any]) -> Policy:
+    """A Policy from the event's ``mandate`` snapshot (hard_rules as stored at Viseca).
+
+    Used only when no confirmed policy is bound for that mandate. The convenience fields
+    are restated from the rules where the field vocabulary allows (api-contract §3.3).
+    """
+    rules: list[Rule] = []
+    allowed: list[str] | None = None
+    blocked: list[str] | None = None
+    known_shop = False
+    shop_type: str | None = None
+    for i, raw in enumerate(mandate.get("hard_rules") or [], start=1):
+        rules.append(
+            Rule(
+                id=f"hard_rule_{i}",
+                field=raw["field"],
+                operator=raw["operator"],
+                value=raw["value"],
+                currency=raw.get("currency"),
+                scope=raw.get("scope"),
+                period_days=raw.get("period_days"),
+                text=_rule_text(raw),
+                source="exact",
+                kind=_rule_kind(raw),
+            )
+        )
+        field_name, op, value = raw["field"], raw["operator"], raw["value"]
+        if field_name == "items[].item_category" and isinstance(value, list):
+            if op == "in":
+                allowed = sorted(set(allowed or value) & set(value))
+            elif op == "not_in":
+                blocked = sorted(set(blocked or []) | set(value))
+        elif field_name == "merchant.familiar_on_card" and op == "=" and str(value) == "true":
+            known_shop = True
+        elif field_name == "merchant.merchant_category" and op == "=" and isinstance(value, str):
+            shop_type = value
+    return Policy(
+        mandate_id=mandate["mandate_id"],
+        status=mandate.get("status", "active"),
+        instruction=mandate.get("instruction", ""),
+        rules=rules,
+        uncertainty_policy=mandate.get("uncertainty_policy", "ask"),
+        allowed_item_categories=allowed,
+        blocked_item_categories=blocked,
+        requires_known_shop=known_shop,
+        shop_type=shop_type,
+    )
+
+
+def default_ledger(db: Engine, history: HistoryIndex) -> Ledger:
+    """P2's store-backed ``engine.ledger.Ledger`` when it exists, else the in-memory one."""
+    try:
+        module = importlib.import_module("oneguard.engine.ledger")
+    except ModuleNotFoundError as exc:
+        if exc.name != "oneguard.engine.ledger":
+            raise
+        log.warning("engine/ledger.py not present; the worker uses the in-memory ledger")
+        return InMemoryLedger(history=history)
+    return module.Ledger(Session(db, expire_on_commit=False), history=history)
+
+
+# Status ------------------------------------------------------------------------------------
+
+
+class RunStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    viseca_run_id: str
+    scenario_id: str | None
+    mandate_id: str | None
+    card_id: str | None
+    state: Literal["starting", "running", "done", "error"]
+    delivered: int
+    decided: int
+    pending_human: int
+    total: int
+    redeliveries: int
+    last_error: str | None
+
+
+class WorkerStatus(BaseModel):
+    """What ``/healthz`` reports about the worker."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: Literal["stopped", "starting", "polling", "degraded"]
+    ok: bool
+    last_poll_at: datetime | None
+    events_cursor: int | str
+    human_window_s: float
+    decision_deadline_s: float | None
+    pending_step_ups: int
+    history_reseeded: bool
+    last_error: str | None
+    runs: list[RunStatus]
+
+
+@dataclass
+class RunState:
+    viseca_run_id: str
+    run_id: str
+    started_at: datetime
+    scenario_id: str | None = None
+    viseca_mandate_id: str | None = None
+    mandate_id: str | None = None
+    card_id: str | None = None
+    ctx: PipelineContext | None = None
+    state: Literal["starting", "running", "done", "error"] = "starting"
+    total: int = 0
+    live_ids: list[str] = field(default_factory=list)
+    decided: set[str] = field(default_factory=set)
+    pending: set[str] = field(default_factory=set)
+    redeliveries: int = 0
+    platform_done: bool = False
+    finished_at: datetime | None = None
+    last_error: str | None = None
+
+    def status(self) -> RunStatus:
+        return RunStatus(
+            run_id=self.run_id,
+            viseca_run_id=self.viseca_run_id,
+            scenario_id=self.scenario_id,
+            mandate_id=self.mandate_id,
+            card_id=self.card_id,
+            state=self.state,
+            delivered=len(self.live_ids),
+            decided=len(self.decided),
+            pending_human=len(self.pending),
+            total=max(self.total, len(self.live_ids)),
+            redeliveries=self.redeliveries,
+            last_error=self.last_error,
+        )
+
+
+DecisionListener = Callable[[api.Decision], Any]
+
+
+# The worker --------------------------------------------------------------------------------
+
+
+class VisecaWorker:
+    """Long-polls Viseca, decides every request through the pipeline, closes step-ups."""
+
+    def __init__(
+        self,
+        client: VisecaClient,
+        *,
+        db: Engine | None = None,
+        history: HistoryIndex | None = None,
+        ledger: Ledger | None = None,
+        provider: Provider | None = None,
+        signals_enabled: bool = False,
+        budget_ms: int | None = None,
+        poll_wait_s: float = POLL_WAIT_S,
+        implementations: Mapping[str, Callable[..., Any]] | None = None,
+        stubbed: frozenset[str] | None = None,
+        data_dir: Path = seed_module.DATA_DIR,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        self.client = client
+        self._db_engine = db or get_engine()
+        self._history = history
+        self._ledger = ledger
+        self._provider = provider
+        self._signals_enabled = signals_enabled
+        self._budget_ms = budget_ms if budget_ms is not None else budget_ms_from_env()
+        self._poll_wait_s = poll_wait_s
+        self._implementations = implementations
+        self._stubbed = stubbed
+        self._data_dir = data_dir
+        self._now = now
+
+        self.human_window_s = DEFAULT_HUMAN_WINDOW_S
+        self.decision_deadline_s: float | None = None
+        self.bootstrap: dict[str, Any] | None = None
+        self.reference_data: dict[str, Any] | None = None
+        self.history_reseeded = False
+
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="oneguard-engine")
+        self._task: asyncio.Task[None] | None = None
+        self._state: Literal["stopped", "starting", "polling", "degraded"] = "stopped"
+        self._failures = 0
+        self._last_poll_at: datetime | None = None
+        self._last_error: str | None = None
+        self._cursor: int | str = 0
+        self._runs: dict[str, RunState] = {}
+        self._run_of: dict[str, RunState] = {}
+        self._events: dict[str, dict[str, Any]] = {}
+        self._policies: dict[str, Policy] = {}
+        self._revoked: set[str] = set()
+        self._expiry: dict[str, asyncio.Task[None]] = {}
+        self._resolution_lock = asyncio.Lock()
+        self._feed_mismatches: list[EvidenceRow] = []
+        self._feed_seen: set[tuple[str, str]] = set()
+        self._listeners: list[DecisionListener] = []
+        self._warned_no_set_deadline = False
+        self.source_ids: dict[str, str] = {}
+        """live authorization id → source ``AU…`` id (offline parity)."""
+        self.related_ids: dict[str, str] = {}
+        """live authorization id → the live id Viseca rewrote ``related_authorization_id`` to."""
+
+    # Public API --------------------------------------------------------------------------
+
+    @property
+    def ledger(self) -> Ledger:
+        if self._ledger is None:
+            raise RuntimeError("worker not started")
+        return self._ledger
+
+    @property
+    def history(self) -> HistoryIndex:
+        if self._history is None:
+            raise RuntimeError("worker not started")
+        return self._history
+
+    @property
+    def events_cursor(self) -> int | str:
+        return self._cursor
+
+    def add_listener(self, listener: DecisionListener) -> None:
+        """Called with the API ``Decision`` after every posted decision and resolution."""
+        self._listeners.append(listener)
+
+    def bind_policy(self, viseca_mandate_id: str, policy: Policy) -> None:
+        """The confirmed policy (typed rules) behind a Viseca ``TM…`` mandate."""
+        if viseca_mandate_id in self._revoked:
+            policy = policy.model_copy(update={"status": "revoked"})
+        self._policies[viseca_mandate_id] = policy
+
+    def track_run(
+        self,
+        viseca_run_id: str,
+        *,
+        scenario_id: str | None = None,
+        viseca_mandate_id: str | None = None,
+        total: int | None = None,
+    ) -> RunStatus:
+        """Follow a run from its creation, so its progress is read while nothing arrives."""
+        run = self._run(viseca_run_id)
+        run.scenario_id = scenario_id or run.scenario_id
+        run.viseca_mandate_id = viseca_mandate_id or run.viseca_mandate_id
+        run.total = max(run.total, total or 0)
+        return run.status()
+
+    def run_status(self, viseca_run_id: str) -> RunStatus | None:
+        run = self._runs.get(viseca_run_id)
+        return run.status() if run else None
+
+    def live_run(self, viseca_run_id: str) -> api.LiveRun | None:
+        """D4 ``LiveRun`` for a Viseca run id."""
+        run = self._runs.get(viseca_run_id)
+        if run is None:
+            return None
+        status = run.status()
+        return api.LiveRun(
+            run_id=run.viseca_run_id,
+            scenario_id=run.scenario_id or "",
+            card_id=run.card_id or "",
+            mandate_id=run.mandate_id or run.viseca_mandate_id or "",
+            state=run.state,
+            delivered=status.delivered,
+            decided=status.decided,
+            pending_human=status.pending_human,
+            total=status.total,
+            worker_ok=self.status().ok,
+            last_error=run.last_error or self._last_error,
+        )
+
+    def status(self) -> WorkerStatus:
+        running = self._task is not None and not self._task.done()
+        return WorkerStatus(
+            state=self._state if running or self._state == "stopped" else "degraded",
+            ok=running and self._state == "polling" and self._failures == 0,
+            last_poll_at=self._last_poll_at,
+            events_cursor=self._cursor,
+            human_window_s=self.human_window_s,
+            decision_deadline_s=self.decision_deadline_s,
+            pending_step_ups=len(self._expiry),
+            history_reseeded=self.history_reseeded,
+            last_error=self._last_error,
+            runs=[run.status() for run in self._runs.values()],
+        )
+
+    async def start(self) -> None:
+        """Read settings and reference data, load history, recover pending step-ups, poll."""
+        if self._task is not None:
+            return
+        self._state = "starting"
+        await self._load_settings()
+        await self._check_reference_data()
+        if self._history is None:
+            self._history = await asyncio.to_thread(self._load_history)
+        if self._ledger is None:
+            self._ledger = default_ledger(self._db_engine, self._history)
+        await self._recover_pending()
+        self._task = asyncio.create_task(self._loop(), name="viseca-worker")
+
+    async def stop(self) -> None:
+        """Stop polling and cancel expiry timers (pending step-ups are recovered on start)."""
+        tasks = [t for t in [self._task, *self._expiry.values()] if t is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._task = None
+        self._expiry.clear()
+        self._state = "stopped"
+        await self.client.drain()
+
+    async def revoke(self, viseca_mandate_id: str) -> None:
+        """Revoke a mandate: locally at once (nothing more is approved), then at Viseca."""
+        self._revoked.add(viseca_mandate_id)
+        if viseca_mandate_id in self._policies:
+            self._policies[viseca_mandate_id] = self._policies[viseca_mandate_id].model_copy(
+                update={"status": "revoked"}
+            )
+        for run in self._runs.values():
+            if run.viseca_mandate_id == viseca_mandate_id and run.ctx is not None:
+                run.ctx.policy = run.ctx.policy.model_copy(update={"status": "revoked"})
+        await asyncio.to_thread(self._mark_mandate_revoked, viseca_mandate_id)
+        log.info("mandate %s revoked; later requests under it are declined", viseca_mandate_id)
+        await self.client.delete_mandate(viseca_mandate_id)
+
+    async def ledger_entries(self, live_ids: list[str]) -> list[LedgerEntry]:
+        """The stored entries for these live ids (read on the ledger's thread)."""
+        found = await self._engine(lambda: [self.ledger.get(i) for i in live_ids])
+        return [e for e in found if e is not None]
+
+    async def resolve_by_customer(
+        self, authorization_id: str, decision: Literal["approve", "decline"]
+    ) -> LedgerEntry:
+        """C8: post the customer's answer to Viseca, then record it (``resolved_by: customer``).
+
+        Raises KeyError (unknown), NotAwaitingAnswer, WindowClosed, or VisecaError (the
+        ledger is then unchanged).
+        """
+        async with self._resolution_lock:
+            entry = await self._engine(self.ledger.get, authorization_id)
+            if entry is None:
+                raise KeyError(authorization_id)
+            if entry.outcome != "step_up" or entry.final:
+                raise NotAwaitingAnswer(f"{authorization_id} is not awaiting an answer")
+            if entry.deadline_at is not None and self._now() >= entry.deadline_at:
+                raise WindowClosed(f"the window for {authorization_id} closed at {entry.deadline_at}")
+            await self.client.resolve(
+                authorization_id,
+                decision,
+                CUSTOMER_MESSAGES[decision],
+                [_resolved_by_row("customer")],
+            )
+            resolved = await self._engine(
+                self.ledger.resolve, authorization_id, decision, "customer", self._now()
+            )
+            task = self._expiry.pop(authorization_id, None)
+            if task is not None:
+                task.cancel()
+        await self._after_resolution(authorization_id, resolved)
+        return resolved
+
+    async def expire(self, authorization_id: str) -> bool:
+        """Close an unanswered step-up (rules.md Q2). False if it was already closed."""
+        async with self._resolution_lock:
+            entry = await self._engine(self.ledger.get, authorization_id)
+            if entry is None or entry.outcome != "step_up" or entry.final:
+                return False
+            resolved = await self._engine(
+                self.ledger.resolve, authorization_id, "decline", "timeout", self._now()
+            )
+            try:
+                await self.client.resolve(
+                    authorization_id,
+                    "decline",
+                    timeout_message(self.human_window_s),
+                    [_resolved_by_row("timeout")],
+                )
+            except VisecaError as exc:
+                self._note_error(f"timeout resolve of {authorization_id} failed: {exc}")
+        log.info("step-up %s expired unanswered; declined, reservation released", authorization_id)
+        await self._after_resolution(authorization_id, resolved)
+        return True
+
+    # Start-up ----------------------------------------------------------------------------
+
+    async def _load_settings(self) -> None:
+        try:
+            self.bootstrap = await self.client.bootstrap()
+        except VisecaError as exc:
+            self._note_error(f"bootstrap failed, using default timeouts: {exc}")
+            return
+        self.human_window_s = seconds_setting(
+            self.bootstrap, ("human",), ("window", "timeout", "seconds"), DEFAULT_HUMAN_WINDOW_S
+        ) or DEFAULT_HUMAN_WINDOW_S
+        self.decision_deadline_s = seconds_setting(
+            self.bootstrap, ("decision",), ("deadline", "timeout"), None
+        )
+        log.info(
+            "Viseca bootstrap: human window %s s, decision deadline %s s",
+            self.human_window_s,
+            self.decision_deadline_s,
+        )
+
+    async def _check_reference_data(self) -> None:
+        try:
+            self.reference_data = await self.client.reference_data()
+        except VisecaError as exc:
+            self._note_error(f"reference data unavailable, keeping the seeded history: {exc}")
+            return
+        meta = find_history_metadata(self.reference_data)
+        expected = seed_module.pack_file_sha256(HISTORY_FILE, self._data_dir)
+        if meta is None:
+            log.warning("Viseca reference data names no history-file hash; keeping the seeded history")
+            return
+        served = str(meta.get("sha256", "")).strip().lower()
+        if not served or served == expected:
+            log.info("Viseca history file matches the seeded pack (sha256 %s)", expected)
+            return
+        banner = "!" * 72
+        log.warning(
+            "%s\nVISECA SERVES A DIFFERENT HISTORY FILE: sha256 %s, seeded pack has %s.\n"
+            "Re-seeding authorization_history from /v1/reference-data/authorization-history.csv\n%s",
+            banner,
+            served,
+            expected,
+            banner,
+        )
+        try:
+            text = await self.client.authorization_history_csv()
+        except VisecaError as exc:
+            self._note_error(f"history download failed, keeping the seeded history: {exc}")
+            return
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if digest != served:
+            self._note_error(
+                f"downloaded history sha256 {digest} does not match the served {served}; not re-seeding"
+            )
+            return
+        try:
+            rows = await asyncio.to_thread(self._reseed_history, text)
+        except Exception as exc:
+            log.exception("re-seeding history failed")
+            self._note_error(f"re-seeding history failed, keeping the seeded history: {exc}")
+            return
+        self.history_reseeded = True
+        log.warning(
+            "%s\nRE-SEEDED authorization_history: %d rows from Viseca (sha256 %s)\n%s",
+            banner,
+            rows,
+            served,
+            banner,
+        )
+
+    def _reseed_history(self, text: str) -> int:
+        with session(self._db_engine) as s:
+            return seed_module.reseed_history(s, text)
+
+    def _load_history(self) -> StoreHistoryIndex:
+        with session(self._db_engine) as s:
+            return StoreHistoryIndex.load(s)
+
+    async def _recover_pending(self) -> None:
+        rows = await asyncio.to_thread(self._load_events)
+        for live_id, source_id, event in rows:
+            self._events[live_id] = event
+            self.source_ids[live_id] = source_id
+            related = event.get("authorization", {}).get("related_authorization_id")
+            if related:
+                self.related_ids[live_id] = related
+            entry = await self._engine(self.ledger.get, live_id)
+            if entry is not None and entry.outcome == "step_up" and not entry.final:
+                deadline = entry.deadline_at or self._now()
+                log.info("recovered pending step-up %s, closes at %s", live_id, deadline)
+                self._schedule_expiry(live_id, deadline)
+
+    def _load_events(self) -> list[tuple[str, str, dict[str, Any]]]:
+        with session(self._db_engine) as s:
+            rows = s.execute(
+                select(EventRaw.live_authorization_id, EventRaw.source_authorization_id, EventRaw.event)
+            ).all()
+        return [(r[0], r[1], r[2]) for r in rows]
+
+    # The loop ----------------------------------------------------------------------------
+
+    async def _loop(self) -> None:
+        self._state = "polling"
+        while True:
+            try:
+                envelope = await self.client.next_decision_request(wait=self._poll_wait_s)
+                self._last_poll_at = self._now()
+                if envelope is None:
+                    await self._idle()
+                elif not isinstance(envelope, dict):
+                    raise VisecaError(200, "invalid_response", "decision request is not an object")
+                else:
+                    await self._handle(envelope)
+                self._failures = 0
+                self._state = "polling"
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._failures += 1
+                self._state = "degraded"
+                if isinstance(exc, VisecaError):
+                    self._note_error(f"poll failed: {exc}")
+                else:
+                    log.exception("worker loop error")
+                    self._note_error(f"worker error: {type(exc).__name__}: {exc}")
+                await asyncio.sleep(min(LOOP_BACKOFF_MAX_S, 0.25 * 2 ** min(self._failures, 6)))
+
+    async def _idle(self) -> None:
+        for run in list(self._runs.values()):
+            if run.state in ("done", "error"):
+                continue
+            try:
+                progress = await self.client.get_run(run.viseca_run_id)
+            except VisecaError as exc:
+                log.warning("progress of run %s unavailable: %s", run.viseca_run_id, exc)
+                continue
+            self._apply_progress(run, progress)
+            await asyncio.to_thread(self._save_run, run)
+        await self._sync_events()
+
+    def _apply_progress(self, run: RunState, progress: Any) -> None:
+        total = first_value(progress, "total", "total_events", "event_count", "events_total")
+        if isinstance(total, int) and not isinstance(total, bool):
+            run.total = max(run.total, total)
+        state = str(first_value(progress, "status", "state") or "").lower()
+        if state in _DONE_STATES:
+            run.platform_done = True
+        elif state in _ERROR_STATES:
+            run.state = "error"
+            run.last_error = f"Viseca reports the run as {state}"
+            run.finished_at = run.finished_at or self._now()
+        self._maybe_done(run)
+
+    def _maybe_done(self, run: RunState) -> None:
+        if run.state in ("done", "error"):
+            return
+        if run.platform_done and not run.pending:
+            run.state = "done"
+            run.finished_at = self._now()
+
+    async def _handle(self, envelope: dict[str, Any]) -> None:
+        data = envelope.get("data")
+        errors = event_errors(data)
+        if errors:
+            await self._reject_invalid(envelope, errors)
+            return
+        assert isinstance(data, dict)
+        received_at = self._now()
+        auth = data["authorization"]
+        live_id: str = auth["authorization_id"]
+        deadline_at = _parse_time(data["deadline_at"]) or received_at
+        run = self._bind_run(str(envelope.get("run_id") or ""), data)
+        self._run_of[live_id] = run
+        self._events[live_id] = data
+        self.source_ids[live_id] = auth["source_authorization_id"]
+        if auth["related_authorization_id"]:
+            self.related_ids[live_id] = auth["related_authorization_id"]
+
+        stored = await self._engine(self.ledger.get, live_id)
+        if stored is not None:
+            run.redeliveries += 1
+            log.info("redelivery of %s: posting the stored %s, counting nothing", live_id, stored.outcome)
+            await self._post_stored(data, stored, deadline_at)
+            return
+
+        if live_id not in run.live_ids:
+            run.live_ids.append(live_id)
+        save = asyncio.create_task(
+            asyncio.to_thread(self._save_event, run.run_id, data, received_at, deadline_at)
+        )
+        extra = await self._reconcile_context(run, data)
+        extra.extend(self._feed_mismatches)
+        self._feed_mismatches.clear()
+
+        decision = await self._decide(run, data, extra, deadline_at)
+        if decision is not None:
+            await self._post_new(run, data, decision, deadline_at)
+        try:
+            await save
+        except Exception as exc:
+            log.exception("events_raw write failed")
+            self._note_error(f"events_raw write for {live_id} failed: {exc}")
+        await self._sync_events()
+        await asyncio.to_thread(self._save_run, run)
+
+    def _run(self, viseca_run_id: str) -> RunState:
+        run = self._runs.get(viseca_run_id)
+        if run is None:
+            run = RunState(
+                viseca_run_id=viseca_run_id, run_id=f"live-{viseca_run_id}", started_at=self._now()
+            )
+            self._runs[viseca_run_id] = run
+        return run
+
+    def _bind_run(self, viseca_run_id: str, data: dict[str, Any]) -> RunState:
+        run = self._run(viseca_run_id)
+        if run.ctx is not None:
+            return run
+        auth, mandate = data["authorization"], data["mandate"]
+        tm = mandate["mandate_id"]
+        policy = self._policies.get(tm)
+        if policy is None:
+            log.warning(
+                "no confirmed policy bound for mandate %s; deciding from the platform snapshot", tm
+            )
+            policy = policy_from_snapshot(mandate)
+        if tm in self._revoked and policy.status == "active":
+            policy = policy.model_copy(update={"status": "revoked"})
+        run.viseca_mandate_id = tm
+        run.mandate_id = policy.mandate_id
+        run.card_id = auth["card_id"]
+        run.scenario_id = run.scenario_id or auth.get("scenario_id")
+        run.state = "running"
+        run.ctx = PipelineContext(
+            policy=policy,
+            ledger=self.ledger,
+            history=self._history or StoreHistoryIndex(),
+            run_id=run.run_id,
+            provider=self._provider,
+            signals_enabled=self._signals_enabled,
+            budget_ms=self._budget_ms,
+            human_window_s=math.ceil(self.human_window_s),
+            implementations=self._implementations,
+            stubbed=self._stubbed,
+            now=self._now,
+        )
+        return run
+
+    # Deciding ----------------------------------------------------------------------------
+
+    async def _engine(self, fn: Callable[..., T], *args: Any) -> T:
+        return await asyncio.get_running_loop().run_in_executor(self._pool, partial(fn, *args))
+
+    async def _reconcile_context(self, run: RunState, data: dict[str, Any]) -> list[EvidenceRow]:
+        theirs = data["context"]["approved_spend_in_period_chf"]
+        if theirs is None or run.ctx is None:
+            return []
+        at = _parse_time(data["authorization"]["timestamp"])
+        assert at is not None
+        ours = await self._engine(
+            self._approved_spend, list(run.live_ids), at, period_days_of(run.ctx.policy)
+        )
+        if abs(Decimal(str(theirs)) - ours) <= RECONCILE_TOLERANCE_CHF:
+            return []
+        log.warning("context mismatch on %s: Viseca CHF %s, ledger CHF %s", run.viseca_run_id, theirs, ours)
+        return [
+            EvidenceRow(
+                rule="ledger_mismatch",
+                outcome="info",
+                detail=f"Viseca counts CHF {float(theirs):.2f} approved in this period; "
+                f"our ledger counts CHF {ours:.2f}.",
+                source="ledger",
+            )
+        ]
+
+    def _approved_spend(self, live_ids: list[str], at: datetime, period_days: int | None) -> Decimal:
+        start = at - timedelta(days=period_days) if period_days else None
+        total = Decimal(0)
+        for live_id in live_ids:
+            entry = self.ledger.get(live_id)
+            if entry is None or not entry.spent_chf or entry.ts_sim >= at:
+                continue
+            if start is None or entry.ts_sim >= start:
+                total += Decimal(str(entry.spent_chf))
+        return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+
+    async def _decide(
+        self,
+        run: RunState,
+        data: dict[str, Any],
+        extra: list[EvidenceRow],
+        deadline_at: datetime,
+    ) -> api.Decision | None:
+        """The pipeline's decision, or None after posting a fallback decline."""
+        assert run.ctx is not None
+        live_id = data["authorization"]["authorization_id"]
+        future = asyncio.get_running_loop().run_in_executor(
+            self._pool, partial(decide_event, data, run.ctx, extra)
+        )
+        waits = [self._budget_ms / 1000]
+        waits.append((deadline_at - self._now()).total_seconds() - POST_MARGIN_S - waits[0])
+        for i, wait in enumerate(waits):
+            if wait <= 0:
+                continue
+            try:
+                _, _, decision = await asyncio.wait_for(asyncio.shield(future), wait)
+                return decision
+            except TimeoutError:
+                if i == 0:
+                    log.warning("engine over its %d ms budget on %s", self._budget_ms, live_id)
+            except Exception as exc:
+                log.exception("engine failed on %s", live_id)
+                await self._fallback(run, data, deadline_at, f"The engine failed: {type(exc).__name__}.", record=True)
+                return None
+        future.add_done_callback(
+            lambda f: asyncio.ensure_future(self._late_result(live_id, f))
+        )
+        await self._fallback(
+            run, data, deadline_at, f"The engine did not finish within {self._budget_ms} ms.", record=False
+        )
+        return None
+
+    async def _fallback(
+        self, run: RunState, data: dict[str, Any], deadline_at: datetime, detail: str, *, record: bool
+    ) -> None:
+        """Decline what could not be checked in time (D3; missing is never a pass)."""
+        assert run.ctx is not None
+        auth = data["authorization"]
+        live_id = auth["authorization_id"]
+        evidence = [EvidenceRow(rule="engine", outcome="uncertain", detail=detail, source="policy")]
+        if record:
+            entry = LedgerEntry(
+                live_authorization_id=live_id,
+                run_id=run.run_id,
+                mandate_id=run.ctx.policy.mandate_id,
+                card_id=auth["card_id"],
+                customer_id=data["mandate"]["customer_id"],
+                ts_sim=datetime.fromisoformat(auth["timestamp"]),
+                outcome="decline",
+                final=True,
+                uncertain_outcome=None,
+                merchant_id=auth["merchant"]["merchant_id"],
+                item_ids=[line["item_id"] for line in auth["items"]],
+                billing_amount_chf=auth["billing_amount_chf"],
+                step=4,
+                deciding_ids=["engine"],
+                reason_codes=["unevaluable"],
+                evidence=evidence,
+                message=FALLBACK_MESSAGE,
+                engine_version=run.ctx.engine_version,
+                latency_ms=0.0,
+                signals_enabled=run.ctx.signals_enabled,
+                decided_at=self._now(),
+            )
+            try:
+                await self._engine(self.ledger.record, entry)
+            except Exception as exc:
+                log.exception("fallback record failed")
+                self._note_error(f"could not record the fallback decline of {live_id}: {exc}")
+        run.last_error = f"{live_id}: {detail}"
+        try:
+            await self._post(
+                live_id,
+                "decline",
+                ["unevaluable"],
+                FALLBACK_MESSAGE,
+                [row.model_dump(mode="json") for row in evidence],
+                run.ctx.engine_version,
+                deadline_at,
+            )
+        except VisecaError as exc:
+            self._note_error(f"fallback decline of {live_id} not accepted: {exc}")
+        run.decided.add(live_id)
+
+    async def _late_result(self, live_id: str, future: Future[Any] | asyncio.Future[Any]) -> None:
+        """The engine finished after a fallback decline was posted: keep the ledger honest."""
+        if future.cancelled() or future.exception() is not None:
+            return
+        _, _, decision = future.result()
+        entry = await self._engine(self.ledger.get, live_id)
+        if entry is not None and entry.outcome == "step_up" and not entry.final:
+            await self._engine(self.ledger.resolve, live_id, "decline", "timeout", self._now())
+        self._note_error(
+            f"engine finished {live_id} after the fallback decline with {decision.decision}; "
+            "Viseca has the decline"
+        )
+
+    async def _reject_invalid(self, envelope: dict[str, Any], errors: list[str]) -> None:
+        data = envelope.get("data")
+        auth = data.get("authorization") if isinstance(data, dict) else None
+        live_id = auth.get("authorization_id") if isinstance(auth, dict) else None
+        live_id = live_id if isinstance(live_id, str) and live_id else envelope.get("authorization_id")
+        self._note_error(f"request {live_id or '?'} failed schema validation: {'; '.join(errors[:3])}")
+        if not isinstance(live_id, str) or not live_id:
+            return
+        deadline = (
+            _parse_time(data.get("deadline_at")) if isinstance(data, dict) else None
+        ) or self._now() + timedelta(seconds=5)
+        evidence = [
+            {
+                "rule": "event_schema",
+                "outcome": "fail",
+                "detail": cap("; ".join(errors[:3]), 500),
+                "source": "policy",
+            }
+        ]
+        try:
+            await self._post(
+                live_id, "decline", ["unevaluable"], INVALID_EVENT_MESSAGE, evidence,
+                f"oneguard/{__version__}", deadline,
+            )  # fmt: skip
+        except VisecaError as exc:
+            self._note_error(f"decline of invalid request {live_id} not accepted: {exc}")
+
+    # Posting -----------------------------------------------------------------------------
+
+    async def _post(
+        self,
+        live_id: str,
+        outcome: str,
+        reason_codes: list[str],
+        message: str,
+        evidence: list[dict[str, Any]],
+        engine_version: str,
+        deadline_at: datetime,
+    ) -> dict[str, Any] | None:
+        """POST a decision, retrying transient failures until the deadline.
+
+        Returns the platform's response, or None when it already holds a decision (409).
+        A 400/422 on the full body is retried once without ``evidence`` and
+        ``engine_version`` so a decision still lands in time.
+        """
+        extras: dict[str, Any] = {"evidence": evidence, "engine_version": engine_version}
+        attempt = 0
+        while True:
+            try:
+                reply = await self.client.post_decision(
+                    live_id, outcome, reason_codes=reason_codes, customer_message=message, **extras
+                )
+                return reply or {}
+            except VisecaError as exc:
+                if exc.status == 409:
+                    log.info("Viseca already holds a decision for %s (%s)", live_id, exc.code)
+                    return None
+                if exc.status in (400, 422) and extras:
+                    log.warning("Viseca rejected the full decision body for %s (%s); retrying minimal", live_id, exc.code)
+                    extras = {}
+                    continue
+                left = (deadline_at - self._now()).total_seconds()
+                transient = exc.status is None or exc.status == 429 or exc.status >= 500
+                if not transient or left <= POST_RETRY_DELAYS_S[0]:
+                    raise
+                delay = POST_RETRY_DELAYS_S[min(attempt, len(POST_RETRY_DELAYS_S) - 1)]
+                await asyncio.sleep(min(delay, left - POST_RETRY_DELAYS_S[0]))
+                attempt += 1
+
+    async def _post_new(
+        self, run: RunState, data: dict[str, Any], decision: api.Decision, deadline_at: datetime
+    ) -> None:
+        live_id = decision.authorization_id
+        evidence = [row.model_dump(mode="json") for row in decision.evidence]
+        outcome = {"approved": "approve", "stopped": "decline", "uncertain": "step_up"}[decision.decision]
+        try:
+            reply = await self._post(
+                live_id,
+                outcome,
+                decision.reason_codes,
+                decision.message,
+                evidence,
+                decision.engine_version or f"oneguard/{__version__}",
+                deadline_at,
+            )
+        except VisecaError as exc:
+            reply = None
+            run.last_error = f"{live_id}: decision not accepted: {exc}"
+            self._note_error(run.last_error)
+        run.decided.add(live_id)
+        if outcome == "step_up" and decision.status == "pending_human":
+            run.pending.add(live_id)
+            deadline = decision.deadline_at
+            if reply is not None:
+                accepted = next(
+                    (t for t in (_parse_time(first_value(reply, k)) for k in _ACCEPTED_KEYS) if t), None
+                ) or self._now()
+                deadline = await self._set_deadline(
+                    live_id, accepted + timedelta(seconds=self.human_window_s), deadline
+                )
+                decision = decision.model_copy(update={"deadline_at": deadline})
+            self._schedule_expiry(live_id, deadline or self._now())
+        self._notify(decision)
+
+    async def _set_deadline(
+        self, live_id: str, deadline: datetime, fallback: datetime | None
+    ) -> datetime | None:
+        try:
+            entry = await self._engine(self.ledger.set_deadline, live_id, deadline)
+        except NotImplementedError:
+            if not self._warned_no_set_deadline:
+                log.warning("the ledger cannot move deadlines; step-ups keep the local default")
+                self._warned_no_set_deadline = True
+            return fallback
+        return entry.deadline_at
+
+    async def _post_stored(self, data: dict[str, Any], stored: LedgerEntry, deadline_at: datetime) -> None:
+        """Answer a redelivery with the decision already made; nothing is counted again."""
+        live_id = stored.live_authorization_id
+        try:
+            reply = await self._post(
+                live_id,
+                stored.outcome,
+                stored.reason_codes,
+                stored.message,
+                [row.model_dump(mode="json") for row in stored.evidence],
+                stored.engine_version,
+                deadline_at,
+            )
+        except VisecaError as exc:
+            self._note_error(f"re-post of {live_id} not accepted: {exc}")
+            return
+        if stored.outcome != "step_up":
+            return
+        if not stored.final:
+            if live_id not in self._expiry:
+                self._schedule_expiry(live_id, stored.deadline_at or self._now())
+            return
+        if reply is None:
+            return
+        # Viseca had lost the step-up and takes it again: replay the answer already given.
+        answer = "approve" if stored.uncertain_outcome == "approved" else "decline"
+        by = stored.resolved_by or "timeout"
+        message = timeout_message(self.human_window_s) if by == "timeout" else CUSTOMER_MESSAGES[answer]
+        try:
+            await self.client.resolve(live_id, answer, message, [_resolved_by_row(by)])
+        except VisecaError as exc:
+            self._note_error(f"re-resolve of {live_id} not accepted: {exc}")
+
+    # Step-up expiry ----------------------------------------------------------------------
+
+    def _schedule_expiry(self, live_id: str, deadline: datetime) -> None:
+        old = self._expiry.pop(live_id, None)
+        if old is not None:
+            old.cancel()
+        self._expiry[live_id] = asyncio.create_task(
+            self._expire_at(live_id, deadline), name=f"expire-{live_id}"
+        )
+
+    async def _expire_at(self, live_id: str, deadline: datetime) -> None:
+        try:
+            await asyncio.sleep(max(0.0, (deadline - self._now()).total_seconds()))
+            await self.expire(live_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.exception("expiry of %s failed", live_id)
+            self._note_error(f"expiry of {live_id} failed: {exc}")
+        finally:
+            if self._expiry.get(live_id) is asyncio.current_task():
+                del self._expiry[live_id]
+
+    async def _after_resolution(self, live_id: str, entry: LedgerEntry) -> None:
+        run = self._run_of.get(live_id)
+        if run is not None:
+            run.pending.discard(live_id)
+            self._maybe_done(run)
+            await asyncio.to_thread(self._save_run, run)
+        event = self._events.get(live_id)
+        if event is None or run is None or run.ctx is None:
+            return
+        view = await self._engine(
+            partial(
+                self.ledger.view,
+                run_id=entry.run_id,
+                customer_id=entry.customer_id,
+                card_id=entry.card_id,
+                at=entry.ts_sim,
+                period_days=period_days_of(run.ctx.policy),
+            )
+        )
+        self._notify(to_api_decision(event, entry, view))
+
+    # Event feed --------------------------------------------------------------------------
+
+    async def _sync_events(self) -> None:
+        try:
+            reply = await self.client.events(since=self._cursor)
+        except VisecaError as exc:
+            log.warning("event feed unavailable: %s", exc)
+            return
+        if isinstance(reply, list):
+            items, next_cursor = reply, None
+        elif isinstance(reply, dict):
+            items = next((v for k in ("events", "data", "items") if isinstance(v := reply.get(k), list)), [])
+            next_cursor = reply.get("next_cursor")
+        else:
+            items, next_cursor = [], None
+        async with self._resolution_lock:
+            for item in items:
+                if isinstance(item, dict):
+                    await self._check_feed_item(item)
+        if next_cursor is not None:
+            self._cursor = next_cursor
+
+    async def _check_feed_item(self, item: dict[str, Any]) -> None:
+        live_id = first_value(item, "authorization_id")
+        status = item.get("status") or item.get("decision")
+        platform = _FEED_FINAL.get(str(status).lower()) if status else None
+        if not isinstance(live_id, str) or platform is None:
+            return
+        entry = await self._engine(self.ledger.get, live_id)
+        if entry is None:
+            return
+        ours = _ledger_status(entry)
+        if ours == platform or (live_id, platform) in self._feed_seen:
+            return
+        self._feed_seen.add((live_id, platform))
+        log.warning("event feed mismatch on %s: Viseca %s, ledger %s", live_id, platform, ours)
+        self._feed_mismatches.append(
+            EvidenceRow(
+                rule="ledger_mismatch",
+                outcome="info",
+                detail=f"Viseca's event feed shows {live_id} as {platform}; our ledger has it as {ours}.",
+                source="ledger",
+            )
+        )
+
+    # Store -------------------------------------------------------------------------------
+
+    def _save_event(
+        self, run_id: str, data: dict[str, Any], received_at: datetime, deadline_at: datetime
+    ) -> None:
+        auth = data["authorization"]
+        with session(self._db_engine) as s:
+            if s.get(EventRaw, auth["authorization_id"]) is not None:
+                return
+            s.add(
+                EventRaw(
+                    live_authorization_id=auth["authorization_id"],
+                    run_id=run_id,
+                    source_authorization_id=auth["source_authorization_id"],
+                    received_at=received_at,
+                    deadline_at=deadline_at,
+                    event=data,
+                )
+            )
+
+    def _save_run(self, run: RunState) -> None:
+        status = run.status()
+        with session(self._db_engine) as s:
+            s.merge(
+                Run(
+                    run_id=run.run_id,
+                    viseca_run_id=run.viseca_run_id,
+                    kind="live",
+                    scenario_id=run.scenario_id,
+                    mandate_id=run.mandate_id or run.viseca_mandate_id or "",
+                    card_id=run.card_id or "",
+                    state=run.state,
+                    delivered=status.delivered,
+                    decided=status.decided,
+                    pending_human=status.pending_human,
+                    total=status.total,
+                    started_at=run.started_at,
+                    finished_at=run.finished_at,
+                    worker_last_poll_at=self._last_poll_at,
+                    last_error=run.last_error,
+                )
+            )
+
+    def _mark_mandate_revoked(self, viseca_mandate_id: str) -> None:
+        with session(self._db_engine) as s:
+            for mandate in s.scalars(select(Mandate).where(Mandate.viseca_mandate_id == viseca_mandate_id)):
+                if mandate.status != "revoked":
+                    mandate.status = "revoked"
+                    mandate.revoked_at = self._now()
+
+    # Helpers -----------------------------------------------------------------------------
+
+    def _notify(self, decision: api.Decision) -> None:
+        for listener in self._listeners:
+            try:
+                listener(decision)
+            except Exception:
+                log.exception("decision listener failed")
+
+    def _note_error(self, message: str) -> None:
+        self._last_error = message
+        log.error("%s", message)
+
+
+def _resolved_by_row(by: Literal["customer", "timeout"]) -> dict[str, Any]:
+    return {"rule": "resolved_by", "outcome": "info", "detail": by, "source": "ledger"}
+
+
+def _ledger_status(entry: LedgerEntry) -> str:
+    if entry.outcome == "approve":
+        return "approved"
+    if entry.outcome == "decline":
+        return "declined"
+    if not entry.final:
+        return "pending"
+    return "approved" if entry.uncertain_outcome == "approved" else "declined"
