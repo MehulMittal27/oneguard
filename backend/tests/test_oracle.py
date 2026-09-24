@@ -18,7 +18,6 @@ import re
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -32,12 +31,11 @@ from oneguard.engine.ledger_base import InMemoryLedger, Ledger
 from oneguard.engine.types import Policy
 from oneguard.pipeline import PipelineContext, decide_event
 from oneguard.replay.events import Pack, build_events
+from oneguard.replay.oracle import ORACLE, Branch, branches, expected_outcome
 from oneguard.store import seed as seed_module
 from oneguard.store.db import init_db, make_engine, session
 from oneguard.store.history import StoreHistoryIndex
 
-REPO = Path(__file__).resolve().parents[2]
-ORACLE = yaml.safe_load((REPO / "docs" / "acceptance-oracle.yaml").read_text(encoding="utf-8"))
 NOW = datetime(2026, 9, 25, 12, 0, 0, tzinfo=UTC)  # real clock, deadlines only
 POLICIES = Path(__file__).parent / "fixtures" / "policies"
 OUTCOMES = {"approve", "decline", "step_up"}
@@ -53,57 +51,6 @@ LIMIT_WORDING = (  # docs/api-contract.md §3.9
     re.compile(r"^Total at or below CHF [\d,']+(\.\d+)? per order$", re.IGNORECASE),
     re.compile(r"^Total at or below CHF [\d,']+(\.\d+)? across any \d+ days$", re.IGNORECASE),
 )
-
-
-# --- reading the oracle -------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Branch:
-    """One way the customer answers an earlier step-up that a later row depends on."""
-
-    label: str
-    authorization_id: str  # source id of the step-up being answered
-    answer: str  # approve | pending | decline
-
-
-def _branch_answer(condition: str) -> tuple[str, str]:
-    source_id, _, rest = condition.partition(" ")
-    if "approval" in rest:
-        return source_id, "approve"
-    if "pending" in rest:
-        return source_id, "pending"
-    if "declined" in rest or "expired" in rest:
-        return source_id, "decline"
-    raise ValueError(f"unreadable depends condition: {condition!r}")
-
-
-def branches(scenario_id: str) -> list[Branch | None]:
-    """Every `depends` branch in a scenario, or [None] when nothing depends."""
-    found = []
-    for row in ORACLE["scenarios"][scenario_id]["purchases"]:
-        for option in row.get("depends", []):
-            source_id, answer = _branch_answer(option["if"])
-            found.append(Branch(option["if"], source_id, answer))
-    return found or [None]
-
-
-def expected_outcome(row: dict, branch: Branch | None, defaults: dict) -> str:
-    """The outcome for one oracle row under the team's defaults and a depends branch."""
-    if "depends" in row:
-        assert branch is not None, f"{row['id']} depends on an earlier answer"
-        for option in row["depends"]:
-            if _branch_answer(option["if"]) == (branch.authorization_id, branch.answer):
-                return option["outcome"]
-        raise AssertionError(f"{row['id']}: no depends option for {branch.label}")
-    outcome = row["outcome"]
-    for question, alternative in row.get("alt", {}).items():
-        chosen = defaults[question]
-        if isinstance(alternative, dict):  # {q7_known_shop: {card: decline}}
-            outcome = alternative.get(chosen, outcome)
-        elif chosen == alternative:  # {q10_a6_without_c10: decline}
-            outcome = alternative
-    return outcome
 
 
 def load_policy(scenario_id: str) -> dict:

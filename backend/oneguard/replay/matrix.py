@@ -1,105 +1,135 @@
-"""The 45-row replay matrix for the slide: ``python -m oneguard.replay.matrix`` (``make matrix``).
+"""The replay matrix: every public purchase, its decision and message (docs/replay-matrix.md).
 
-Every public purchase through the real pipeline (``runner.decide_all``: fresh
-``StoreLedger`` per scenario, every engine lane registered), once with soft signals on
-and once off, next to the acceptance oracle. Prints markdown: a summary, then one row
-per purchase with the outcome, the oracle's outcome, whether they match, whether
-signals off gave the same outcome, and the message the customer sees.
+    make matrix    # python -m oneguard.replay.matrix --out ../docs/replay-matrix.md
 
-Test tooling like the rest of ``replay/``: it may read scenario ids, the hand-built
-policy fixtures and the oracle. Step-ups are never answered, so an oracle row that
-depends on an earlier answer is read in its "left pending" branch, else its "no yes"
-branch (as tests/test_replay_via_api.py does).
+Every scenario through the real pipeline (``runner.decide_all``: a fresh seeded store and
+``StoreLedger`` per run, every engine lane registered) with its policy fixture, once with
+soft signals on (the ``keywords`` backend, whatever ``ONEGUARD_SOFT_SIGNALS`` says, so the
+file does not depend on the shell) and once off. Step-ups are never answered (CLAUDE.md
+rule 6), so an oracle row that depends on an earlier answer is read in its unanswered
+branch, as tests/test_replay_via_api.py does. The output is deterministic: no date or
+commit, so tests/test_replay_matrix.py can fail when the committed file is stale.
+
+Exits 1 when an outcome differs from the oracle or signals off moves an outcome.
+Test tooling like the rest of ``replay/``: it reads scenario ids, the policy fixtures and
+the oracle.
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-
+from oneguard.engine import signals
 from oneguard.replay.events import Pack
-from oneguard.replay.runner import _cell, decide_all, load_policy
+from oneguard.replay.oracle import unanswered_branch, unanswered_outcomes
+from oneguard.replay.runner import Decided, _cell, decide_all, load_policy
 
 BACKEND = Path(__file__).resolve().parents[2]
 POLICIES = BACKEND / "tests" / "fixtures" / "policies"
-ORACLE = BACKEND.parent / "docs" / "acceptance-oracle.yaml"
-LEADS = {"approve": "approve", "decline": "decline", "step_up": "ask"}
+DOC = BACKEND.parent / "docs" / "replay-matrix.md"
 
 
-def _unanswered(condition: str) -> int:
-    """Preference for the branch nobody answered: pending first, then decline/expired."""
-    if "pending" in condition:
-        return 0
-    if "declined" in condition or "expired" in condition:
-        return 1
-    return 2
+@dataclass(frozen=True)
+class Row:
+    decided: Decided
+    expected: str  # the oracle's outcome, step-ups unanswered
+    off: str  # the outcome with soft signals off
 
 
-def expected_outcomes(oracle: dict) -> dict[str, str]:
-    """Source id → the oracle's outcome under its defaults, step-ups left unanswered."""
-    expected = {}
-    for scenario in oracle["scenarios"].values():
-        for row in scenario["purchases"]:
-            if "depends" in row:
-                option = min(row["depends"], key=lambda o: _unanswered(o["if"]))
-                expected[row["id"]] = option["outcome"]
-            else:
-                expected[row["id"]] = row["outcome"]
-    return expected
+@contextmanager
+def _keyword_signals() -> Iterator[None]:
+    """Soft signals on means the deterministic keyword backend for the matrix."""
+    backend = signals.BACKEND
+    signals.BACKEND = signals.KeywordSignals()
+    try:
+        yield
+    finally:
+        signals.BACKEND = backend
 
 
-def build(pack: Pack, policies: Path, oracle: dict) -> tuple[list[str], list[dict]]:
-    expected = expected_outcomes(oracle)
+def build(pack: Pack, policies: Path = POLICIES) -> list[Row]:
     rows = []
-    for scenario_id in pack.scenario_ids():
-        policy = load_policy(policies / f"{scenario_id}.yaml", mandate_id=f"TM_REPLAY_{scenario_id}")
-        on = decide_all(pack, scenario_id, policy, signals=True)
-        off = {source: outcome for source, outcome, _, _ in decide_all(pack, scenario_id, policy, signals=False)}
-        for source, outcome, message, counterfactual in on:
-            rows.append({
-                "id": source, "scenario": scenario_id, "outcome": outcome,
-                "expected": expected.get(source, "?"), "off": off[source],
-                "message": message, "counterfactual": counterfactual,
-            })  # fmt: skip
-    totals = Counter(r["outcome"] for r in rows)
-    matched = sum(r["outcome"] == r["expected"] for r in rows)
-    same = sum(r["outcome"] == r["off"] for r in rows)
-    summary = [
-        f"- Purchases: {len(rows)}",
-        f"- Outcomes: {totals['approve']} approve, {totals['decline']} decline, {totals['step_up']} ask",
-        f"- Oracle match: {matched}/{len(rows)}",
-        f"- Signals off vs on: {same}/{len(rows)} identical",
-    ]
-    return summary, rows
+    with _keyword_signals():
+        for scenario_id in pack.scenario_ids():
+            policy = load_policy(policies / f"{scenario_id}.yaml", mandate_id=f"TM_REPLAY_{scenario_id}")
+            expected = unanswered_outcomes(scenario_id)
+            off = {d.source_id: d.outcome for d in decide_all(pack, scenario_id, policy, signals=False)}
+            for decided in decide_all(pack, scenario_id, policy, signals=True):
+                rows.append(Row(decided, expected[decided.source_id], off[decided.source_id]))
+    return rows
 
 
-def markdown(summary: list[str], rows: list[dict]) -> str:
-    lines = ["# Replay matrix", "", *summary, "",
-             "| ID | Scenario | Outcome | Oracle | Match | Signals off | Message |",
-             "|---|---|---|---|---|---|---|"]  # fmt: skip
+def problems(rows: list[Row]) -> list[str]:
+    """Every row that differs from the oracle or moves with signals off."""
+    found = []
     for r in rows:
-        match = "✓" if r["outcome"] == r["expected"] else "✗"
-        off = "same" if r["off"] == r["outcome"] else LEADS.get(r["off"], r["off"])
-        message = r["message"]  # explain already ends a decline with its counterfactual
-        lines.append(
-            f"| {r['id']} | {r['scenario']} | {LEADS[r['outcome']]} | {LEADS.get(r['expected'], r['expected'])} "
-            f"| {match} | {off} | {_cell(message)} |"
-        )
-    return "\n".join(lines)
+        d = r.decided
+        if d.outcome != r.expected:
+            found.append(f"{d.source_id}: {d.outcome}, the oracle says {r.expected}")
+        if d.outcome != r.off:
+            found.append(f"{d.source_id}: {d.outcome} with signals on, {r.off} with signals off")
+    return found
+
+
+def markdown(pack: Pack, rows: list[Row]) -> str:
+    total = len(rows)
+    totals = Counter(r.decided.outcome for r in rows)
+    matched = sum(r.decided.outcome == r.expected for r in rows)
+    identical = sum(r.decided.outcome == r.off for r in rows)
+    read = [(s, unanswered_branch(s)) for s in pack.scenario_ids()]
+    branches = "; ".join(f'{s} "{b.label}"' for s, b in read if b is not None) or "none"
+    lines = [
+        "# Replay matrix with messages",
+        "",
+        (
+            f"All {total} public purchases through the real pipeline (`pipeline.decide_event`), one run per "
+            "scenario with a fresh ledger. Generated by `make matrix` (`backend/oneguard/replay/matrix.py`); "
+            "`tests/test_replay_matrix.py` fails when this file is stale."
+        ),
+        "",
+        "| | |",
+        "|---|---|",
+        "| Ledger | store (`engine.ledger.StoreLedger`, temp SQLite) |",
+        (
+            "| Soft signals | on (`ONEGUARD_SOFT_SIGNALS=keywords`); a second run with signals off gives "
+            "identical outcomes |"
+        ),
+        f"| Step-ups | never answered; oracle branches read: {branches} |",
+        f"| Outcomes | {totals['approve']} approve, {totals['decline']} decline, {totals['step_up']} step_up |",
+        f"| Oracle match | {matched}/{total} |",
+        f"| Signals off vs on | {identical}/{total} identical outcomes |",
+        "",
+        "| ID | Decision | Reason codes | Message |",
+        "|---|---|---|---|",
+    ]  # fmt: skip
+    for r in rows:
+        d = r.decided
+        lines.append(f"| {d.source_id} | {d.outcome} | {', '.join(d.reason_codes)} | {_cell(d.message)} |")
+    return "\n".join(lines) + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Print the 45-row replay matrix as markdown.")
+    parser = argparse.ArgumentParser(description="The replay matrix as markdown (docs/replay-matrix.md).")
     parser.add_argument("--policies", type=Path, default=POLICIES, help="folder of <scenario>.yaml policies")
-    parser.add_argument("--oracle", type=Path, default=ORACLE, help="acceptance oracle YAML")
+    parser.add_argument("--out", type=Path, help="write the matrix here instead of stdout")
     args = parser.parse_args(argv)
-    oracle = yaml.safe_load(args.oracle.read_text(encoding="utf-8"))
-    summary, rows = build(Pack.load(), args.policies, oracle)
-    print(markdown(summary, rows))
-    return 0 if all(r["outcome"] == r["expected"] for r in rows) else 1
+    pack = Pack.load()
+    rows = build(pack, args.policies)
+    text = markdown(pack, rows)
+    if args.out:
+        args.out.write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.write(text)
+    found = problems(rows)
+    for problem in found:
+        print(problem, file=sys.stderr)
+    return 1 if found else 0
 
 
 if __name__ == "__main__":

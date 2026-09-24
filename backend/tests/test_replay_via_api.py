@@ -18,32 +18,13 @@ import pytest
 
 from oneguard.llm.provider import NullProvider
 from oneguard.replay.events import Pack
+from oneguard.replay.oracle import ORACLE, unanswered_outcomes
 from oneguard.store import seed as seed_module
 from oneguard.store.db import make_engine
 from tests.test_api_contract import Running, running, until
-from tests.test_oracle import ORACLE, Branch, branches, expected_outcome
 
 OUTCOME = {"approved": "approve", "stopped": "decline", "uncertain": "step_up"}
 CAUTION = {"approve": 0, "step_up": 1, "decline": 2}
-
-
-def unanswered_branch(scenario_id: str) -> Branch | None:
-    """The oracle branch in which no earlier step-up was answered yes: 'pending' when the
-    oracle has one, else 'declined or expired' (a missing yes keeps the watch on)."""
-    options = [b for b in branches(scenario_id) if b is not None]
-    for answer in ("pending", "decline"):
-        for branch in options:
-            if branch.answer == answer:
-                return branch
-    return None
-
-
-def expected(scenario_id: str) -> dict[str, str]:
-    branch = unanswered_branch(scenario_id)
-    return {
-        row["id"]: expected_outcome(row, branch, ORACLE["defaults"])
-        for row in ORACLE["scenarios"][scenario_id]["purchases"]
-    }
 
 
 def scenario_cards(pack: Pack) -> dict[str, tuple[str, str]]:
@@ -118,7 +99,7 @@ def test_every_engine_lane_is_real(api_run):
 @pytest.mark.parametrize("scenario_id", sorted(ORACLE["scenarios"]))
 def test_c6_outcomes_equal_the_oracle(api_run, scenario_id):
     actual = {source: OUTCOME[row["decision"]] for source, row in api_run[scenario_id].items()}
-    assert actual == expected(scenario_id)
+    assert actual == unanswered_outcomes(scenario_id)
 
 
 def test_all_45_purchases_are_in_the_customer_feed(api_run):

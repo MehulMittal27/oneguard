@@ -1,30 +1,49 @@
-"""replay/matrix.py: the slide's 45-row matrix (make matrix)."""
+"""replay/matrix.py: docs/replay-matrix.md is the matrix the pipeline gives today (make matrix)."""
 
 from __future__ import annotations
 
-import yaml
+import pytest
 
+from oneguard.engine import signals
 from oneguard.replay import matrix
-from tests.test_replay_via_api import expected
+from oneguard.replay.events import Pack
+from oneguard.replay.runner import Decided
 
 
-def test_expected_outcomes_read_the_unanswered_branch_like_the_api_test():
-    oracle = yaml.safe_load(matrix.ORACLE.read_text(encoding="utf-8"))
-    mine = matrix.expected_outcomes(oracle)
-    assert len(mine) == 45
-    for scenario_id in oracle["scenarios"]:
-        assert {i: mine[i] for i in expected(scenario_id)} == expected(scenario_id), scenario_id
+@pytest.fixture(scope="module")
+def pack() -> Pack:
+    return Pack.load()
 
 
-def test_markdown_has_a_summary_and_one_row_per_purchase():
-    rows = [
-        {"id": "AU1", "scenario": "S", "outcome": "approve", "expected": "approve", "off": "approve",
-         "message": "Approved CHF 1.00: ok.", "counterfactual": ""},
-        {"id": "AU2", "scenario": "S", "outcome": "step_up", "expected": "decline", "off": "decline",
-         "message": "Waiting for you CHF 2.00: a | b.", "counterfactual": "x"},
-    ]  # fmt: skip
-    text = matrix.markdown(["- Oracle match: 1/2"], rows)
-    lines = text.splitlines()
-    assert lines[0] == "# Replay matrix" and "- Oracle match: 1/2" in lines
-    assert "| AU1 | S | approve | approve | ✓ | same | Approved CHF 1.00: ok. |" in lines
-    assert "| AU2 | S | ask | decline | ✗ | decline | Waiting for you CHF 2.00: a \\| b. |" in lines
+@pytest.fixture(scope="module")
+def rows(pack: Pack) -> list[matrix.Row]:
+    return matrix.build(pack)
+
+
+def test_every_public_purchase_matches_the_oracle_with_signals_on_and_off(rows):
+    assert len(rows) == 45
+    assert matrix.problems(rows) == []
+
+
+def test_the_committed_matrix_is_current(pack, rows):
+    """A change to a decision, reason code or message regenerates the file: `make matrix`."""
+    assert matrix.DOC.read_text(encoding="utf-8") == matrix.markdown(pack, rows), "run `make matrix`"
+
+
+def test_the_matrix_uses_keyword_signals_whatever_the_environment(monkeypatch):
+    monkeypatch.setattr(signals, "BACKEND", signals.select_backend("off"))
+    with matrix._keyword_signals():
+        assert isinstance(signals.BACKEND, signals.KeywordSignals)
+    assert not isinstance(signals.BACKEND, signals.KeywordSignals)
+
+
+def test_problems_names_an_oracle_miss_and_a_signal_move():
+    decided = Decided("AU1", "step_up", ["x"], "Waiting for you: a | b.", "")
+    found = matrix.problems([matrix.Row(decided, expected="decline", off="approve")])
+    assert found == ["AU1: step_up, the oracle says decline", "AU1: step_up with signals on, approve with signals off"]
+
+
+def test_a_pipe_in_a_message_stays_in_its_cell(pack):
+    decided = Decided("AU1", "step_up", ["a", "b"], "Waiting for you: a | b.", "")
+    text = matrix.markdown(pack, [matrix.Row(decided, expected="step_up", off="step_up")])
+    assert "| AU1 | step_up | a, b | Waiting for you: a \\| b. |" in text.splitlines()
