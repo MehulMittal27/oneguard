@@ -316,10 +316,13 @@ export function Home({
                   <button
                     key={cardId}
                     type="button"
-                    // Straight into the New policy flow, the same path Accounts'
-                    // "+ Add policy" takes. Routing to Card detail instead left a
-                    // customer with no policy staring at "Nothing found for card".
-                    onClick={() => onAddPolicy(cardId)}
+                    // A card that never had a policy has no Card detail to show —
+                    // routing there left the customer staring at "Nothing found for
+                    // card" — so it goes straight into the New policy flow, the same
+                    // path Accounts takes. A revoked card does have a mandate in
+                    // state (D-044), so it still opens Card detail, where its old
+                    // checks and its own "Add policy" button both live.
+                    onClick={() => (revoked ? onViewPolicy(cardId) : onAddPolicy(cardId))}
                     className="flex min-h-16 w-full items-center gap-4 rounded-row px-4 py-3 text-left"
                   >
                     <span className="flex size-9.5 shrink-0 items-center justify-center rounded-full bg-asked-tint text-asked">
@@ -334,8 +337,16 @@ export function Home({
                       </span>
                     </span>
                     <span className="flex shrink-0 items-center gap-1 text-[13px] font-semibold text-ink">
-                      <PlusIcon size={14} strokeWidth={2.4} />
-                      Add policy
+                      {revoked ? (
+                        <span className="rotate-180 text-ink-muted">
+                          <BackChevronIcon size={18} strokeWidth={2} />
+                        </span>
+                      ) : (
+                        <>
+                          <PlusIcon size={14} strokeWidth={2.4} />
+                          Add policy
+                        </>
+                      )}
                     </span>
                   </button>
                 ))}

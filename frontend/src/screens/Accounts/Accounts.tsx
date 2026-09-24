@@ -149,7 +149,7 @@ export function Accounts({
                   <button
                     key={card.card_id}
                     type="button"
-                    onClick={() => (mandate ? onViewCard(card.card_id) : onAddPolicy(card.card_id))}
+                    onClick={() => (isActive ? onViewCard(card.card_id) : onAddPolicy(card.card_id))}
                     className={`flex min-h-[72px] items-center gap-3 rounded-[18px] p-3 text-left ${
                       isActive
                         ? 'border-2 border-ink'
@@ -180,19 +180,24 @@ export function Accounts({
                           <BackChevronIcon size={18} strokeWidth={2} />
                         </span>
                       </span>
-                    ) : isRevoked ? (
-                      // Gray, not stopped-red (D-052) — a revoked policy isn't
-                      // a declined purchase, it's just not active.
-                      <span className="shrink-0 rounded-pill bg-surface-expired px-2.5 py-1 text-[12px] font-semibold text-ink-muted">
-                        Policy revoked
-                      </span>
                     ) : (
                       // Neither a no-policy nor a revoked card is a detail view
                       // to browse — both need a new policy next, so both say
-                      // that instead of a chevron (D-051, D-052).
+                      // that instead of a chevron (D-051, D-052). One row, one
+                      // pill, one way forward: a revoked card used to show its
+                      // status and nothing to do about it, so writing a new
+                      // policy meant going through Card detail first.
                       <span className="flex shrink-0 items-center gap-1.5">
-                        <span className="rounded-pill bg-asked-tint px-2.5 py-1 text-[12px] font-semibold text-asked">
-                          No policy
+                        <span
+                          className={`rounded-pill px-2.5 py-1 text-[12px] font-semibold ${
+                            isRevoked
+                              ? // Gray, not stopped-red (D-052) — a revoked policy
+                                // isn't a declined purchase, it's just not active.
+                                'bg-surface-expired text-ink-muted'
+                              : 'bg-asked-tint text-asked'
+                          }`}
+                        >
+                          {isRevoked ? 'Policy revoked' : 'No policy'}
                         </span>
                         <span className="flex items-center gap-1 text-[13px] font-semibold text-ink">
                           <PlusIcon size={14} strokeWidth={2.4} />
