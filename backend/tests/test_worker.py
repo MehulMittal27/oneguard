@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import threading
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -22,6 +23,7 @@ from sqlalchemy import Engine, func, select
 
 from oneguard.api import models as api
 from oneguard.engine import stubs
+from oneguard.engine.types import Policy
 from oneguard.store import seed as seed_module
 from oneguard.store.db import make_engine, session
 from oneguard.store.history import StoreHistoryIndex
@@ -31,6 +33,7 @@ from oneguard.viseca.worker import (
     NotAwaitingAnswer,
     VisecaWorker,
     WindowClosed,
+    overrun_setting,
     timeout_message,
 )
 from tests.fake_viseca import FakeConfig, FakeViseca
@@ -91,9 +94,13 @@ async def harness(
 
 
 async def start_run(
-    client: VisecaClient, worker: VisecaWorker, scenario_id: str, hard_rules: list | None = None
+    client: VisecaClient,
+    worker: VisecaWorker,
+    scenario_id: str,
+    hard_rules: list | None = None,
+    uncertainty: str = "ask",
 ) -> tuple[str, str]:
-    draft = await client.create_mandate("Test instruction.", hard_rules or [], "ask")
+    draft = await client.create_mandate("Test instruction.", hard_rules or [], uncertainty)
     mandate = await client.confirm_mandate(draft["draft_id"])
     run = await client.create_run(scenario_id, mandate["mandate_id"])
     worker.track_run(run["run_id"], scenario_id=scenario_id, viseca_mandate_id=mandate["mandate_id"])
@@ -363,9 +370,12 @@ def test_a_request_failing_the_event_schema_is_declined(db: Engine, history: Sto
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("uncertainty", ["ask", "approve"])
 def test_an_engine_over_budget_posts_a_step_up_before_the_deadline_that_expires_unanswered(
-    db: Engine, history: StoreHistoryIndex
+    db: Engine, history: StoreHistoryIndex, uncertainty: str
 ) -> None:
+    """ask and approve both step up: approve is never automatic (D2, D3)."""
+
     def slow_facts(event: dict, index: Any) -> Any:
         time.sleep(1.5)
         return stubs.build_facts(event, index)
@@ -377,7 +387,7 @@ def test_an_engine_over_budget_posts_a_step_up_before_the_deadline_that_expires_
             db, config, history=history, implementations=functions, budget_ms=100
         ) as (fake, client, worker):
             await worker.start()
-            _, run_id = await start_run(client, worker, "SCEN0000")
+            _, run_id = await start_run(client, worker, "SCEN0000", uncertainty=uncertainty)
             (auth,) = fake.runs[run_id].auths
             await wait_until(lambda: bool(auth.decisions), timeout=5)
             assert not auth.auto_declined
@@ -409,6 +419,63 @@ def test_an_engine_over_budget_posts_a_step_up_before_the_deadline_that_expires_
             assert len(auth.decisions) == 1
 
     asyncio.run(scenario())
+
+
+def test_an_engine_over_budget_under_a_decline_setting_posts_a_final_decline(
+    db: Engine, history: StoreHistoryIndex
+) -> None:
+    release = threading.Event()
+
+    def slow_facts(event: dict, index: Any) -> Any:
+        release.wait(5)
+        return stubs.build_facts(event, index)
+
+    async def scenario() -> None:
+        functions = {**stubs.STUBS, "build_facts": slow_facts}
+        config = fast(decision_deadline_s=1.2, human_window_s=2.0)
+        async with harness(
+            db, config, history=history, implementations=functions, budget_ms=100
+        ) as (fake, client, worker):
+            await worker.start()
+            _, run_id = await start_run(client, worker, "SCEN0000", uncertainty="decline")
+            (auth,) = fake.runs[run_id].auths
+            await wait_until(lambda: bool(auth.decisions), timeout=5)
+            assert not auth.auto_declined
+            (posted,) = auth.decisions
+            assert posted["decision"] == "decline" and posted["reason_codes"] == ["unevaluable"]
+            assert posted["customer_message"] == (
+                "Declined: we could not finish checking this purchase in time, so nothing was approved."
+            )
+            assert posted["evidence"][0]["rule"] == "engine"
+
+            # the late engine result stores the claimed decline: final, nothing reserved
+            release.set()
+            deadline = time.monotonic() + 5
+            while not (entries := await worker.ledger_entries([auth.live_id])):
+                assert time.monotonic() < deadline, "the overrun decline was never recorded"
+                await asyncio.sleep(0.02)
+            (entry,) = entries
+            assert (entry.outcome, entry.final, entry.uncertain_outcome) == ("decline", True, None)
+            assert entry.reason_codes == ["unevaluable"]
+            assert entry.reserved_chf == 0.0 and entry.spent_chf == 0.0
+            assert entry.deadline_at is None
+            assert worker.status().pending_step_ups == 0
+            assert auth.live_id not in worker._expiry
+
+            # no expiry fires: nothing more is posted after the human window
+            await asyncio.sleep(2.5)
+            assert not auth.resolutions and len(auth.decisions) == 1
+
+    asyncio.run(scenario())
+
+
+def test_an_overrun_treats_a_missing_or_unknown_uncertainty_setting_as_ask() -> None:
+    policy = Policy(mandate_id="M1", status="active", instruction="", rules=[], uncertainty_policy="ask")
+    for setting in (None, "maybe"):
+        odd = Policy.model_construct(**{**dict(policy), "uncertainty_policy": setting})
+        assert overrun_setting(odd) == "ask"
+    for setting in ("ask", "decline", "approve"):
+        assert overrun_setting(policy.model_copy(update={"uncertainty_policy": setting})) == setting
 
 
 def test_the_customer_can_answer_an_overrun_step_up(db: Engine, history: StoreHistoryIndex) -> None:
