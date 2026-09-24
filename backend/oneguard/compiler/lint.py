@@ -255,11 +255,11 @@ def lint_accepted(rules: list[Rule], accepted_ids: list[str]) -> LintResult:
     accepted = set(accepted_ids)
     kept = [r for r in rules if r.id in accepted]
     issues = [
-        LintIssue(code="exact_check_dropped", rule_id=r.id, message=f'"{r.text}" is what you asked for')
+        LintIssue(code="exact_check_dropped", rule_id=r.id, message=f'you stated "{r.text}" and it was left out')
         for r in rules if r.source == "exact" and r.id not in accepted
     ]
     if not _has_amount_cap(kept):
         issues.insert(0, LintIssue(code="no_amount_cap", rule_id="per_order_limit",
-                                   message="A per-order amount limit is required"))
+                                   message="the policy needs a limit on what one purchase may cost"))
     issues += _bounds_conflict(kept)
     return LintResult(issues=issues)

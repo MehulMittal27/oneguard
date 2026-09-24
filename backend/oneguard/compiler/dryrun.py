@@ -58,7 +58,7 @@ def _check(rule: Rule, row: HistoryRow, prior: list[HistoryRow], known: set[str]
     if f == "merchant.merchant_country":
         ok = (row.merchant_country == rule.value) == (op == "=")
         return ("fit" if ok else "violate", f"shop in {row.merchant_country}")
-    if f == KNOWN_SHOP_FIELD:
+    if f in (KNOWN_SHOP_FIELD, "merchant.known_shop"):  # api-contract §3.3: the same check
         ok = row.merchant_id in known
         return ("fit" if ok else "violate", "a shop you know" if ok else "a shop you have not bought from")
     if f == "authorization.weekday":
