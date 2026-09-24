@@ -28,17 +28,20 @@ from oneguard.compiler.draft import (
     ParsedDraft,
     RuleSpec,
     finalize,
+    last_price_at_shop,
     next_weekday,
     number,
 )
 from oneguard.compiler.lint import stated_boundary
 from oneguard.compiler.parser import (
     each_is_per_purchase,
+    excluded_item_categories,
     is_product_question,
+    price_change_clause,
     product_categories,
     product_question,
 )
-from oneguard.compiler.resolve import last_price
+from oneguard.compiler.resolve import at_several_shops, last_price
 from oneguard.engine.types import HistoryIndex
 from oneguard.llm.provider import Provider
 
@@ -67,7 +70,8 @@ SCHEMA: dict[str, Any] = {
                     "value_number": _NULLABLE({"type": "number"}),
                     "value_text": _NULLABLE({"type": "string"}),
                     "value_list": _NULLABLE({"type": "array", "items": {"type": "string"}}),
-                    "value_from": {"type": "string", "enum": ["literal", "last_price", "next_weekday"]},
+                    "value_from": {"type": "string",
+                                   "enum": ["literal", "last_price", "last_price_at_shop", "next_weekday"]},
                     "currency": _NULLABLE({"type": "string", "enum": ["CHF", "EUR", "GBP", "USD"]}),
                     "scope": _NULLABLE({"type": "string", "enum": ["purchase", "period"]}),
                     "period_days": _NULLABLE({"type": "integer"}),
@@ -201,8 +205,9 @@ EXAMPLES: list[tuple[str, dict[str, Any]]] = [
                 _example_rule(KNOWN_SHOP_FIELD, "=", "No new services", value_text="true"),
                 _example_rule("unverifiable", "=", "no premium tiers", value_text="no premium tiers"),
                 _example_rule("items[].item_category", "not_in", "no gift cards", value_list=["gift_card"]),
-                _example_rule("unverifiable", "=", "If a price changes, ask me",
-                              value_text="the price has not changed since last time", on_fail="ask"),
+                _example_rule("authorization.billing_amount_chf", "=", "If a price changes, ask me",
+                              value_from="last_price_at_shop", currency="CHF", scope="purchase",
+                              source="inferred", on_fail="ask"),
             ],
             "open_questions": ["No amount stated: what is the most one purchase may cost?"],
         },
@@ -367,8 +372,10 @@ Rules:
   item word inside it ("one lunch delivery a day") is still its own items[].item_category rule.
 - A booking: the category (hotel), the place and the dates (unverifiable, one rule each), the
   price per night (items[].unit_price_chf), "refundable rate" -> order.order_cancellable "true".
-- "If a price changes, ask me" with no single price stated -> an unverifiable rule, value_text
-  "the price has not changed since last time", on_fail "ask".
+- "If a price changes, ask me" with no single price stated (several subscriptions) ->
+  authorization.billing_amount_chf "=", value_from "last_price_at_shop", value_number null,
+  currency "CHF", scope "purchase", source "inferred", on_fail "ask": each payment is compared
+  with the last price paid at the same shop.
 - "If the session looks unusual ... stop and ask me" is not a rule: those checks always run.
 - words: the customer's phrase for this rule, copied verbatim from the instruction.
 - source "exact" when the customer said it directly, "inferred" when you mapped it (lunch -> dining).
@@ -424,11 +431,17 @@ def _convert(
     common: dict[str, Any] = {"field": field, "operator": op, "words": words or shown, "source": source,
                               "on_fail": raw["on_fail"]}
     value_from = raw["value_from"]
+    meant = requested_item or instruction  # what "last time" points at: the parser's words
 
+    if value_from == "last_price_at_shop" or (value_from == "last_price" and history is not None
+                                               and at_several_shops(history, card_id, meant)):
+        if field != "authorization.billing_amount_chf":
+            return None, unreadable
+        return last_price_at_shop(words or shown, operator=op, on_fail=raw["on_fail"]), None
     if value_from == "last_price":
         if field != "authorization.billing_amount_chf" or history is None:
             return None, unreadable
-        found = last_price(history, card_id, requested_item or words or instruction)
+        found = last_price(history, card_id, meant)
         if found is None:
             return None, f'I found no earlier purchase for "{requested_item or shown}": what price should I expect?'
         price, row = found
@@ -478,6 +491,10 @@ def _convert(
         return RuleSpec(**common, value=list(dict.fromkeys(values))), None
     text = (raw["value_text"] or "").strip()
     if field == "unverifiable":
+        if price_change_clause(words) and raw["on_fail"] == "ask":  # the price-change clause has a field now
+            return last_price_at_shop(words, on_fail="ask"), None
+        if cats := excluded_item_categories(words):  # "no insurance" is the travel type, as the parser reads it
+            return RuleSpec(**common | {"field": "items[].item_category", "operator": "not_in"}, value=cats), None
         return RuleSpec(**common, value=words or text), None
     if field == "authorization.delivery_by":
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):

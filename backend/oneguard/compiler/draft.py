@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from oneguard.engine.policy import COUNT_FIELD
+from oneguard.engine.policy import COUNT_FIELD, LAST_PRICE_AT_SHOP
 from oneguard.engine.types import Currency, Rule, RuleKind, RuleOperator
 
 # rules.md M1: fixed rates to CHF.
@@ -117,6 +117,21 @@ class ParsedDraft(_Model):
     asked_about: dict[str, str] = Field(default_factory=dict)  # rule id -> the words that allow on_fail ask
 
 
+def last_price_at_shop(words: str, *, operator: RuleOperator = "=", on_fail: Literal["decline", "ask"] = "decline",
+                       ask_clause: str | None = None) -> RuleSpec:
+    """"Same price as last time" meaning each shop's own last price (several subscriptions):
+    the order total against the reference ``LAST_PRICE_AT_SHOP``, resolved per purchase by
+    the engine from the customer's approvals at that shop (api-contract §3.3)."""
+    return RuleSpec(field="authorization.billing_amount_chf", operator=operator, value=LAST_PRICE_AT_SHOP,
+                    currency="CHF", scope="purchase", words=words, source="inferred", on_fail=on_fail,
+                    ask_clause=ask_clause, value_from="history: the last approved price at each purchase's shop")
+
+
+def is_amount(spec: RuleSpec | Rule) -> bool:
+    """A money rule with a number, not the per-shop reference ``LAST_PRICE_AT_SHOP``."""
+    return spec.field in MONEY_FIELDS and isinstance(spec.value, int | float) and not isinstance(spec.value, bool)
+
+
 # --- Money ---------------------------------------------------------------------------
 def to_chf(value: Any, currency: str | None) -> Decimal:
     """M1 + M2: convert at the fixed rate, round half-even to 2 dp."""
@@ -178,7 +193,10 @@ def count_text(spec: RuleSpec) -> str:
 def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
     """Plain-language RuleCheck text for one typed rule."""
     f, op, v = spec.field, spec.operator, spec.value
-    if f == "authorization.billing_amount_chf" and spec.scope == "period":
+    if f == "authorization.billing_amount_chf" and v == LAST_PRICE_AT_SHOP:
+        bound = {"=": "the same as", "<=": "at or below", "<": "under"}[op]
+        text = f"Total {bound} your last payment at the same shop"
+    elif f == "authorization.billing_amount_chf" and spec.scope == "period":
         text = _limit_text(spec, "Total", f" across any {spec.period_days or 7} days")
     elif f == "authorization.billing_amount_chf":
         text = _limit_text(spec, "Total", " per order")

@@ -231,6 +231,10 @@ class LedgerView(_Model):
     ``merchant_approvals_on_card`` / ``merchant_approvals_other_cards`` count
     approved purchases per ``merchant_id`` for ``Decision.merchant_meta``.
     ``max_approved_chf`` is ``None`` when the customer has no approved purchase (W4).
+    ``last_price_chf_by_merchant`` is the customer's last final approved CHF total per
+    ``merchant_id`` (C1 "same price as last time at this shop"): history's
+    ``last_price``, replaced by this run's latest final approval there; a shop the
+    customer never paid is absent, never zero (P3).
     ``flagged_merchant_ids`` carries A1 info evidence to later purchases.
     ``confirmed_keys`` are remembered customer confirmations: ``rule|merchant|item``
     (read only for restrictions no data can check) and ``rule|merchant|*`` (read only
@@ -258,6 +262,7 @@ class LedgerView(_Model):
     known_device_ids: set[str]
     known_countries: set[str]
     max_approved_chf: float | None
+    last_price_chf_by_merchant: dict[str, float] = Field(default_factory=dict)
     flagged_merchant_ids: set[str]
     frozen: bool
     confirmed_keys: set[str] = Field(default_factory=set)
