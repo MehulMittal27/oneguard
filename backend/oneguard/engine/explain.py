@@ -3,11 +3,10 @@
 ``explain(decision, facts, policy, rules, signals)`` never decides anything. It reads
 the decision and writes, for the customer:
 
-- ``message``: one sentence that names the amount once, leads with the outcome
-  ("Approved" / "Declined" / "Waiting for you") and says why in the deciding rule's or
-  signal's own words (E1, E2, E4); a decline says it in short words and ends with the
-  counterfactual as a second sentence, so the suggestion is said once (E3);
-- ``counterfactual``: what would make it a yes, from the deciding rule or signal (E3);
+- ``message``: "{Outcome} CHF {amount}: {clause}." ("Approved" / "Declined" / "Waiting
+  for you"), the clause from the deciding rule's field template or the deciding signal
+  (E1, E2, E4); never the counterfactual;
+- ``counterfactual``: "Would approve …", from the failing rules or the deciding signal (E3);
 - ``evidence``: every rule result and every triggered signal, plus info rows (E7);
 - ``injection_flag``: set when shop text tried to instruct the agent (E5).
 
@@ -23,9 +22,9 @@ import ast
 import re
 from decimal import Decimal
 
-from oneguard.engine.facts import CONTRADICTORY, to_chf
+from oneguard.engine.facts import CONTRADICTORY
 from oneguard.engine.interfaces import register
-from oneguard.engine.policy import NO_HISTORY, RESERVATION_ONLY
+from oneguard.engine.policy import ASK_CHANGED, NO_HISTORY, RESERVATION_ONLY
 from oneguard.engine.protections import (
     AGENT_DIRECTED_PATTERNS,
     FLAGGED_SHOP_DETAIL,
@@ -39,7 +38,6 @@ from oneguard.engine.types import (
     Explanation,
     Facts,
     Policy,
-    Rule,
     RuleResult,
     Signal,
 )
@@ -91,8 +89,8 @@ REASON_TEMPLATES: dict[str, str] = {
     "shop_terms_contradictory": "the shop's description contradicts itself",
     "rule_not_met": "it breaks a rule you set",
     "unusual_activity": "more than one thing about how it was made is unusual",
-    "no_purchase_history": "you have no purchase history yet, so we can't tell whether you know this shop",
-    "session_watch": "after the recent burst of unusual attempts on this card, we check with you until you approve a purchase",
+    "no_purchase_history": "you have no purchase history yet, so we can't tell if you know this shop",
+    "session_watch": "after recent unusual attempts on this card, we check with you until you approve one",
     "stub": "the decision engine is not connected yet",
 }
 
@@ -137,14 +135,6 @@ def _term(topic: str, value: object) -> str:
 
 def _and(parts: list[str], word: str = "and") -> str:
     return parts[0] if len(parts) == 1 else f"{', '.join(parts[:-1])} {word} {parts[-1]}"
-
-
-def _or(parts: list[str]) -> str:
-    return _and(parts, "or")
-
-
-def _a(noun: str) -> str:
-    return f"{'an' if noun[:1].lower() in 'aeiou' else 'a'} {noun}"
 
 
 def _contradiction_phrase(match: re.Match[str]) -> str:
@@ -283,22 +273,6 @@ def _deciding(
     return []
 
 
-def _supporting(
-    decision: EngineDecision, deciding: list[RuleResult | Signal], signals: list[Signal]
-) -> list[Signal]:
-    """Triggered signals that did not decide but would have asked on their own (a
-    protection, a strong sign, two weak signs): named after the deciding reason."""
-    if decision.outcome == "approve":
-        return []
-    named = {d.id for d in deciding if isinstance(d, Signal)}
-    weak = [s for s in signals if s.triggered and s.strength == "weak"]
-    return [
-        s for s in signals
-        if s.triggered and s.id not in named and s.id not in _INJECTION_IDS
-        and s.outcome_if_triggered != "info" and (s.strength != "weak" or len(weak) >= 2)
-    ]  # fmt: skip
-
-
 _INJECTION_IDS = ("A1", "S_agent_directed")
 
 
@@ -306,196 +280,119 @@ def _injection_found(signals: list[Signal]) -> bool:
     return any(s.triggered and s.id in _INJECTION_IDS for s in signals)
 
 
+def _capitalised(phrase: str) -> str:
+    return phrase[0].upper() + phrase[1:]
+
+
 def _lower_first(text: str) -> str:
     """Mid-sentence casing: "Made from …" → "made from …"; "CHF 520.00 …" stays."""
     return text[0].lower() + text[1:] if re.match(r"[A-Z][a-z]", text) else text
 
 
-def _capitalised(phrase: str) -> str:
-    return phrase[0].upper() + phrase[1:]
+# --- the message: "{Outcome} CHF {amount}: {clause}." -------------------------------------
+# One clause, from the deciding rule or signal. A broken rule's clause is its detail, which
+# policy.py writes from its field's template ("You haven't bought from Nordwind before",
+# "Size 42; you asked for 43"). A signal's clause is its first sentence, shortened where
+# the signal says more than one thing. The counterfactual ("Would approve …") is its own
+# field and is never part of the message.
 
+INJECTION_ASK = "The shop's text had instructions aimed at the agent; they were ignored, so you decide"
+INJECTION_ALSO = "the shop's instructions to the agent were ignored"
+"""The one clause a message may add: instructions in the shop's text that did not decide."""
 
-def _reason(item: RuleResult | Signal, decision: EngineDecision, facts: Facts, policy: Policy) -> str:
-    """One deciding (or supporting) rule or signal, in its own words. In a decline the
-    reason is already cased for mid-sentence and says neither the amount nor what would
-    make it a yes: the lead and the "Would approve" sentence say those once."""
-    declined = decision.outcome == "decline"
-    if isinstance(item, RuleResult):
-        if CONTRADICTORY in item.detail:  # "The shop's description contradicts itself about …"
-            m = _CONTRADICTION.search(item.detail)
-            phrase = _contradiction_phrase(m) if m else contradiction(facts)
-            phrase = phrase or REASON_TEMPLATES["shop_terms_contradictory"]
-            return phrase if declined else _capitalised(phrase)
-        if declined:
-            return _declined_rule(item, _policy_rule(item, policy), facts)
-        return _clause(clean(item.detail, facts))
-    if item.id in _INJECTION_IDS:
-        ignored = INSTRUCTIONS_IGNORED.rstrip(".")
-        return f"{ignored}, so you decide" if decision.outcome == "step_up" else _lower_first(ignored)
-    text = _clause(_first_sentence(clean(item.detail, facts)))
-    return _lower_first(text) if declined else text
-
-
-# --- a decline, said once ------------------------------------------------------------------
-# "Declined CHF 38.90: over your CHF 20.00 per-order limit. Would approve at CHF 20.00 or
-# less." The rule result's own detail ("Order total: CHF 38.90. You asked for order total
-# at or below CHF 20.00") repeats both the amount and the suggestion, so a decline says the
-# broken rule in short words from the customer's rule, and the suggestion only in the
-# counterfactual sentence.
-
-_ASKED = ". You asked for "  # policy.py: a typed rule's fail is "<Label>: <seen>. You asked for <want>"
-_LIMIT_NOUNS = {"authorization.billing_amount_chf": "per-order", "items[].unit_price_chf": "per-item"}
-_KNOWN_SHOP = ("you haven't bought from this shop before", "Would approve at a shop you've bought from before")
-_YES_NO_RULES = {  # (field, operator, value): (reason, counterfactual)
-    ("merchant.known_shop", "=", "true"): _KNOWN_SHOP,
-    ("merchant.familiar_on_card", "=", "true"): _KNOWN_SHOP,
-    ("cart.recurring", "=", "false"): ("it adds a recurring charge you did not ask for",
-                                        "Would approve without the recurring charge"),
-    ("order.order_returnable", "=", "true"): ("the order cannot be returned",
-                                               "Would approve if the order can be returned"),
-    ("order.order_cancellable", "=", "true"): ("the order cannot be cancelled",
-                                                "Would approve if the order can be cancelled"),
-}  # fmt: skip
-_STEP1_SUBJECTS = {"policy_status": "the policy", "authority_status": "the agent's authority",
-                   "card_status": "the card"}  # fmt: skip
-_CART = re.compile(r"^Cart (contains|includes) ")
-_NOT_REQUESTED = re.compile(r"^Cart contains (?P<names>.+), not the .+ you asked for$")
-_OTHER_SHOP_TYPE = re.compile(r"^(?P<merchant>.+) is an? (?P<type>.+?) shop, not [^,]+$")
+_SPLIT = re.compile(r"^(?P<ago>.+?) after (?P<order>the CHF [\d.]+ order) at the same shop; together "
+                    r"(?P<combined>CHF [\d.]+), over the (?P<limit>CHF [\d.]+) per-order limit")  # fmt: skip
+_LOOKALIKE = re.compile(r"^This shop's name is (?P<distance>.+?) away from (?P<known>.+?), but it is a different shop")
+_REQUOTE = re.compile(r"^Re-quote of (?P<declined>.+?); judged on its own facts")
+_REPEAT = re.compile(r"^(?P<same>Same shop and items as .+? earlier) \(")
+_RECURRING = re.compile(r"^Recurring charge you did not ask for: (?P<lines>line \d+.*?)\.(?:\s|$)")
 
 
 def _chf(value: float) -> str:
     return f"CHF {Decimal(str(value)):.2f}"
 
 
-def _policy_rule(result: RuleResult, policy: Policy) -> Rule | None:
-    return next((r for r in policy.rules if r.id == result.rule_id), None)
+def _rule_clause(result: RuleResult, facts: Facts) -> str:
+    if CONTRADICTORY in result.detail:  # "The shop's description contradicts itself about …"
+        m = _CONTRADICTION.search(result.detail)
+        phrase = _contradiction_phrase(m) if m else contradiction(facts)
+        return _capitalised(phrase or REASON_TEMPLATES["shop_terms_contradictory"])
+    if result.detail == NO_HISTORY:
+        return _capitalised(REASON_TEMPLATES["no_purchase_history"])
+    return _clause(clean(result.detail, facts).removesuffix(f"; {ASK_CHANGED}"))
 
 
-def _limit_chf(rule: Rule) -> float | None:
-    """A typed money rule's limit in CHF (T4), or None when it is not a plain number."""
-    if isinstance(rule.value, bool) or not isinstance(rule.value, int | float):
-        return None
-    if not rule.currency or rule.currency == "CHF":
-        return float(rule.value)
-    try:
-        return to_chf(rule.value, rule.currency)
-    except ValueError:
-        return None
+def _line_names(lines: str, facts: Facts) -> list[str]:
+    """"line 2 (CHF 29.00), line 3 (…)" → the item names on those cart lines."""
+    numbers = {int(n) for n in re.findall(r"line (\d+)", lines)}
+    return [clean(ln.item_name, facts) for ln in facts.items if ln.line_no in numbers]
 
 
-def _values(rule: Rule) -> list[str]:
-    """A rule's value(s) as words: sporting_goods -> sporting goods."""
-    return [str(v).replace("_", " ") for v in (rule.value if isinstance(rule.value, list) else [rule.value])]
-
-
-def _typed_fail(result: RuleResult, rule: Rule | None, facts: Facts) -> tuple[str, str] | None:
-    """A broken typed rule as (short reason, counterfactual), or None to keep its own words."""
-    if rule is None or result.outcome != "fail" or not rule.field or rule.scope == "period":
-        return None
-    field, op = rule.field, rule.operator or ""
-    if field in _LIMIT_NOUNS and op in ("<", "<=") and (limit := _limit_chf(rule)) is not None:
-        cap = _chf(limit)
-        broken = f"{'over' if op == '<=' else 'not under'} your {cap} {_LIMIT_NOUNS[field]} limit"
-        within = f"at {cap} or less" if op == "<=" else f"under {cap}"
-        if field == "items[].unit_price_chf":
-            return f"an item is {broken}", f"Would approve with every item {within}"
-        return broken, f"Would approve {within}"
-    known = _YES_NO_RULES.get((field, op, str(rule.value).lower()))
-    if known:
-        return known
-    detail = clean(result.detail, facts)
-    if _ASKED not in detail or ": " not in detail:
-        return None
-    label, seen = detail.split(_ASKED, 1)[0].split(": ", 1)
-    counterfactual = clean(result.counterfactual, facts)
-    if field == "items[].item_category" and op in ("in", "not_in"):
-        counterfactual = f"Would approve with only {_or(_values(rule))}" if op == "in" else f"Would approve without {seen}"
-    if field == "merchant.merchant_category" and op in ("=", "in"):
-        return f"the shop is {_a(seen)} shop", f"Would approve at {_a(_or(_values(rule)))} shop"
-    if field == "order.return_window_days" and seen == "no returns":
-        return "the shop takes no returns", counterfactual
-    return f"the {label.lower()} is {seen}", counterfactual
-
-
-def _declined_rule(result: RuleResult, rule: Rule | None, facts: Facts) -> str:
-    """A deciding rule of a decline, in short words that repeat neither the amount nor
-    the suggestion. Rule details the engine writes for a flag (C3-C10) or step 1 keep
-    their words, cased for mid-sentence; a merchant name keeps its case."""
-    typed = _typed_fail(result, rule, facts)
-    if typed:
-        return typed[0]
-    if result.detail == NO_HISTORY:  # "approve once and I'll remember it" is for a step-up
-        return REASON_TEMPLATES["no_purchase_history"]
-    detail = _clause(clean(result.detail, facts))
-    if result.rule_id in _STEP1_SUBJECTS:  # "Card is blocked"
-        return f"{_STEP1_SUBJECTS[result.rule_id]} {detail.split(' ', 1)[1]}"
-    if result.rule_id == "C5" and (m := _NOT_REQUESTED.match(detail)):
-        return f"the cart has {m['names']}, not what you asked for"
-    if result.rule_id == "C8" and (m := _OTHER_SHOP_TYPE.match(detail)):
-        return f"{m['merchant']} is {_a(m['type'])} shop"
-    if _CART.match(detail):
-        return f"the cart {detail[len('Cart '):]}"
-    if re.match(r"\d+-day total ", detail):
-        return f"the {detail}"
-    return _lower_first(detail)
-
-
-def _amount_once(reason: str, amount: str) -> str:
-    """A sign that opens with the purchase amount ("CHF 459.00 is more than …") reads "it
-    is more than …": the lead already names the amount."""
-    return f"it{reason[len(amount):]}" if reason.startswith(f"{amount} ") else reason
+def _signal_clause(signal: Signal, decision: EngineDecision, facts: Facts, amount: str) -> str:
+    if signal.id in _INJECTION_IDS:
+        return INJECTION_ASK if decision.outcome == "step_up" else _clause(INSTRUCTIONS_IGNORED)
+    text = clean(signal.detail, facts)
+    if m := _SPLIT.match(text):
+        return f"Together with {m['order']} {m['ago']} earlier, {m['combined']} is over your {m['limit']} limit"
+    if m := _LOOKALIKE.match(text):
+        return f"{clean(facts.merchant_name, facts)} is {m['distance']} away from {m['known']}; it's a different shop"
+    if m := _REPEAT.match(text):
+        return m["same"]
+    if (m := _RECURRING.match(text)) and (names := _line_names(m["lines"], facts)):
+        return f"{_and(names)} {'adds' if len(names) == 1 else 'add'} a recurring charge you did not ask for"
+    text = _clause(_first_sentence(text))
+    # A sign that opens with the purchase amount ("CHF 459.00 is more than …") reads "It is …".
+    return f"It{text[len(amount):]}" if text.startswith(f"{amount} ") else text
 
 
 def _message(
-    decision: EngineDecision,
-    facts: Facts,
-    policy: Policy,
-    deciding: list[RuleResult | Signal],
-    signals: list[Signal],
-    counterfactual: str | None,
+    decision: EngineDecision, facts: Facts, deciding: list[RuleResult | Signal], signals: list[Signal]
 ) -> str:
-    """Lead with the amount and the deciding reason, then the supporting signals. A
-    decline ends with one sentence on what would make it a yes; only a step-up invites
-    the customer to decide."""
+    """"{Outcome} CHF {amount}: {clause}." with the deciding rule's or signal's clause. At
+    most one clause is joined to it: the second of two signs that decide together, else
+    the note that instructions in the shop's text were ignored."""
     amount = _chf(facts.billing_amount_chf)
     lead = LEADS[decision.outcome]
     if decision.outcome == "approve":
         body = _template(decision)
         requote = next((s for s in signals if s.triggered and s.id == "A5"), None)
-        if requote and requote.related:
-            body = f"{body}; it is a new quote after the declined {requote.related[0]}"
+        if requote and (m := _REQUOTE.match(requote.detail)):
+            quote = f"it re-quotes {clean(m['declined'], facts)}"
+            within = body in (REASON_TEMPLATES["within_limits"], REASON_TEMPLATES["requote_accepted"])
+            body = f"{quote} and is within your limits" if within else f"{body}; {quote}"
         return _sentence(f"{lead} {amount}: {_clause(body)}")
 
-    declined = decision.outcome == "decline"
-    failed = {d.rule_id for d in deciding if isinstance(d, RuleResult) and d.outcome == "fail"}
-    # C10 says again what a broken C5 already said: the cart is not what was asked for.
-    shown = [d for d in deciding if not (declined and "C5" in failed and isinstance(d, RuleResult) and d.rule_id == "C10")]
-    reasons = [_amount_once(r, amount) for r in (_reason(d, decision, facts, policy) for d in shown) if r]
-    if not reasons and "shop_terms_contradictory" in decision.reason_codes:
-        phrase = contradiction(facts) or REASON_TEMPLATES["shop_terms_contradictory"]
-        reasons = [phrase if declined else _capitalised(phrase)]
-    reasons = reasons or [_template(decision)]
-    if not declined and deciding and isinstance(deciding[0], Signal) and deciding[0].strength in ("strong", "weak"):
-        reasons[0] = _lower_first(reasons[0])  # "Waiting for you CHF 165.00: made from a device …"
-    supporting = [
-        _amount_once(_lower_first(r), amount)
-        for s in _supporting(decision, deciding, signals) if (r := _reason(s, decision, facts, policy))
-    ]  # fmt: skip
-    if supporting:
-        reasons.append(f"also {_and(supporting)}")
-    if _injection_found(signals) and not any(isinstance(d, Signal) and d.id in _INJECTION_IDS for d in deciding):
-        reasons.append("the shop's text also contained instructions aimed at the agent, which were ignored")
-    rest = reasons[1:] if declined else [_lower_first(r) for r in reasons[1:]]
-    message = _sentence(f"{lead} {amount}: {_clause('; '.join([reasons[0], *rest]))}")
-    return f"{message} {counterfactual}" if declined and counterfactual else message
+    def clause_of(item: RuleResult | Signal) -> str:
+        if isinstance(item, RuleResult):
+            return _rule_clause(item, facts)
+        return _signal_clause(item, decision, facts, amount)
 
+    lookalike = next((s for s in signals if s.triggered and s.id == "A7"), None)
+    if lookalike is not None:  # a lookalike shop is always named, whatever decided (a known shop's twin)
+        clause = clause_of(lookalike)
+    elif deciding:
+        clause = clause_of(deciding[0])
+    elif "shop_terms_contradictory" in decision.reason_codes:
+        clause = _capitalised(contradiction(facts) or REASON_TEMPLATES["shop_terms_contradictory"])
+    else:
+        clause = _capitalised(_template(decision))
+    signs = [d for d in deciding if isinstance(d, Signal)]
+    led_by_sign = bool(deciding) and isinstance(deciding[0], Signal)
+    if led_by_sign and len(signs) >= 2:
+        clause = f"{clause} and {_lower_first(clause_of(signs[1]))}"
+    elif _injection_found(signals) and not (led_by_sign and signs[0].id in _INJECTION_IDS):
+        clause = f"{clause}; {INJECTION_ALSO}"
+    return f"{lead} {amount}: {clause}."
+
+
+# --- the counterfactual: "Would approve …", on its own ------------------------------------
 
 _WOULD = re.compile(r"^would\s+(\w+)\s+", re.IGNORECASE)
 
 
 def _joined(counterfactuals: list[str]) -> str | None:
     """"Would approve with A" + "Would approve without B" → "Would approve with A and without B";
-    a limit with no room left follows with "but": "…, but nothing more fits in this 7-day window"."""
+    a limit with no room left follows with "but": "…, but nothing more fits this week"."""
     texts = list(dict.fromkeys(_clause(t) for t in counterfactuals if t and t.strip()))
     if not texts:
         return None
@@ -511,17 +408,9 @@ def _joined(counterfactuals: list[str]) -> str | None:
     return _sentence(f"{joined}, but {_and(buts)}" if buts else joined)
 
 
-def _rule_counterfactual(result: RuleResult, policy: Policy, facts: Facts) -> str:
-    """A broken rule's counterfactual: the short one for a typed rule ("Would approve at
-    CHF 20.00 or less"), else the rule's own."""
-    typed = _typed_fail(result, _policy_rule(result, policy), facts)
-    return typed[1] if typed and typed[1] else clean(result.counterfactual, facts)
-
-
 def _counterfactual(
     decision: EngineDecision,
     facts: Facts,
-    policy: Policy,
     rules: list[RuleResult],
     signals: list[Signal],
     deciding: list[RuleResult | Signal],
@@ -530,7 +419,7 @@ def _counterfactual(
     failing rule, the declining protections'. Never an evidence-only signal. A step-up:
     the deciding rule's or signal's."""
     if decision.outcome == "decline":
-        failing = [cf for r in rules if r.outcome == "fail" and (cf := _rule_counterfactual(r, policy, facts))]
+        failing = [clean(r.counterfactual, facts) for r in rules if r.outcome == "fail" and r.counterfactual]
         if failing:
             return _joined(failing)
         return _joined([
@@ -554,10 +443,9 @@ def explain(
     signals: list[Signal],
 ) -> Explanation:
     deciding = _deciding(decision, rules, signals)
-    counterfactual = _counterfactual(decision, facts, policy, rules, signals, deciding)
     return Explanation(
-        message=_message(decision, facts, policy, deciding, signals, counterfactual),
-        counterfactual=counterfactual,
+        message=_message(decision, facts, deciding, signals),
+        counterfactual=_counterfactual(decision, facts, rules, signals, deciding),
         evidence=_evidence(facts, policy, rules, signals, decision),
         injection_flag={"flagged": True, "reason": INSTRUCTIONS_IGNORED} if _injection_found(signals) else None,
         source="template",

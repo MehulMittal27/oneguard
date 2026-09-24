@@ -65,6 +65,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
         (KNOWN, "=", "true", None, None, None, "decline"),               # "retailer I already know"
         ("merchant.merchant_country", "=", "AT", None, None, None, "decline"),
         ("merchant.merchant_category", "=", "sporting_goods", None, None, None, "decline"),  # "outdoor"
+        (CAT, "in", ("sporting_goods",), None, None, None, "decline"),  # hiking boots, in the catalogue
     ]},
     "SCEN0106": {"rules": [
         (BILL, "<=", 300, "CHF", "purchase", None, "decline"),          # "purchases up to CHF 300 each"
@@ -88,6 +89,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
     "SCEN0122": {"item": "camera lens", "extra": True, "rules": [
         (BILL, "<=", 900, "CHF", "purchase", None, "decline"),
         (KNOWN, "=", "true", None, None, None, "decline"),
+        (CAT, "in", ("photography",), None, None, None, "decline"),  # the catalogue's camera lens
     ]},
     "SCEN0124": {"rules": [
         ("items[].unit_price_chf", "<=", 200, "CHF", "purchase", None, "decline"),  # "per night"
@@ -102,6 +104,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
         ("items[].size_eu", "=", 42, None, None, None, "decline"),
         ("order.return_window_days", ">=", 14, None, None, None, "decline"),
         ("merchant.merchant_category", "=", "sporting_goods", None, None, None, "decline"),
+        (CAT, "in", ("sporting_goods",), None, None, None, "decline"),  # hiking boots, in the catalogue
     ]},
     "SCEN0135": {"rules": [
         (BILL, "<=", 100, "CHF", "purchase", None, "decline"),
@@ -405,8 +408,9 @@ def test_scen0113_declines_a_second_dinner_the_same_day(path):
     assert first.outcome == "approve", first
     second, explanation, _ = decide_event(dinner("IT_DINNER_2", 7 * 60), ctx)  # 19:00 the same day
     assert (second.outcome, second.reason_codes) == ("decline", ["period_count_exceeded"])
-    assert explanation.message == ("Declined CHF 30.00: you allowed one order per day; one was already "
-                                   "approved today at 12:00. Would approve from tomorrow at 12:00.")
+    assert explanation.message == ("Declined CHF 30.00: You allowed one order per day; one was already "
+                                   "approved today at 12:00.")
+    assert explanation.counterfactual == "Would approve from tomorrow at 12:00."
 
 
 def test_one_item_reads_in_the_singular():

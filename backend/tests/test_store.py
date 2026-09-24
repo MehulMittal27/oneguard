@@ -87,7 +87,7 @@ def test_every_table_in_database_md_exists(engine: Engine) -> None:
         "customers", "accounts", "cards", "merchants", "items", "fx_rates",
         "authorization_history", "scenario_catalogue", "scenario_authorities",
         "policy_drafts", "mandates", "runs", "events_raw", "decisions",
-        "merchant_flags", "worker_state", "viseca_calls",
+        "merchant_flags", "worker_state", "scenario_profiles", "viseca_calls",
     }  # fmt: skip
     assert set(Base.metadata.tables) == expected
     index_columns = {tuple(c.name for c in i.columns) for i in AuthorizationHistory.__table__.indexes}

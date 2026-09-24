@@ -47,10 +47,16 @@ own expiry (and the platform's) goes first."""
 
 @dataclass(frozen=True)
 class ScenarioBinding:
-    """A scenario behind a customer: which card it runs on (operator data, C12)."""
+    """A scenario behind a customer: which card it runs on (operator data, C12, D3, D8).
+
+    ``source``: ``pack`` (the local data pack's authorities) or who at the platform said
+    so (``bootstrap``, ``run``, ``authorization``; ``store.schema.ScenarioProfile``).
+    """
 
     scenario_id: str
     card_id: str
+    profile_id: str | None = None
+    source: str = "pack"
 
 
 @dataclass
@@ -64,6 +70,7 @@ class Services:
     client: VisecaClient | None = None
     worker: VisecaWorker | None = None
     scenarios: dict[str, list[ScenarioBinding]] = field(default_factory=dict)
+    """customer id → the local pack's scenarios on their cards; ``bindings`` adds the platform's."""
     implementations: Mapping[str, Callable[..., Any]] | None = None
     stubbed: frozenset[str] | None = None
     model_loaded: bool = False
@@ -82,6 +89,27 @@ class Services:
     @property
     def functions(self) -> Mapping[str, Callable[..., Any]]:
         return self.implementations if self.implementations is not None else stubs.ACTIVE
+
+    # Scenario bindings (operator data) ---------------------------------------------------
+
+    async def bindings(self) -> dict[str, list[ScenarioBinding]]:
+        """customer id → the scenarios that run on their cards, by scenario id.
+
+        The local pack's bindings, then every one the platform stated (the worker's
+        ``scenario_profiles``); the platform wins for a scenario both name.
+        """
+        stored = await self.db(queries.scenario_profiles, self.db_engine)
+        by_scenario = {b.scenario_id: (customer, b) for customer, bs in self.scenarios.items() for b in bs}
+        for row in stored:
+            by_scenario[row.scenario_id] = (
+                row.customer_id,
+                ScenarioBinding(row.scenario_id, row.card_id, row.profile_id, row.source),
+            )
+        found: dict[str, list[ScenarioBinding]] = {}
+        for scenario_id in sorted(by_scenario):
+            customer, binding = by_scenario[scenario_id]
+            found.setdefault(customer, []).append(binding)
+        return found
 
     # Models (D5) -------------------------------------------------------------------------
 

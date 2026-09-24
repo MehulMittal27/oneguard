@@ -136,11 +136,26 @@ def _requote(facts: Facts, ledger: LedgerView) -> str | None:
     return related if facts.related_status == "declined" else None
 
 
-def _a5(facts: Facts, requoted: str | None) -> Signal:
+def _ago(facts: Facts, prior: PriorDecision) -> str:
+    """How long before this purchase an earlier one was made: "25 min", "3.5 h", "5 days"."""
+    minutes = (facts.timestamp - prior.timestamp).total_seconds() / 60
+    if minutes < 120:
+        return f"{minutes:.0f} min"
+    return f"{minutes / 60:.1f} h" if minutes < 48 * 60 else f"{minutes / 1440:.0f} days"
+
+
+def _order(prior: PriorDecision) -> str:
+    """An earlier order in the customer's words, by amount: never its authorization id."""
+    return f"the CHF {prior.billing_amount_chf:.2f} order"
+
+
+def _a5(facts: Facts, ledger: LedgerView, requoted: str | None) -> Signal:
     if requoted:
+        prior = next((p for p in ledger.priors if p.authorization_id == requoted), None)
+        declined = f"{_order(prior)} declined {_ago(facts, prior)} earlier" if prior else "an order declined earlier"
         return Signal(
             id="A5", triggered=True, strength="protection", outcome_if_triggered="info",
-            detail=f"Re-quote of the declined purchase {requoted}; judged on its own facts.",
+            detail=f"Re-quote of {declined}; judged on its own facts.",
             source="ledger", related=(requoted, "requote_of"),
         )  # fmt: skip
     return Signal(
@@ -157,14 +172,12 @@ def _a3(facts: Facts, ledger: LedgerView, requoted: str | None) -> Signal:
         gap = abs(facts.billing_amount_chf - prior.billing_amount_chf) / prior.billing_amount_chf
         if gap > DUPLICATE_AMOUNT_BAND:
             continue
-        minutes = (facts.timestamp - prior.timestamp).total_seconds() / 60
-        ago = f"{minutes:.0f} min" if minutes < 120 else f"{minutes / 60:.1f} h"
         if requoted:
             break
         return Signal(
             id="A3", triggered=True, strength="protection", outcome_if_triggered="ask",
             detail=(
-                f"Same shop and items as {prior.authorization_id} {ago} earlier "
+                f"Same shop and items as {_order(prior)} {_ago(facts, prior)} earlier "
                 f"(CHF {prior.billing_amount_chf:.2f} then, CHF {facts.billing_amount_chf:.2f} now)."
             ),
             source="ledger", related=(prior.authorization_id, "duplicate_of"),
@@ -204,11 +217,10 @@ def _a4(facts: Facts, policy: Policy, ledger: LedgerView) -> Signal:
     for prior in reversed(_earlier(facts, ledger, SPLIT_WINDOW)):
         combined = round(prior.billing_amount_chf + facts.billing_amount_chf, 2)
         if _exceeds(combined, limit):
-            minutes = (facts.timestamp - prior.timestamp).total_seconds() / 60
             return Signal(
                 id="A4", triggered=True, strength="protection", outcome_if_triggered="ask",
                 detail=(
-                    f"{minutes:.0f} min after {prior.authorization_id} at the same shop; together "
+                    f"{_ago(facts, prior)} after {_order(prior)} at the same shop; together "
                     f"CHF {combined:.2f}, over the CHF {limit[0]:.2f} per-order limit."
                 ),
                 source="ledger", related=(prior.authorization_id, "split_of"),
@@ -318,7 +330,7 @@ def evaluate(
         _a2(facts),
         _a3(facts, ledger, requoted),
         _a4(facts, policy, ledger),
-        _a5(facts, requoted),
+        _a5(facts, ledger, requoted),
         _a6(facts, policy),
         _a7(facts, policy, known_names),
     ]

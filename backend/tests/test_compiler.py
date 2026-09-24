@@ -122,6 +122,21 @@ UNSEEN_EXPECTED: dict[str, dict[str, Any]] = {
 }
 
 
+# The hand-built policies (the oracle's and the replay's input) name no item type for a
+# chosen product; both compiler paths add the requested item's catalogue type (inferred).
+ITEM_TYPE = {"SCEN0002": ["sporting_goods"], "SCEN0004": ["electronics"]}
+
+
+def _compiled(policy: dict[str, Any]) -> tuple[set[tuple], dict[str, Any]]:
+    """The fixture policy as the compiler reads its instruction: rules and flags."""
+    rules = [_fixture_hard(r) for r in policy["rules"]]
+    flags = dict(policy)
+    if types := ITEM_TYPE.get(policy["scenario_id"]):
+        rules.append(("items[].item_category", "in", types, None, None, None))
+        flags["allowed_item_categories"] = types
+    return _expected_set(rules), flags
+
+
 def _as_set(rules: list[Rule]) -> set[tuple]:
     return {tuple(tuple(x) if isinstance(x, list) else x for x in _hard(r)) for r in rules}
 
@@ -227,10 +242,11 @@ def test_llm_compiles_public_instructions_to_the_fixture_rules(policy, history):
     draft = compile_instruction(policy["instruction"], history, CARD, provider)
     assert draft.compiler == "llm"
     assert draft.instruction == policy["instruction"]  # verbatim
-    assert _as_set(draft.rules) == _expected_set([_fixture_hard(r) for r in policy["rules"]])
+    rules, flags = _compiled(policy)
+    assert _as_set(draft.rules) == rules
     for field in ("requested_item", "requires_known_shop", "nothing_extra", "shop_type",
                   "allowed_item_categories", "uncertainty_policy"):
-        assert getattr(draft, field) == policy[field], field
+        assert getattr(draft, field) == flags[field], field
     assert provider.calls and provider.calls[0][1] == 8.0
 
 
@@ -339,10 +355,11 @@ def test_no_model_means_fallback(provider, history):
 @pytest.mark.parametrize("policy", PUBLIC, ids=[p["instruction"][:30] for p in PUBLIC])
 def test_fallback_parses_public_instructions(policy, history):
     draft = parse(policy["instruction"], history, CARD)
-    assert _as_set(draft.rules) == _expected_set([_fixture_hard(r) for r in policy["rules"]])
+    rules, flags = _compiled(policy)
+    assert _as_set(draft.rules) == rules
     for field in ("requested_item", "requires_known_shop", "nothing_extra", "shop_type",
                   "allowed_item_categories", "uncertainty_policy"):
-        assert getattr(draft, field) == policy[field], field
+        assert getattr(draft, field) == flags[field], field
     # §3.9: limit checks use exactly the wording the UI parses.
     limits = {r["text"] for r in policy["rules"] if r["kind"] in ("amount", "period")}
     assert limits <= {r.text for r in draft.rules}
