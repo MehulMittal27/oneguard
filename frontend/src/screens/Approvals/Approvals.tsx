@@ -6,6 +6,7 @@ import { DecisionMark } from '../../components/DecisionMark'
 import { CheckIcon, CrossIcon, HelpCircleIcon, InfoIcon } from '../../components/icons/lucide'
 import { OrderCapLeashMeter, PeriodLeashMeter } from '../../components/LeashMeter'
 import { RevokeSheet } from '../../components/RevokeSheet'
+import { SessionBanner } from '../../components/SessionBanner'
 import { formatShortDate } from '../../lib/datetime'
 import { formatChf } from '../../lib/money'
 import { limitsFromMandate, spendFromMandate } from '../../lib/spend'
@@ -74,6 +75,14 @@ function PendingCard({
 
   return (
     <div className="rounded-card border-2 border-asked-border bg-surface p-5">
+      {/* Why the engine is being careful, above the purchase it is being careful
+          about — the same banner DecisionDetail shows. */}
+      {decision.session && decision.session.trust !== 'normal' && (
+        <div className="mb-3">
+          <SessionBanner session={decision.session} />
+        </div>
+      )}
+
       <div className="flex items-center justify-between gap-3">
         <span className="rounded-pill bg-asked-tint px-3 py-1 text-[13px] font-medium text-asked">
           Waiting for you

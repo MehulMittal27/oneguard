@@ -9,6 +9,7 @@ import {
   HelpCircleIcon,
   InfoIcon,
 } from '../../components/icons/lucide'
+import { SessionBanner } from '../../components/SessionBanner'
 import { formatShortDate, formatTime } from '../../lib/datetime'
 import { getInitials } from '../../lib/initials'
 import { formatChf } from '../../lib/money'
@@ -65,11 +66,6 @@ const RELATION_LABEL: Record<DecisionRelation, string> = {
   duplicate_of: 'Duplicate of',
   retry_of: 'Retry of',
   split_of: 'Split of',
-}
-
-const SESSION_STYLE: Record<'elevated' | 'frozen', { label: string; box: string; fg: string }> = {
-  elevated: { label: 'Session under watch', box: 'border-asked-border bg-asked-tint', fg: 'text-asked-ink' },
-  frozen: { label: 'Session paused', box: 'border-stopped-border bg-stopped-tint', fg: 'text-stopped' },
 }
 
 // 'unknown' and 'not_applicable' are both real answers, never blank or "no"
@@ -201,18 +197,7 @@ export function DecisionDetail({
         </div>
       )}
 
-      {decision.session && decision.session.trust !== 'normal' && (
-        <div className={`rounded-row border px-4 py-3 ${SESSION_STYLE[decision.session.trust].box}`}>
-          <p
-            className={`text-[11px] font-semibold tracking-[0.08em] uppercase ${SESSION_STYLE[decision.session.trust].fg}`}
-          >
-            {SESSION_STYLE[decision.session.trust].label}
-          </p>
-          <p className={`mt-1 text-[13px] ${SESSION_STYLE[decision.session.trust].fg}`}>
-            {decision.session.note}
-          </p>
-        </div>
-      )}
+      <SessionBanner session={decision.session} />
 
       <div className={`rounded-hero p-6 ${banner.bg}`}>
         <p className={`flex items-center gap-2 text-[15px] font-semibold ${banner.fg}`}>
