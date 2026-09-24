@@ -9,7 +9,7 @@ may raise approve → step_up in decide; it can never approve or lower a decline
 
 - ``off``: no soft signal;
 - ``keywords`` (default): the A1 pattern list from protections.py;
-- ``laya``: keywords, plus the Laya checkpoint (loaded once at import, asked in a worker
+- ``laya``: keywords, plus the Laya checkpoint (loaded once by ``warm()`` at API startup, asked in a worker
   thread within ``budget_s``). The signal is triggered if keywords OR Laya fire: Laya can
   only add, never clear a keyword hit. On load failure, timeout or error it is keywords.
 
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
@@ -90,16 +91,29 @@ class LayaSignals:
     ) -> None:
         self.fallback = fallback or KeywordSignals()
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="laya")
+        self._load = load or _load_laya
+        self._load_lock = threading.Lock()
+        self._tried = predict is not None
         self.predict = predict
-        if self.predict is None:
-            try:
-                self.predict = (load or _load_laya)()
-            except Exception:  # model missing or broken: keywords from here on
-                log.exception("Laya failed to load; soft signals fall back to keywords")
 
     @property
     def available(self) -> bool:
         return self.predict is not None
+
+    def warm(self) -> bool:
+        """Load the model once (idempotent, thread-safe); True if it is ready.
+
+        The API calls this at startup. A decision before that answers with keywords and
+        starts the load in the background: loading never happens inside a decision.
+        """
+        with self._load_lock:
+            if not self._tried:
+                self._tried = True
+                try:
+                    self.predict = self._load()
+                except Exception:  # model missing or broken: keywords from here on
+                    log.exception("Laya failed to load; soft signals fall back to keywords")
+        return self.available
 
     def _ask_all(self, texts: list[tuple[str, str]]) -> list[tuple[str, float]]:
         assert self.predict is not None
@@ -107,7 +121,11 @@ class LayaSignals:
 
     def _scores(self, facts: Facts, budget_s: float) -> list[tuple[str, float]] | None:
         """The model's score per shop text, or None when it cannot answer in time."""
-        if not self.available or budget_s <= 0:
+        if not self.available:
+            if not self._tried:
+                self._pool.submit(self.warm)  # never load inside a decision
+            return None
+        if budget_s <= 0:
             return None
         future = self._pool.submit(self._ask_all, _shop_texts(facts))
         try:
@@ -180,6 +198,16 @@ def select_backend(value: str | None) -> Callable[[Facts, float], list[Signal]]:
 
 
 BACKEND = select_backend(os.environ.get(SIGNALS_ENV))
+
+
+def warm() -> bool:
+    """Load the soft-signal model if the backend has one; True when a model is loaded.
+
+    Called once at API startup and reported by /healthz as ``model_loaded``. With
+    ``off`` or ``keywords`` there is no model: it returns False and does nothing.
+    """
+    warm_backend = getattr(BACKEND, "warm", None)
+    return bool(warm_backend()) if callable(warm_backend) else False
 
 
 @register("soft_signals")

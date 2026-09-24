@@ -38,6 +38,10 @@ log = logging.getLogger(__name__)
 
 BASE_URL_ENV = "VISECA_BASE_URL"
 API_KEY_ENV = "VISECA_API_KEY"
+ALLOW_RUNS_ENV = "ONEGUARD_ALLOW_RUNS"
+RUNS_DISABLED_MESSAGE = (
+    f"Starting scenario runs is switched off ({ALLOW_RUNS_ENV}=false); nothing was started."
+)
 DEFAULT_BASE_URL = "https://saw26api.ashyground-364e1d07.switzerlandnorth.azurecontainerapps.io"
 DEFAULT_TIMEOUT_S = 10.0
 LONG_POLL_GRACE_S = 10.0
@@ -46,6 +50,12 @@ SUMMARY_LIMIT = 4096
 """Largest request / response summary stored in ``viseca_calls`` (characters)."""
 UPSTREAM_UNAVAILABLE = "upstream_unavailable"
 REDACTED = "[redacted]"
+
+
+def runs_allowed() -> bool:
+    """False only when ``ONEGUARD_ALLOW_RUNS`` is ``false``: then nothing may start a scenario
+    run (D3, ``make demo-live``). Unset or any other value allows runs."""
+    return os.environ.get(ALLOW_RUNS_ENV, "").strip().lower() != "false"
 
 
 class VisecaError(Exception):
