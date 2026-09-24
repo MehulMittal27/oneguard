@@ -74,6 +74,9 @@ scenario instruction, starts the Viseca run and streams progress.
 See `docs/architecture.md`. Binding docs: `docs/rules.md`, `docs/api-contract.md`,
 `docs/acceptance-oracle.yaml`. Working rules for humans and agents: `CLAUDE.md`.
 
+Team docs: `docs/team-plan.md` (24-hour plan), `docs/team-contract.md` (how the team and
+its agents work), `docs/database.md` (storage design).
+
 `frontend/`: the customer's wallet control app (React PWA: sign in, policy, activity,
 step-up approvals, revoke); see [frontend/README.md](frontend/README.md).
 

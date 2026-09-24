@@ -9,6 +9,7 @@ Two services: `backend/` (FastAPI, deterministic engine, Viseca client) and `fro
 
 `docs/rules.md` (engine spec) · `docs/api-contract.md` (HTTP contract) ·
 `docs/acceptance-oracle.yaml` (expected outcomes) · `docs/architecture.md` ·
+`docs/team-contract.md` (team working rules) · `docs/database.md` (storage) ·
 `frontend/README.md` · `vendor/viseca-2026/technical_details.md`.
 
 ## Non-negotiable rules
