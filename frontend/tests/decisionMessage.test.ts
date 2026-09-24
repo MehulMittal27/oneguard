@@ -34,3 +34,14 @@ test('the suggestion is only cut at a word boundary', () => {
   const message = 'Declined: xWould approve at CHF 20.00 or less.'
   assert.equal(messageWithoutCounterfactual(message, suggestion), message)
 })
+
+test('a pending step-up message ending with its counterfactual is said once on Approvals', () => {
+  const counterfactual = 'Would approve if it is not a repeat of the earlier order.'
+  assert.equal(
+    messageWithoutCounterfactual(
+      `Asking about CHF 64.00: this looks like a repeat of an order you already placed. ${counterfactual}`,
+      counterfactual,
+    ),
+    'Asking about CHF 64.00: this looks like a repeat of an order you already placed.',
+  )
+})

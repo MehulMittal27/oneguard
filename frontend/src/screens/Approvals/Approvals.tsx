@@ -8,6 +8,7 @@ import { OrderCapLeashMeter, PeriodLeashMeter } from '../../components/LeashMete
 import { RevokeSheet } from '../../components/RevokeSheet'
 import { SessionBanner } from '../../components/SessionBanner'
 import { formatShortDate } from '../../lib/datetime'
+import { messageWithoutCounterfactual } from '../../lib/decisionMessage'
 import { formatChf } from '../../lib/money'
 import { limitsFromMandate, spendFromMandate } from '../../lib/spend'
 import { useDecisions } from '../../state/DecisionsContext'
@@ -144,13 +145,21 @@ function PendingCard({
         Both, not one or the other: `message` is the engine's reason for pausing
         and `uncertainty.note` is what specifically it can't settle. The note used
         to replace the message, which left the engine's own sentence unrendered on
-        this screen (CLAUDE.md rule 10).
+        this screen (CLAUDE.md rule 10). The counterfactual is one line under the
+        message, as in DecisionDetail: what would have let this through is the
+        thing the customer weighs before answering. Said once: a message that
+        still ends with the same suggestion drops its trailing copy.
       */}
       <div className="mt-3 rounded-row border border-asked-border bg-asked-tint px-4 py-3">
         <p className="text-[11px] font-semibold tracking-[0.08em] text-asked-ink uppercase">
           Why your rules are unsure
         </p>
-        <p className="mt-1 text-[13px] font-medium text-asked-ink">{decision.message}</p>
+        <p className="mt-1 text-[13px] font-medium text-asked-ink">
+          {messageWithoutCounterfactual(decision.message, decision.counterfactual)}
+        </p>
+        {decision.counterfactual && (
+          <p className="mt-1 text-[13px] text-asked-ink">{decision.counterfactual}</p>
+        )}
         {decision.uncertainty && (
           <p className="mt-2 text-[13px] text-asked-ink">{decision.uncertainty.note}</p>
         )}
