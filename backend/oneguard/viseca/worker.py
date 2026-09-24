@@ -845,7 +845,14 @@ class VisecaWorker:
         auth = data["authorization"]
         live_id: str = auth["authorization_id"]
         deadline_at = _parse_time(data["deadline_at"]) or received_at
-        run = self._bind_run(str(envelope.get("run_id") or ""), data)
+        viseca_run_id = str(envelope.get("run_id") or "")
+        bound = viseca_run_id in self._runs and self._runs[viseca_run_id].ctx is not None
+        run = self._bind_run(viseca_run_id, data)
+        if not bound:
+            # The ledger reads runs.kind (live) to carry the session watch and remembered
+            # answers over from earlier live runs, so the row is written before the first
+            # decision; a run with no row is treated as a replay.
+            await asyncio.to_thread(self._save_run, run)
         self._run_of[live_id] = run
         self._events[live_id] = data
         self.source_ids[live_id] = auth["source_authorization_id"]
