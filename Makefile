@@ -1,4 +1,3 @@
-SCEN ?= SCEN0000
 PYTHON ?= $(shell command -v python3.12 2>/dev/null || uv python find 3.12 2>/dev/null || echo python3.12)
 
 setup:
@@ -21,6 +20,8 @@ seed:
 reset-db:
 	cd backend && . .venv/bin/activate && python -m oneguard.store.seed --reset
 
+# Offline targets replay the local data pack; demo-live runs a scenario Viseca serves.
+replay: SCEN ?= SCEN0000
 replay:
 	cd backend && . .venv/bin/activate && python -m oneguard.replay.runner --scenario $(SCEN) --policy tests/fixtures/policies/$(SCEN).yaml
 
@@ -37,10 +38,12 @@ build-frontend:
 serve: build-frontend
 	cd backend && . .venv/bin/activate && uvicorn oneguard.api.app:app --port 8000
 
+demo-offline: SCEN ?= SCEN0000
 demo-offline:
 	curl -s -X POST localhost:8000/api/dev/replay/restart -H 'Content-Type: application/json' \
 	  -d '{"scenario_id":"$(SCEN)","card_id":"$(CARD)","speed_ms":4000}'
 
+demo-live: SCEN ?= SCEN0101
 demo-live:
 	cd backend && . .venv/bin/activate && python -m oneguard.viseca.demo --scenario $(SCEN)
 

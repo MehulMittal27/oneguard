@@ -4,7 +4,11 @@ Runs as an asyncio task inside the API process (docs/architecture.md Runtime). O
 loop, never blocked by a human:
 
 - ``start``: ``GET /v1/bootstrap`` (``limits``: human window, decision deadline, long-poll
-  cap) and ``GET /v1/reference-data``. The sandbox serves no history-file hash, so the
+  cap) and ``GET /v1/reference-data``. Every reference table it serves under ``tables``
+  (customers, accounts, cards, merchants, items, fx rates, the scenario catalogue) is
+  upserted into the store in one transaction when it differs from the stored rows, with
+  per-table counts logged (``seed.sync_served``); served-only customers, cards and
+  scenarios then exist for the API. The sandbox serves no history-file hash, so the
   file is downloaded from ``/v1/reference-data/authorization-history.csv`` and hashed; if
   it differs from the one the seed checked (``data/metadata.json``),
   ``authorization_history`` is re-seeded from it and that is logged loudly.
@@ -206,6 +210,38 @@ def first_value(obj: Any, *keys: str) -> Any:
         if key in keys and value is not None:
             return value
     return None
+
+
+@dataclass(frozen=True)
+class ServedProfile:
+    """The fixture profile ``/v1/bootstrap`` names for the team."""
+
+    scenario_id: str
+    customer_id: str
+    card_id: str
+
+
+def served_profile(bootstrap: Any) -> ServedProfile | None:
+    """The bootstrap ``profile``'s scenario, customer and card, if it names all three.
+
+    Live shape: ``profile{profile_id, scenario_id, profile_context{customer_id, account_id,
+    card_id}, customer{...}, account{...}, card{...}}``.
+    """
+    profile = bootstrap.get("profile") if isinstance(bootstrap, dict) else None
+    if not isinstance(profile, dict):
+        return None
+
+    def part(key: str) -> dict[str, Any]:
+        value = profile.get(key)
+        return value if isinstance(value, dict) else {}
+
+    context = part("profile_context")
+    scenario = profile.get("scenario_id")
+    customer = context.get("customer_id") or part("customer").get("customer_id")
+    card = context.get("card_id") or part("card").get("card_id")
+    if not all(isinstance(v, str) and v for v in (scenario, customer, card)):
+        return None
+    return ServedProfile(scenario_id=scenario, customer_id=customer, card_id=card)
 
 
 def seconds_setting(
@@ -593,6 +629,8 @@ class VisecaWorker:
         self.bootstrap: dict[str, Any] | None = None
         self.reference_data: dict[str, Any] | None = None
         self.history_reseeded = False
+        self.served_tables: list[seed_module.TableSync] = []
+        """What the start-up pack check did to each served reference table."""
         self.served_history_sha256: str | None = None
         """SHA-256 of the history file Viseca serves, once checked at start."""
 
@@ -734,7 +772,8 @@ class VisecaWorker:
         self._state = "starting"
         await self._load_settings()
         await self._check_reference_data()
-        if self._history is None:
+        refresh = self.history_reseeded or any(t.changed for t in self.served_tables)
+        if self._history is None or refresh:
             self._history = await self._store(self._load_history)
         if self._ledger is None:
             self._ledger = default_ledger(self._db_engine, self._history)
@@ -941,6 +980,7 @@ class VisecaWorker:
         except VisecaError as exc:
             self._note_error(f"reference data unavailable, keeping the seeded history: {exc}")
             return
+        await self._sync_served_tables()
         meta = find_history_metadata(self.reference_data)
         served = str(meta.get("sha256", "")).strip().lower() if meta else ""
         expected = seed_module.pack_file_sha256(HISTORY_FILE, self._data_dir)
@@ -986,6 +1026,41 @@ class VisecaWorker:
             digest,
             banner,
         )
+
+    async def _sync_served_tables(self) -> None:
+        """Upsert the served reference tables before the history check, so a served history
+        file's customers and cards already exist when it is re-seeded."""
+        tables = self.reference_data.get("tables") if isinstance(self.reference_data, dict) else None
+        if not isinstance(tables, dict):
+            self._note_error("reference data serves no tables; keeping the seeded reference tables")
+            return
+        try:
+            self.served_tables = await self._store(self._sync_served, tables)
+        except Exception as exc:
+            log.exception("syncing the served reference tables failed")
+            self._note_error(f"served reference tables not synced, keeping the stored ones: {exc}")
+            return
+        for t in self.served_tables:
+            log.info(
+                "reference table %-18s served %3d, store %3d -> %3d rows (%d added, %d updated)%s",
+                t.table,
+                t.served,
+                t.before,
+                t.after,
+                t.inserted,
+                t.updated,
+                "" if t.changed else ", unchanged",
+            )
+        missing = sorted(set(seed_module.SERVED_TABLES) - {t.table for t in self.served_tables})
+        ignored = sorted(set(tables) - set(seed_module.SERVED_TABLES))
+        if missing:
+            log.info("reference tables not served, kept as stored: %s", ", ".join(missing))
+        if ignored:
+            log.info("served tables the store does not keep, ignored: %s", ", ".join(ignored))
+
+    def _sync_served(self, tables: dict[str, Any]) -> list[seed_module.TableSync]:
+        with session(self._db_engine) as s:
+            return seed_module.sync_served(s, tables)
 
     def _reseed_history(self, text: str) -> int:
         with session(self._db_engine) as s:

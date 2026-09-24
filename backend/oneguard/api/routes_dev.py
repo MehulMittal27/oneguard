@@ -4,6 +4,12 @@ This module and ``replay/`` are the only places that know about scenarios (CLAUD
 rule 3): which customer and card a scenario runs on, and its events. D1/D2 replay the
 data pack offline through the same engine and ledger as live runs; D3/D4 start and
 follow a Viseca run; D5 switches the models off or on; D6 shows the ledger itself.
+
+D2 replays only what the local pack has purchases for. D3 accepts any scenario in the
+store's catalogue, which the worker syncs from ``/v1/reference-data`` at start, so the
+scenarios Viseca serves (a judging pack the local ``data/`` lacks) can be run on any
+card in the store; a scenario whose card is known (the pack's, or the one the served
+bootstrap profile names) must run on that card.
 """
 
 from __future__ import annotations
@@ -13,9 +19,11 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
 from functools import cache
+from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
 from oneguard.api import models as api
@@ -28,9 +36,10 @@ from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import LedgerEntry
 from oneguard.engine.types import CompiledDraft, Policy
 from oneguard.replay.events import Pack, build_events
-from oneguard.store.schema import Run
+from oneguard.store.db import session
+from oneguard.store.schema import Run, ScenarioCatalogue
 from oneguard.viseca.client import RUNS_DISABLED_MESSAGE, runs_allowed
-from oneguard.viseca.worker import first_value
+from oneguard.viseca.worker import first_value, served_profile
 
 log = logging.getLogger(__name__)
 
@@ -58,8 +67,48 @@ def scenario_bindings(data: Pack | None = None) -> dict[str, list[ScenarioBindin
     }
 
 
+def profile_bindings(bootstrap: Any) -> dict[str, list[ScenarioBinding]]:
+    """customer id → the scenario the served bootstrap profile runs on its card."""
+    profile = served_profile(bootstrap)
+    if profile is None:
+        return {}
+    return {profile.customer_id: [ScenarioBinding(scenario_id=profile.scenario_id, card_id=profile.card_id)]}
+
+
+def merge_bindings(
+    base: dict[str, list[ScenarioBinding]], extra: dict[str, list[ScenarioBinding]]
+) -> dict[str, list[ScenarioBinding]]:
+    """``base`` plus the bindings of ``extra`` whose scenario ``base`` does not bind yet."""
+    bound = {b.scenario_id for bindings in base.values() for b in bindings}
+    merged = {customer: list(bindings) for customer, bindings in base.items()}
+    for customer, bindings in extra.items():
+        for binding in bindings:
+            if binding.scenario_id not in bound:
+                merged.setdefault(customer, []).append(binding)
+                bound.add(binding.scenario_id)
+    return merged
+
+
+def _catalogued(db: Engine, scenario_id: str) -> bool:
+    with session(db) as s:
+        return s.get(ScenarioCatalogue, scenario_id) is not None
+
+
+async def _live_scenario(s: Services, scenario_id: str, card_id: str) -> str:
+    """D3: the card's customer; 404 unknown scenario or card, 422 the scenario's card is another."""
+    if not await s.db(_catalogued, s.db_engine, scenario_id):
+        raise not_found(f"No scenario {scenario_id}.")
+    cards = {b.card_id for bindings in s.scenarios.values() for b in bindings if b.scenario_id == scenario_id}
+    if cards and card_id not in cards:
+        raise ApiError(422, "validation", f"Scenario {scenario_id} runs on card {min(cards)}, not {card_id}.")
+    customer_id = await s.db(queries.card_customer, s.db_engine, card_id)
+    if customer_id is None:
+        raise not_found(f"No card {card_id}.")
+    return customer_id
+
+
 def _scenario(scenario_id: str, card_id: str) -> tuple[str, str]:
-    """(customer id, card id) of the scenario; 404 unknown, 422 another card."""
+    """D2: (customer id, card id) of a pack scenario; 404 unknown, 422 another card."""
     if scenario_id not in pack().scenarios:
         raise not_found(f"No scenario {scenario_id}.")
     for customer, bindings in scenario_bindings().items():
@@ -150,7 +199,7 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
     if not runs_allowed():
         raise ApiError(409, "runs_disabled", RUNS_DISABLED_MESSAGE)
     s = services(request)
-    _scenario(body.scenario_id, body.card_id)
+    await _live_scenario(s, body.scenario_id, body.card_id)
     row = await s.db(queries.latest_mandate, s.db_engine, body.card_id)
     if row is None or row.status != "active" or not row.viseca_mandate_id:
         raise ApiError(409, "validation", "The card needs an active policy confirmed at Viseca first.")

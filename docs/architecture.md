@@ -64,7 +64,11 @@ oneguard/
 - One database per environment via ONEGUARD_DATABASE_URL (docs/database.md). One transaction per decision.
 - Viseca key from `VISECA_API_KEY`; base URL from `VISECA_BASE_URL`; both server-side.
 - Worker (`oneguard/viseca/worker.py`, `VisecaWorker`): on start reads `/v1/bootstrap`
-  (`limits`: human window, decision deadline, long-poll cap) and `/v1/reference-data`. No
+  (`limits`: human window, decision deadline, long-poll cap) and `/v1/reference-data`. Every
+  reference table served under `tables` (a superset of `data/` during judging) is upserted
+  into the store in one transaction when its rows differ from the stored ones (count plus
+  content hash), never deleting a row, with per-table counts logged (`seed.sync_served`);
+  the history index is reloaded if anything changed. No
   history-file hash is served, so it downloads
   `/v1/reference-data/authorization-history.csv`, and if its SHA-256 differs from
   `data/metadata.json` it re-seeds `authorization_history` and logs it loudly. Every request is

@@ -85,6 +85,16 @@ reads it to build `Decision` responses and `Mandate.usage`. Nobody else writes i
 - `backend/oneguard/store/seed.py` — idempotent CSV → tables; `make seed` runs it against
   whatever `ONEGUARD_DATABASE_URL` points at. Checks `metadata.json` hashes so a changed
   pack is noticed.
+- Served reference data: at start the Viseca worker upserts every table
+  `/v1/reference-data` serves under `tables` (customers, accounts, cards, merchants, items,
+  fx_rates, scenario_catalogue; `scenario_authorities` is not served) with
+  `seed.sync_served`, in one transaction and only when a table's served rows differ from
+  the stored ones (row count plus content hash). Missing rows are inserted and changed ones
+  updated; rows only the store has are kept, and runtime tables are never touched. Plain
+  inserts and updates, so it works the same on SQLite and Postgres. A served-only scenario
+  gets empty `control_question` / `control_theme` / `short_rationale`, which the served
+  catalogue lacks. `make seed` still replaces the tables with `data/`; the next start
+  syncs the served rows again.
 - `make reset-db` — drop + create + seed (never runs during a live run; guarded by
   `ONEGUARD_ENV != prod`).
 
