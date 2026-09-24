@@ -58,7 +58,7 @@ def test_every_endpoint_round_trips_and_is_logged(db: Engine) -> None:
         async with fake_client(fake, db) as client:
             assert (await client.healthz())["status"] == "ok"
             limits = (await client.bootstrap())["limits"]
-            assert (limits["step_up_timeout_seconds"], limits["decision_timeout_seconds"]) == (60.0, 3.0)
+            assert (limits["step_up_timeout_seconds"], limits["decision_timeout_seconds"]) == (60.0, 8.0)
             reference = await client.reference_data()
             assert reference["history"]["rows"] == 4701 and "sha256" not in reference["history"]
             assert (await client.authorization_history_csv()).startswith("authorization_id,")
