@@ -10,8 +10,9 @@ One line: **Agents may propose. OneGuard decides.**
 ## Before the demo
 
 - Fresh mandate per scenario (`/v1/team/reset` is disabled during judging).
-- Two people: **operator** (laptop, terminal + `make demo-live`) and **customer** (phone
-  or phone frame, signed in as the scenario's customer).
+- Two people: **operator** (laptop, terminal + `make demo-live`; the cloud app decides) and
+  **customer** (phone or phone frame, signed in as the customer `make demo-live` names:
+  "Sign in as …").
 - Soft signals on. Have the chaos toggle (`D5`) ready.
 - The customer answers every step-up within seconds (Q8 in rules.md).
 

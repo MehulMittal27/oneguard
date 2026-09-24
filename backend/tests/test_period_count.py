@@ -136,8 +136,7 @@ def test_one_a_day_second_order_the_same_day_is_declined(make_ledger) -> None:
         "decline", ["period_count_exceeded"], ["C12-count"])
     row = next(r for r in explanation.evidence if r.rule == "At most 1 orders in 1 days")
     assert (row.outcome, row.detail) == ("fail", "You allowed one order per day; one was already approved today at 12:10")
-    assert decision.message == ("Declined CHF 32.00: you allowed one order per day; one was already approved "
-                                "today at 12:10. Would approve from tomorrow at 12:10.")
+    assert decision.message == "Declined CHF 32.00: You allowed one order per day; one was already approved today at 12:10."
     assert decision.counterfactual == "Would approve from tomorrow at 12:10."
 
 
@@ -186,9 +185,8 @@ def test_a_pending_step_up_is_reserved(make_ledger) -> None:
     assert (view.period_count, view.period_reserved_count, view.period_last_approved_at) == (1, 1, None)
     engine, _, decision = _decide(ctx, _event(_zurich(MON, 18, 0), live_id="LIVE_COUNT_ASKED_AGAIN"))
     assert (engine.outcome, engine.reason_codes) == ("step_up", ["period_reserved_pending"])
-    assert decision.message == ("Waiting for you CHF 30.00: You allowed one order per day; "
-                                "one is still waiting for your answer.")
-    assert decision.counterfactual == "Would approve if you decline the order still waiting."
+    assert decision.message == "Waiting for you CHF 30.00: You allowed one order per day; one is still unanswered."
+    assert decision.counterfactual == "Would approve if you decline the unanswered order."
 
     ledger.resolve("LIVE_COUNT_WAITING", "decline", "customer", NOW)  # released: counts nothing
     assert _view(ledger, _zurich(MON, 19, 0), 1).period_count == 1  # the 18:00 step-up now waits
@@ -226,9 +224,8 @@ def test_two_a_week_the_third_order_in_the_week_fails(make_ledger) -> None:
     friday = _zurich(MON + timedelta(days=4), 19, 0)
     engine, explanation, _ = _decide(ctx, _event(friday))
     assert (engine.outcome, engine.reason_codes) == ("decline", ["period_count_exceeded"])
-    assert explanation.message == (
-        "Declined CHF 30.00: you allowed two orders per week; two were already approved, the last "
-        "on Wed 23 Sep at 19:05. Would approve once fewer than three orders fall in the last 7 days.")
+    assert explanation.message == "Declined CHF 30.00: You allowed two orders per week; two were already approved."
+    assert explanation.counterfactual == "Would approve once fewer than three orders fall in the last week."
 
     # Next Monday 19:30: the first Monday order is more than 7 days old.
     assert _decide(ctx, _event(_zurich(MON + timedelta(days=7), 19, 30)))[0].outcome == "approve"
@@ -259,7 +256,7 @@ def test_strictly_fewer_than(make_ledger) -> None:
     assert _decide(ctx, _event(_zurich(MON, 12, 10)))[0].outcome == "approve"
     engine, explanation, _ = _decide(ctx, _event(_zurich(MON, 12, 40)))
     assert engine.reason_codes == ["period_count_exceeded"]
-    assert "you allowed one order per day" in explanation.message
+    assert "You allowed one order per day" in explanation.message
 
 
 def test_spend_reconciliation_ignores_counts() -> None:

@@ -193,8 +193,13 @@ def form_rules(form: api.FormInput) -> tuple[list[Rule], dict[str, Any]]:
     return rules, flags
 
 
+FORM_INSTRUCTION = "Built from the form"
+"""A form draft's ``instruction``: the form has no words of the customer's to keep."""
+
+
 def form_instruction(rules: Sequence[Rule], uncertainty: str) -> str:
-    """The form's rules as one plain sentence list (the form has no free text)."""
+    """The form's rules as one plain sentence list, the instruction a form policy sends to
+    Viseca (the platform wants text). Never stored or served as the customer's words."""
     ask = "Ask me when uncertain." if uncertainty == "ask" else "Decline when uncertain."
     return " ".join([*(f"{r.text}." for r in rules), ask])
 

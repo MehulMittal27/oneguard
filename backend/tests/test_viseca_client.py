@@ -189,7 +189,7 @@ def test_the_bearer_key_never_leaves_the_authorization_header(
     async def scenario() -> None:
         async with fake_client(fake, db) as client:
             assert SECRET not in repr(client)
-            code = await demo.run_demo(
+            code = await demo.run_local(
                 client, "SCEN0000", db=db, poll_wait_s=0.2, max_seconds=15, out=print, **ALL_STUBS
             )
             assert code == 0
@@ -212,13 +212,17 @@ def test_the_bearer_key_never_leaves_the_authorization_header(
         assert SECRET not in text
 
 
+NO_SERVER = "http://127.0.0.1:9"
+"""Nothing listens there: ``demo.main`` takes its local fallback without the network."""
+
+
 def test_demo_refuses_to_start_a_run_while_runs_are_switched_off(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("VISECA_API_KEY", "some-key")
     monkeypatch.setenv("ONEGUARD_ALLOW_RUNS", "false")
     monkeypatch.setattr(demo, "get_engine", lambda: pytest.fail("nothing may start"))
-    assert demo.main(["--scenario", "SCEN0000"]) == 2
+    assert demo.main(["--scenario", "SCEN0000", "--api", NO_SERVER]) == 2
     err = capsys.readouterr().err
     assert "ONEGUARD_ALLOW_RUNS=false" in err and "nothing was started" in err
 
@@ -232,7 +236,7 @@ def test_demo_runs_are_allowed_unless_the_flag_is_false(
     else:
         monkeypatch.setenv("ONEGUARD_ALLOW_RUNS", value)
     monkeypatch.delenv("VISECA_API_KEY", raising=False)
-    assert demo.main(["--scenario", "SCEN0000"]) == 2
+    assert demo.main(["--scenario", "SCEN0000", "--api", NO_SERVER]) == 2
     err = capsys.readouterr().err
     assert "VISECA_API_KEY is not set" in err and "ONEGUARD_ALLOW_RUNS" not in err  # past the flag
 
@@ -241,9 +245,10 @@ def test_demo_without_a_key_exits_with_a_clear_message(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.delenv("VISECA_API_KEY", raising=False)
-    assert demo.main(["--scenario", "SCEN0000"]) == 2
-    err = capsys.readouterr().err
+    assert demo.main(["--scenario", "SCEN0000", "--api", NO_SERVER]) == 2
+    out, err = capsys.readouterr()
     assert "VISECA_API_KEY is not set" in err and "make demo-live" in err
+    assert f"No OneGuard server answers at {NO_SERVER}. Falling back to a local worker" in out
 
 
 def test_demo_compiles_confirms_runs_and_tails_a_scenario(db: Engine) -> None:
@@ -252,7 +257,7 @@ def test_demo_compiles_confirms_runs_and_tails_a_scenario(db: Engine) -> None:
 
     async def scenario() -> int:
         async with fake_client(fake, db) as client:
-            return await demo.run_demo(
+            return await demo.run_local(
                 client, "SCEN0001", db=db, poll_wait_s=0.2, max_seconds=30, out=lines.append, **ALL_STUBS
             )
 
@@ -264,6 +269,34 @@ def test_demo_compiles_confirms_runs_and_tails_a_scenario(db: Engine) -> None:
     assert "progress: 0/10 decided, 0 waiting for the customer" in lines  # generated_event_count
     assert sum("uncertain/expired" in line for line in lines) == 10
     assert lines[-1] == "Summary: {'step_up/expired': 10}"
+
+
+def test_demo_stops_when_another_worker_already_polls_the_store(db: Engine) -> None:
+    """Its worker stands by (the lease is taken), so the demo starts nothing and says why."""
+
+    class TakenLease:
+        def acquire(self) -> bool:
+            return False
+
+        def held(self) -> bool:
+            return False
+
+        def release(self) -> None:
+            return None
+
+    fake = FakeViseca(FakeConfig(decision_deadline_s=3, human_window_s=0.3, max_wait_s=0.2))
+    lines: list[str] = []
+
+    async def scenario() -> int:
+        async with fake_client(fake, db) as client:
+            return await demo.run_local(
+                client, "SCEN0001", db=db, poll_wait_s=0.2, max_seconds=5, out=lines.append,
+                lease=TakenLease(), **ALL_STUBS,
+            )  # fmt: skip
+
+    assert asyncio.run(scenario()) == 1
+    assert lines == [demo.STANDBY_MESSAGE]
+    assert fake.mandates == {} and fake.runs == {} and fake.polls == 0
 
 
 def test_drain_returns_when_a_finished_summary_was_never_discarded() -> None:

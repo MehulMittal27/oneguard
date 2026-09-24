@@ -111,7 +111,7 @@ def test_c1_fail_names_numbers_and_counterfactual():
     r = only(evaluate_rules(f, policy(rules=[rule("C1", ORDER, "<=", 120, scope="purchase")])), "C1")
     assert r.outcome == "fail"
     assert "CHF 126.00" in r.detail and "CHF 120.00" in r.detail
-    assert r.counterfactual == "Would approve with order total at or below CHF 120.00"
+    assert r.counterfactual == "Would approve at CHF 120.00 or less"
 
 
 def test_c1_limit_in_foreign_currency_is_converted():
@@ -337,7 +337,21 @@ def test_period_over_limit_on_finals_fails():
     f = facts(amount=24.0, billing_amount_chf=24.0)
     r = evaluate_period_rule(WEEK, f, spent_chf=300.00, reserved_chf=0)
     assert r.outcome == "fail" and RESERVATION_ONLY not in r.detail
-    assert r.counterfactual == "nothing more fits in this 7-day window"
+    assert r.detail == "This would take the week to CHF 324.00, over your CHF 300.00"
+    assert r.counterfactual == "Nothing more fits this week"
+
+
+@pytest.mark.parametrize(("days", "clause", "counterfactual"), [
+    (1, "This would take the day to CHF 120.00, over your CHF 100.00", "Would approve at CHF 80.00 or less today"),
+    (7, "This would take the week to CHF 120.00, over your CHF 100.00", "Would approve at CHF 80.00 or less this week"),
+    (30, "This would take the month to CHF 120.00, over your CHF 100.00", "Would approve at CHF 80.00 or less this month"),
+    (14, "This would take the 14 days to CHF 120.00, over your CHF 100.00",
+     "Would approve at CHF 80.00 or less in these 14 days"),
+])  # fmt: skip
+def test_period_template_names_the_period(days, clause, counterfactual):
+    period = WEEK.model_copy(update={"value": 100, "period_days": days})
+    r = evaluate_period_rule(period, facts(amount=100.0, billing_amount_chf=100.0), spent_chf=20.0, reserved_chf=0)
+    assert (r.outcome, r.detail, r.counterfactual) == ("fail", clause, counterfactual)
 
 
 def test_period_fail_only_because_of_reservation_is_marked():
@@ -350,4 +364,4 @@ def test_period_fail_only_because_of_reservation_is_marked():
 def test_period_headroom_counterfactual():
     f = facts(amount=138.0, billing_amount_chf=138.0)
     r = evaluate_period_rule(WEEK, f, spent_chf=255.50, reserved_chf=0)
-    assert r.outcome == "fail" and r.counterfactual == "Would approve at CHF 44.50 or less in this 7-day window"
+    assert r.outcome == "fail" and r.counterfactual == "Would approve at CHF 44.50 or less this week"

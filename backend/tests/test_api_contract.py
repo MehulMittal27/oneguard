@@ -31,7 +31,12 @@ from sqlalchemy import select
 
 from oneguard.api import queries
 from oneguard.api.app import AppConfig, create_app, sanitise
-from oneguard.api.policies import NO_CAP_QUESTION, NO_CHECKS_QUESTION, per_order_cap
+from oneguard.api.policies import (
+    FORM_INSTRUCTION,
+    NO_CAP_QUESTION,
+    NO_CHECKS_QUESTION,
+    per_order_cap,
+)
 from oneguard.api.services import Services
 from oneguard.engine import stubs
 from oneguard.engine.interfaces import load_implementations
@@ -46,7 +51,7 @@ from oneguard.engine.types import (
 )
 from oneguard.store import seed as seed_module
 from oneguard.store.db import make_engine, session
-from oneguard.store.schema import Decision, Mandate, PolicyDraft
+from oneguard.store.schema import Decision, Mandate, PolicyDraft, Run
 from oneguard.viseca.client import VisecaClient, store_sink
 from oneguard.viseca.demo import rule_to_viseca
 from tests.fake_viseca import FakeConfig, FakeViseca
@@ -237,6 +242,7 @@ async def running(
     fake: FakeViseca | None = None,
     clock: Clock | None = None,
     client_timeout_s: float = 10.0,
+    ready: str = "polling",
     **config: Any,
 ) -> AsyncIterator[Running]:
     clock = clock or Clock()
@@ -266,7 +272,7 @@ async def running(
         async with httpx.AsyncClient(transport=transport, base_url="http://oneguard.test") as http:
             run = Running(app, http, fake, faulty, clock)
             if fake is not None:
-                await until(lambda: run.services.worker.status().state == "polling")
+                await until(lambda: run.services.worker.status().state == ready)
             yield run
 
 
@@ -327,12 +333,13 @@ def by_total(decisions: list[dict[str, Any]], total: float) -> dict[str, Any]:
 
 
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-TIMESTAMP_KEYS = {"occurred_at", "deadline_at", "confirmed_at", "period_window_start", "as_of", "next_at"}
+TIMESTAMP_KEYS = {"occurred_at", "deadline_at", "confirmed_at", "period_window_start", "as_of", "next_at", "run_started_at"}
 DECISION_KEYS = {
     "authorization_id", "customer_id", "card_id", "decision", "uncertain_outcome", "status", "reason_codes",
     "message", "uncertainty", "occurred_at", "merchant", "amount", "currency", "billing_amount_chf", "items",
     "injection_flag", "evidence", "order_returnable", "delivery_by",
     "counterfactual", "related", "session", "merchant_meta", "engine_version", "latency_ms", "explanation_source",
+    "run_id", "run_started_at",
 }  # fmt: skip
 NULLABLE_DECISION_KEYS = {"uncertain_outcome", "uncertainty", "injection_flag", "delivery_by", "counterfactual", "related", "session"}
 MATRIX = {
@@ -596,6 +603,34 @@ def test_offline_replay_terms_injection_merchants_and_one_customer(db_url: str) 
             assert lookalike and original
             assert {d["merchant"]["merchant_id"] for d in lookalike} != {d["merchant"]["merchant_id"] for d in original}
             assert all(not d["merchant_meta"]["familiar"] for d in lookalike)
+
+    asyncio.run(scenario())
+
+
+def test_each_decision_names_its_run_and_when_the_run_started(db_url: str) -> None:
+    """Two runs on one card: C6 carries each decision's run id and its run's start (§2)."""
+
+    async def scenario() -> None:
+        clock = Clock()
+        async with running(db_url, clock=clock) as run:
+            first = await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
+            clock.offset = timedelta(minutes=5)
+            both = await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
+            assert len({d["authorization_id"] for d in both}) == 20
+            first_ids = {d["authorization_id"] for d in first}
+            runs: dict[str, set[str]] = {}
+            for d in both:
+                assert d["run_id"] and TIMESTAMP.match(d["run_started_at"])
+                runs.setdefault(d["run_id"], set()).add(d["run_started_at"])
+            assert len(runs) == 2 and all(len(starts) == 1 for starts in runs.values())
+            (older,) = {d["run_id"] for d in both if d["authorization_id"] in first_ids}
+            (newer,) = set(runs) - {older}
+            (older_start,), (newer_start,) = runs[older], runs[newer]
+            gap = datetime.fromisoformat(newer_start) - datetime.fromisoformat(older_start)
+            assert timedelta(minutes=5) <= gap < timedelta(minutes=6)
+            with session(run.services.db_engine) as s:
+                stored = dict(s.execute(select(Run.run_id, Run.started_at)).all())
+            assert {older, newer} <= set(stored)
 
     asyncio.run(scenario())
 
@@ -903,8 +938,8 @@ def test_policy_drafts_and_the_viseca_dance(db_url: str) -> None:
             at_viseca = run.fake.mandates[tm]
             with session(run.services.db_engine) as s:
                 row = s.scalar(select(Mandate))
-                assert row.viseca_mandate_id == tm and row.instruction == draft["instruction"]
-            assert at_viseca["instruction"] == draft["instruction"]
+                assert row.viseca_mandate_id == tm and row.instruction == draft["instruction"] == FORM_INSTRUCTION
+            assert at_viseca["instruction"].endswith("Decline when uncertain.")
             assert at_viseca["uncertainty_policy"] == "decline"
             assert at_viseca["guidance"] == [c["text"] for c in draft["checks"]]
             assert [r["field"] for r in at_viseca["hard_rules"]] == [
@@ -919,6 +954,91 @@ def test_policy_drafts_and_the_viseca_dance(db_url: str) -> None:
             second = await confirm_form(run, per_order_limit_chf=80)
             assert (await run.get("/api/cards/CA0001/policy")).json()["mandate"]["mandate_id"] == second["mandate_id"]
             assert run.fake.mandates[tm]["status"] == "revoked"
+
+    asyncio.run(scenario())
+
+
+def test_the_customers_words_are_served_verbatim(db_url: str) -> None:
+    """C1 -> C2 -> C3 -> C4 keep the instruction exactly as typed (unicode, spacing, line
+    breaks); Viseca gets the same words. Checks and guidance never replace them."""
+    words = "  Groceries only, max CHF 120 per order.\nMüsli & café  okay - ask me first!  "
+
+    async def scenario() -> None:
+        engine = {**TEST_ENGINE, "compile_instruction": load_implementations()["compile_instruction"]}
+        async with running(db_url, fake=FakeViseca(fast()), implementations=engine) as run:
+            draft = (await run.post("/api/cards/CA0001/policy-drafts", json={"instruction": words})).json()
+            assert draft["instruction"] == words and draft["checks"], draft
+            r = await run.post(
+                f"/api/policy-drafts/{draft['draft_id']}/confirm",
+                json={"checks": draft["checks"], "uncertainty_policy": "ask", "open_questions": []},
+            )
+            assert r.status_code == 200, r.text
+            assert r.json()["instruction"] == words
+            (tm,) = run.fake.mandates
+            assert run.fake.mandates[tm]["instruction"] == words
+            assert (await run.get("/api/cards/CA0001/policy")).json()["mandate"]["instruction"] == words
+
+            proposal = (await run.post("/api/cards/CA0001/policy-drafts", json={"form": FORM})).json()
+            period = next(c for c in proposal["checks"] if c["id"] == "period_limit")
+            r = await run.post("/api/cards/CA0001/policy/tighten", json={"add_checks": [period]})
+            assert r.status_code == 200, r.text
+            assert r.json()["instruction"] == words
+            assert (await run.get("/api/cards/CA0001/policy")).json()["mandate"]["instruction"] == words
+            with session(run.services.db_engine) as s:
+                assert s.scalar(select(Mandate)).instruction == words
+
+    asyncio.run(scenario())
+
+
+def test_a_form_policy_serves_built_from_the_form(db_url: str) -> None:
+    """The form has no words of the customer's: C1, C2 and C3 serve "Built from the form",
+    never the joined check texts. Viseca still gets the accepted checks as text."""
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast())) as run:
+            draft = (await run.post("/api/cards/CA0001/policy-drafts", json={"form": FORM})).json()
+            assert draft["instruction"] == FORM_INSTRUCTION == "Built from the form"
+            mandate = await confirm_form(run)
+            assert mandate["instruction"] == FORM_INSTRUCTION
+            assert (await run.get("/api/cards/CA0001/policy")).json()["mandate"]["instruction"] == FORM_INSTRUCTION
+            (tm,) = run.fake.mandates
+            texts = [c["text"] for c in mandate["checks"]]
+            assert run.fake.mandates[tm]["instruction"] == " ".join([*(f"{t}." for t in texts), "Ask me when uncertain."])
+
+    asyncio.run(scenario())
+
+
+def test_form_policies_stored_with_joined_checks_serve_built_from_the_form(db_url: str) -> None:
+    """Rows written before the form path kept "Built from the form" held the joined check
+    texts; a start sets them (and only them) to it. A typed instruction is left alone."""
+    at = datetime(2026, 9, 20, 10, 0, tzinfo=UTC)
+    joined = "Total at or below CHF 20 per order. Ask me when uncertain."
+
+    def rows(card_id: str, compiler: str, instruction: str, confirmed_at: datetime) -> list[Any]:
+        common = {"card_id": card_id, "instruction": instruction, "rules": {}, "checks": [],
+                  "uncertainty_policy": "ask", "open_questions": []}  # fmt: skip
+        return [
+            PolicyDraft(draft_id=f"pd_{card_id}", customer_id="CU0001", dry_run={}, compiler=compiler,
+                        viseca_draft_id=None, created_at=confirmed_at, confirmed_at=confirmed_at, **common),
+            Mandate(mandate_id=f"md_{card_id}", viseca_mandate_id=None, customer_id="CU0001", status="active",
+                    confirmed_at=confirmed_at, revoked_at=None, **common),
+        ]  # fmt: skip
+
+    engine = make_engine(db_url)
+    with session(engine) as s:
+        s.add_all([*rows("CA0001", "form", joined, at), *rows("CA0002", "fallback", joined, at)])
+    engine.dispose()
+
+    async def scenario() -> None:
+        async with running(db_url) as run:
+            policy = (await run.get("/api/cards/CA0001/policy")).json()["mandate"]
+            assert policy["instruction"] == FORM_INSTRUCTION
+            typed = (await run.get("/api/cards/CA0002/policy")).json()["mandate"]
+            assert typed["instruction"] == joined
+            with session(run.services.db_engine) as s:
+                drafts = {d.card_id: d.instruction for d in s.scalars(select(PolicyDraft))}
+            assert drafts == {"CA0001": FORM_INSTRUCTION, "CA0002": joined}
+            assert queries.restore_form_instructions(run.services.db_engine, FORM_INSTRUCTION) == 0
 
     asyncio.run(scenario())
 
@@ -1088,6 +1208,38 @@ def test_operator_endpoints(db_url: str) -> None:
     asyncio.run(scenario())
 
 
+class TakenLease:
+    """The worker lease while another process holds it."""
+
+    def acquire(self) -> bool:
+        return False
+
+    def held(self) -> bool:
+        return False
+
+    def release(self) -> None:
+        return None
+
+
+def test_healthz_shows_standby_while_another_process_holds_the_worker_lease(db_url: str) -> None:
+    """A second process on the same store does not poll; /healthz says so and stays 200."""
+
+    async def scenario() -> None:
+        fake = FakeViseca(fast())
+        options = {"poll_wait_s": 0.2, "lease": TakenLease(), "standby_retry_s": 0.05}
+        async with running(db_url, fake=fake, ready="standby", worker_options=options) as run:
+            await asyncio.sleep(0.3)
+            r = await run.get("/healthz")
+            assert r.status_code == 200
+            worker = r.json()["worker"]
+            assert (worker["state"], worker["polling"], worker["ok"], worker["last_poll_at"]) == (
+                "standby", False, False, None,
+            )  # fmt: skip
+            assert r.json()["status"] == "degraded" and fake.polls == 0
+
+    asyncio.run(scenario())
+
+
 def test_d3_starts_nothing_while_runs_are_switched_off(db_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """ONEGUARD_ALLOW_RUNS=false: D3 is 409 runs_disabled and no run reaches the platform."""
 
@@ -1128,12 +1280,13 @@ def test_d7_shows_the_newest_run_live_or_replay(db_url: str, monkeypatch: pytest
             live = (await run.post("/api/dev/runs", json={"scenario_id": "SCEN0000", "card_id": "CA0001"})).json()
             current = (await run.get("/api/dev/runs/current")).json()
             assert current["run_id"] == live["run_id"]
-            assert current == (await run.get(f"/api/dev/runs/{live['run_id']}")).json()
 
             async def decided() -> bool:
                 return (await run.get("/api/dev/runs/current")).json()["decided"] == 1
 
-            await until(decided)
+            await until(decided)  # counters settled: D7 and D4 read the same run alike
+            current = (await run.get("/api/dev/runs/current")).json()
+            assert current == (await run.get(f"/api/dev/runs/{live['run_id']}")).json()
             await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
             current = (await run.get("/api/dev/runs/current")).json()
             assert set(current) == {"scenario_id", "card_id", "delivered", "total", "running", "next_at"}

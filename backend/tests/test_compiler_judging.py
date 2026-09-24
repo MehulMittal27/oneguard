@@ -13,14 +13,15 @@
 4. Five free-text sentences from the P1 review (tests/fixtures/compiler/review_responses.yaml):
    the parser's exact typed rules, and the recorded response ships ``compiler: llm``.
 5. What the LLM path takes from the customer's words, not the model: the boundary (T3),
-   "X each" per purchase, and excluded things no category holds; and "one delivery a day"
-   is never a CHF period limit in the engine.
+   "X each" per purchase, and excluded things no category holds.
+6. "one delivery a day" is a purchase count (cart.purchases_in_period), never a CHF period
+   limit: SCEN0113 compiled on both paths declines a second dinner the same simulated day.
 """
 
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -74,7 +75,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
         (BILL, "<=", 40, "CHF", "purchase", None, "decline"),
         (CAT, "in", ("dining", "food_delivery"), None, None, None, "decline"),  # "dinners"
         ("authorization.weekday", "in", tuple(WEEK), None, None, None, "decline"),  # weeknight, never weekend
-        ("unverifiable", "=", "one delivery a day", None, None, None, "decline"),  # engine gap: no count field
+        ("cart.purchases_in_period", "<=", 1, None, "period", 1, "decline"),  # "one delivery a day"
         (KNOWN, "=", "true", None, None, None, "decline"),               # "my usual services"
     ]},
     "SCEN0117": {"rules": [
@@ -228,7 +229,7 @@ REVIEW_EXPECTED: dict[str, list[tuple]] = {
         (BILL, "<=", 40, "CHF", "purchase", None, "decline"),  # the total already includes delivery
         (CAT, "in", ("dining", "food_delivery"), None, None, None, "decline"),
         ("authorization.weekday", "not_in", ("sat", "sun"), None, None, None, "decline"),
-        ("unverifiable", "=", "one meal delivery a day", None, None, None, "decline"),  # engine gap
+        ("cart.purchases_in_period", "<=", 1, None, "period", 1, "decline"),  # "one meal delivery a day"
     ],
 }
 
@@ -309,32 +310,104 @@ def test_an_excluded_thing_no_category_holds_is_unverifiable(history):
     assert read.open_questions == []
 
 
-def test_one_delivery_a_day_is_not_a_chf_limit(history):
-    """SCEN0113 end to end: the compiled mandate decides a CHF 30 weekday dinner. A count
-    compiled as a period rule was read as a CHF 1.00 daily total and declined it."""
-    from datetime import UTC, datetime
+COUNT_PHRASES = [
+    ("one delivery a day", "<=", 1, 1),
+    ("Order dinner, one a day, max CHF 30", "<=", 1, 1),
+    ("At most two orders a week, CHF 80 per order", "<=", 2, 7),
+    ("Pizza once per week, max CHF 30", "<=", 1, 7),
+    ("fewer than three orders a month, CHF 60 max", "<", 3, 30),
+]
 
+
+@pytest.mark.parametrize("instruction,op,count,days", COUNT_PHRASES, ids=[c[0] for c in COUNT_PHRASES])
+def test_a_count_per_period_is_a_purchase_count(instruction, op, count, days, history):
+    rules = [r for r in parse(instruction, history, "", TODAY).rules if r.field == "cart.purchases_in_period"]
+    assert [(r.operator, r.value, r.scope, r.period_days, r.id) for r in rules] == [(op, count, "period", days, "C12-count")]
+
+
+def test_an_amount_a_week_is_never_a_count(history):
+    """"max CHF 120 per order and 300 a week": 300 is a CHF 7-day limit, not 300 orders."""
+    draft = parse("groceries only, max CHF 120 per order and 300 a week", history, "", TODAY)
+    assert not [r for r in draft.rules if r.field == "cart.purchases_in_period"]
+
+
+def test_the_llm_path_takes_a_count_and_asks_without_a_window(history):
+    """The model's "= 1" is a cap ("<="); a count with no window becomes a question, never a guess."""
+    instruction = "one delivery a day, max CHF 40"
+    count = _raw("cart.purchases_in_period", "=", "one delivery a day", value_number=1, scope="period", period_days=1)
+    read = read_with_llm(instruction, Scripted(_response(count)), history, "", TODAY)
+    assert [(r.field, r.operator, r.value, r.scope, r.period_days) for r in read.rules] == [
+        ("cart.purchases_in_period", "<=", 1, "period", 1)]
+    read = read_with_llm(instruction, Scripted(_response(count | {"scope": None, "period_days": None})),
+                         history, "", TODAY)
+    assert read.rules == [] and read.open_questions == ['Over how many days should "one delivery a day" apply?']
+
+
+def test_a_count_is_linted_as_stated_and_is_not_an_amount_cap(history):
+    from oneguard.compiler.lint import lint, lint_accepted
+
+    draft = parse("one delivery a day", history, "", TODAY)
+    issues = {i.code for i in lint(draft).issues}
+    assert "invented_value" not in issues
+    assert not lint_accepted(draft.rules, [r.id for r in draft.rules]).ok  # a count is no per-order cap
+    invented = draft.model_copy(update={"rules": [draft.rules[0].model_copy(update={"value": 3, "period_days": 7})]})
+    assert [i.code for i in lint(invented).issues if i.rule_id == "C12-count"] == ["invented_value"] * 2
+
+
+def _dinner_history() -> StoreHistoryIndex:
+    """The customer's usual dinner service, device and country, so only the rules decide."""
+    from oneguard.engine.types import HistoryRow
+    from tests.test_c9_no_history import CARD, NEW, T0
+
+    return StoreHistoryIndex(rows=[HistoryRow(
+        authorization_id="H_DINNER", customer_id=NEW, card_id=CARD, initiator_type="human",
+        timestamp=T0 - timedelta(days=20), transaction_type="purchase", status="approved", amount=35.0,
+        currency="CHF", billing_amount_chf=35.0, merchant_id="ME_DINNER", merchant_name="Dinner Service",
+        merchant_category="food_delivery", merchant_country="CH", channel="ecommerce", recurring=False,
+        customer_device_id="DVC-NEW", description="",
+    )])  # fmt: skip
+
+
+def _scen0113_response() -> dict:
+    return next(e["response"] for e in RECORDED if e["scenario"] == "SCEN0113")
+
+
+@pytest.mark.parametrize("path", ["fallback", "llm"])
+def test_scen0113_declines_a_second_dinner_the_same_day(path):
+    """SCEN0113 end to end, compiled on each path: a CHF 30 weekday dinner is approved, a
+    second one the same simulated day declines with period_count_exceeded."""
     from oneguard.engine.ledger_base import InMemoryLedger
     from oneguard.engine.types import Policy
     from oneguard.llm.provider import NullProvider
     from oneguard.pipeline import PipelineContext, decide_event, period_days_of
     from tests.test_c9_no_history import event
 
+    dinners = _dinner_history()
     instruction = SERVED["SCEN0113"]
-    draft = compile_instruction(instruction, history, "", NullProvider(), today=TODAY)
+    provider = NullProvider() if path == "fallback" else Scripted(_scen0113_response())
+    draft = compile_instruction(instruction, dinners, "", provider, today=TODAY)
+    assert draft.compiler == path
     policy = Policy(mandate_id="TM_NEW", status="active", instruction=instruction,
-                    uncertainty_policy="ask", rules=draft.rules)
-    assert period_days_of(policy) is None
-    ev = event(amount=30.0)  # Monday 10 Aug 2026, 10:00 UTC
-    ev["authorization"]["merchant"]["merchant_category"] = "food_delivery"
-    ev["authorization"]["items"][0]["item_category"] = "food_delivery"
-    ctx = PipelineContext(policy=policy, ledger=InMemoryLedger(history=history), history=history,
-                          run_id="run-113", now=lambda: datetime(2026, 9, 25, 12, 0, tzinfo=UTC))
-    engine, explanation, _ = decide_event(ev, ctx)
-    assert engine.outcome == "step_up" and "period_limit_exceeded" not in engine.reason_codes
-    assert "CHF 1.00" not in explanation.message
-    count = next(row for row in explanation.evidence if "one delivery a day" in row.rule)
-    assert count.outcome == "uncertain"
+                    uncertainty_policy=draft.uncertainty_policy, rules=draft.rules,
+                    allowed_item_categories=draft.allowed_item_categories,
+                    requires_known_shop=draft.requires_known_shop)
+    assert period_days_of(policy) == 1
+    ctx = PipelineContext(policy=policy, ledger=InMemoryLedger(history=dinners), history=dinners,
+                          run_id=f"run-113-{path}", now=lambda: datetime(2026, 9, 25, 12, 0, tzinfo=UTC))
+
+    def dinner(item: str, minutes: int) -> dict:  # Monday 10 Aug 2026, 12:00 Zurich + minutes
+        ev = event("ME_DINNER", item, minutes=minutes, amount=30.0)
+        ev["authorization"]["merchant"]["merchant_category"] = "food_delivery"
+        ev["authorization"]["items"][0].update(item_category="food_delivery", item_name="Dinner")
+        return ev
+
+    first, _, _ = decide_event(dinner("IT_DINNER_1", 0), ctx)
+    assert first.outcome == "approve", first
+    second, explanation, _ = decide_event(dinner("IT_DINNER_2", 7 * 60), ctx)  # 19:00 the same day
+    assert (second.outcome, second.reason_codes) == ("decline", ["period_count_exceeded"])
+    assert explanation.message == ("Declined CHF 30.00: You allowed one order per day; one was already "
+                                   "approved today at 12:00.")
+    assert explanation.counterfactual == "Would approve from tomorrow at 12:00."
 
 
 def test_one_item_reads_in_the_singular():

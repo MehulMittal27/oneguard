@@ -11,7 +11,15 @@ loop, never blocked by a human:
   scenarios then exist for the API. The sandbox serves no history-file hash, so the
   file is downloaded from ``/v1/reference-data/authorization-history.csv`` and hashed; if
   it differs from the one the seed checked (``data/metadata.json``),
-  ``authorization_history`` is re-seeded from it and that is logged loudly.
+  ``authorization_history`` is re-seeded from it and that is logged loudly. The served
+  scenario ids go to ``worker_state`` (``served_scenarios``, C12 ``live``).
+- which customer and card a served scenario runs on: the catalogue does not say, the
+  platform does in the bootstrap ``profile``, every run's ``fixture_profiles`` and every
+  authorization. Each sighting is upserted into ``scenario_profiles`` (``remember_profiles``):
+  at start, from D3's run reply, from run progress, from a run's first event and the feed.
+- start also reads ``GET /v1/authorizations`` once: its runs name their cards, and a step-up
+  the platform still serves as waiting that the ledger already closed by the timeout rule
+  gets its timeout ``/resolve`` now, so the platform stops serving it.
 - loop: long-poll ``/v1/decision-requests/next?wait=25``. 204 → read the progress of
   every tracked run and the event feed, poll again. 200 → validate ``data`` against the
   event schema, remember the live → source id map (and the live related id), store the
@@ -45,6 +53,15 @@ loop, never blocked by a human:
   processed its ``next_cursor`` is stored (``worker_state``); ``start`` resumes from the
   stored cursor, so a restart never re-scans the team-wide feed (0 only on first boot).
 
+- one worker polls per store (``store/lease.py``): ``start`` takes the worker lease (a
+  Postgres advisory lock; always granted on SQLite). Without it the worker stays in
+  ``standby``: no poll, no step-up recovery, no feed; it retries and takes over once the
+  holder stops, and a holder whose lease is gone stands by again.
+- a run's row: counters recomputed from ``events_raw`` and the ledger on every write,
+  ``started_at`` kept from the first. A finished run is closed from ``GET
+  /v1/scenario-runs/{id}`` on a 204, on the feed's ``scenario.completed`` (the feed is read
+  at least every ``FEED_SYNC_S``) and at start for live rows still ``running``.
+
 ``status()`` is what ``/healthz`` reports: state, last poll, events cursor, runs.
 
 All ledger and pipeline calls run on one dedicated thread, so a SQL ledger session is
@@ -61,6 +78,7 @@ import hashlib
 import logging
 import math
 import threading
+import time
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -73,7 +91,8 @@ from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from oneguard import __version__
@@ -100,7 +119,17 @@ from oneguard.pipeline import (
 from oneguard.store import seed as seed_module
 from oneguard.store.db import get_engine, session
 from oneguard.store.history import StoreHistoryIndex
-from oneguard.store.schema import EventRaw, Mandate, Run, WorkerState
+from oneguard.store.lease import WorkerLease, worker_lease
+from oneguard.store.schema import (
+    Account,
+    Card,
+    Decision,
+    EventRaw,
+    Mandate,
+    Run,
+    ScenarioProfile,
+    WorkerState,
+)
 from oneguard.viseca.client import VisecaClient, VisecaError, cap
 from oneguard.viseca.schema import event_errors
 
@@ -121,9 +150,18 @@ POST_MARGIN_S = 0.5
 """Time kept free before ``deadline_at`` to POST the step-up when the engine overruns its budget."""
 POST_RETRY_DELAYS_S = (0.2, 0.5, 1.0)
 LOOP_BACKOFF_MAX_S = 10.0
+STANDBY_RETRY_S = 5.0
+"""How often a worker in standby tries to take the lease."""
+LEASE_CHECK_S = 10.0
+"""How often the polling worker checks that its lease still holds."""
+FEED_SYNC_S = 5.0
+"""The event feed is read at least this often, also while waiting step-ups keep every poll
+busy (no 204): its ``scenario.completed`` closes finished runs."""
 RECONCILE_TOLERANCE_CHF = Decimal("0.005")
 HISTORY_FILE = "authorization_history.csv"
 EVENTS_CURSOR_KEY = "events_cursor"
+SERVED_SCENARIOS_KEY = "served_scenarios"
+"""``worker_state`` row: the scenario ids the platform served at the last start (C12 ``live``)."""
 
 TIMEOUT_MESSAGE = "No answer within {seconds} s; nothing was approved"
 """rules.md Q2 / api-contract §3.1, §3.5, with the human window from /v1/bootstrap."""
@@ -146,6 +184,15 @@ INVALID_EVENT_MESSAGE = (
 
 _DONE_STATES = {"completed", "complete", "done", "finished"}
 _ERROR_STATES = {"failed", "error", "errored", "cancelled", "canceled", "aborted"}
+PLATFORM_PENDING = frozenset({"awaiting_decision", STEP_UP_WAITING})
+"""``GET /v1/authorizations`` statuses of a purchase still open at the platform."""
+
+
+def run_finished(progress: Any) -> bool:
+    """True when a ``GET /v1/scenario-runs/{id}`` reply says the run is over (done or failed)."""
+    state = progress.get("status") if isinstance(progress, dict) else None
+    state = str(state or first_value(progress, "status", "state") or "").lower()
+    return state in _DONE_STATES or state in _ERROR_STATES
 _FEED_FINAL = {
     "approved": "approved",
     "approve": "approved",
@@ -200,11 +247,20 @@ def first_value(obj: Any, *keys: str) -> Any:
 
 @dataclass(frozen=True)
 class ServedProfile:
-    """The fixture profile ``/v1/bootstrap`` names for the team."""
+    """A fixture profile the platform names: the scenario, its customer and card.
+
+    ``customer_id`` is None when the platform named only the card (an authorization);
+    the store then finds the customer through the card.
+    """
 
     scenario_id: str
-    customer_id: str
+    customer_id: str | None
     card_id: str
+    profile_id: str | None = None
+
+
+def _text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value)
 
 
 def served_profile(bootstrap: Any) -> ServedProfile | None:
@@ -227,7 +283,81 @@ def served_profile(bootstrap: Any) -> ServedProfile | None:
     card = context.get("card_id") or part("card").get("card_id")
     if not all(isinstance(v, str) and v for v in (scenario, customer, card)):
         return None
-    return ServedProfile(scenario_id=scenario, customer_id=customer, card_id=card)
+    profile_id = profile.get("profile_id") or context.get("profile_id")
+    return ServedProfile(
+        scenario_id=scenario, customer_id=customer, card_id=card, profile_id=profile_id if _text(profile_id) else None
+    )
+
+
+def profile_sightings(obj: Any) -> list[ServedProfile]:
+    """Every scenario → customer / card binding the platform states anywhere in ``obj``.
+
+    Three shapes: the bootstrap ``profile`` (``scenario_id`` + ``profile_context``), a run
+    (reply, progress, feed item: ``scenario_id`` + ``fixture_profiles[{profile_id,
+    customer_id, card_id}]``) and an authorization (``scenario_id`` + ``card_id`` +
+    ``profile_id``). The served catalogue names no card, so these are the only sources.
+    """
+    found: list[ServedProfile] = []
+
+    def visit(node: Any) -> None:
+        if isinstance(node, list):
+            for value in node:
+                visit(value)
+            return
+        if not isinstance(node, dict):
+            return
+        scenario = node.get("scenario_id")
+        if _text(scenario):
+            bootstrap = served_profile({"profile": node}) if "profile_context" in node else None
+            if bootstrap is not None:
+                found.append(bootstrap)
+            profiles = node.get("fixture_profiles")
+            for p in profiles if isinstance(profiles, list) else []:
+                if isinstance(p, dict) and _text(p.get("card_id")):
+                    found.append(
+                        ServedProfile(
+                            scenario_id=scenario,
+                            customer_id=p["customer_id"] if _text(p.get("customer_id")) else None,
+                            card_id=p["card_id"],
+                            profile_id=p["profile_id"] if _text(p.get("profile_id")) else None,
+                        )
+                    )
+            if _text(node.get("card_id")):
+                found.append(
+                    ServedProfile(
+                        scenario_id=scenario,
+                        customer_id=node["customer_id"] if _text(node.get("customer_id")) else None,
+                        card_id=node["card_id"],
+                        profile_id=node["profile_id"] if _text(node.get("profile_id")) else None,
+                    )
+                )
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                visit(value)
+
+    visit(obj)
+    return found
+
+
+def served_scenario_ids(bootstrap: Any, reference: Any) -> list[str] | None:
+    """The scenario ids the platform serves now: bootstrap ``scenarios``, else reference
+    data ``runtime.scenario_ids``, else its ``scenario_catalogue``; None if neither says."""
+    candidates: list[Any] = []
+    if isinstance(bootstrap, dict):
+        candidates.append(bootstrap.get("scenarios"))
+    if isinstance(reference, dict):
+        runtime = reference.get("runtime")
+        candidates.append(runtime.get("scenario_ids") if isinstance(runtime, dict) else None)
+        tables = reference.get("tables")
+        candidates.append(tables.get("scenario_catalogue") if isinstance(tables, dict) else None)
+    for candidate in candidates:
+        if not isinstance(candidate, list) or not candidate:
+            continue
+        ids = [c.get("scenario_id") if isinstance(c, dict) else c for c in candidate]
+        ids = [i for i in ids if _text(i)]
+        if ids:
+            return sorted(set(ids))
+    return None
 
 
 def seconds_setting(
@@ -521,7 +651,8 @@ class WorkerStatus(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    state: Literal["stopped", "starting", "polling", "degraded"]
+    state: Literal["stopped", "starting", "standby", "polling", "degraded"]
+    """``standby``: another process holds the worker lease and polls; this one does not."""
     ok: bool
     last_poll_at: datetime | None
     events_cursor: int | str
@@ -531,6 +662,15 @@ class WorkerStatus(BaseModel):
     history_reseeded: bool
     last_error: str | None
     runs: list[RunStatus]
+
+
+@dataclass(frozen=True)
+class RunCounts:
+    """A run's counters in the store: events received, decisions recorded, step-ups waiting."""
+
+    delivered: int
+    decided: int
+    pending_human: int
 
 
 @dataclass
@@ -552,8 +692,13 @@ class RunState:
     platform_done: bool = False
     finished_at: datetime | None = None
     last_error: str | None = None
+    stored: RunCounts | None = None
+    """The counters as last recomputed from the store (``_save_run``): they include what
+    other processes, or this one before a restart, delivered and decided."""
 
     def status(self) -> RunStatus:
+        stored = self.stored or RunCounts(0, 0, 0)
+        delivered = max(len(self.live_ids), stored.delivered)
         return RunStatus(
             run_id=self.run_id,
             viseca_run_id=self.viseca_run_id,
@@ -561,10 +706,10 @@ class RunState:
             mandate_id=self.mandate_id,
             card_id=self.card_id,
             state=self.state,
-            delivered=len(self.live_ids),
-            decided=len(self.decided),
-            pending_human=len(self.pending),
-            total=max(self.total, len(self.live_ids)),
+            delivered=delivered,
+            decided=max(len(self.decided), stored.decided),
+            pending_human=max(len(self.pending), stored.pending_human),
+            total=max(self.total, delivered),
             redeliveries=self.redeliveries,
             last_error=self.last_error,
         )
@@ -595,9 +740,19 @@ class VisecaWorker:
         stubbed: frozenset[str] | None = None,
         data_dir: Path = seed_module.DATA_DIR,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        lease: WorkerLease | None = None,
+        standby_retry_s: float = STANDBY_RETRY_S,
+        lease_check_s: float = LEASE_CHECK_S,
+        feed_sync_s: float = FEED_SYNC_S,
     ) -> None:
         self.client = client
         self._db_engine = db or get_engine()
+        self._lease = lease if lease is not None else worker_lease(self._db_engine)
+        self._standby_retry_s = standby_retry_s
+        self._lease_check_s = lease_check_s
+        self._lease_checked_at = 0.0
+        self._feed_sync_s = feed_sync_s
+        self._feed_synced_at = 0.0
         self._history = history
         self._ledger = ledger
         self._provider = provider
@@ -619,6 +774,11 @@ class VisecaWorker:
         """What the start-up pack check did to each served reference table."""
         self.served_history_sha256: str | None = None
         """SHA-256 of the history file Viseca serves, once checked at start."""
+        self.served_scenarios: list[str] | None = None
+        """The scenario ids the platform serves now, once read at start."""
+        self._profiles: dict[str, tuple[str, str, str | None]] = {}
+        """scenario id → (customer, card, profile) as last stored, so a repeat sighting
+        costs no store round trip."""
 
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="oneguard-engine")
         self._task: asyncio.Task[None] | None = None
@@ -743,7 +903,12 @@ class VisecaWorker:
         )
 
     async def start(self) -> None:
-        """Read settings and reference data, load history, recover pending step-ups, poll."""
+        """Read settings and reference data, load history, then poll if this process holds
+        the worker lease; else stay in standby until it can take it.
+
+        Only the lease holder recovers pending step-ups, reads the event feed and polls, so
+        two processes on one store never both decide (``store/lease.py``).
+        """
         if self._task is not None:
             return
         self._state = "starting"
@@ -754,15 +919,20 @@ class VisecaWorker:
             self._history = await asyncio.to_thread(self._load_history)
         if self._ledger is None:
             self._ledger = default_ledger(self._db_engine, self._history)
-        await self._recover_pending()
-        self._cursor = await asyncio.to_thread(self._load_cursor)
-        self._task = asyncio.create_task(self._loop(), name="viseca-worker")
+        await self._remember_served()
+        held = await self._try_lease()
+        if held:
+            await self._take_over()
+        else:
+            self._state = "standby"
+        self._task = asyncio.create_task(self._lead(held), name="viseca-worker")
 
     async def stop(self) -> None:
         """Stop polling and cancel expiry timers (pending step-ups are recovered on start).
 
         Waits up to ``STOP_DRAIN_S`` for the engine thread's current work, then closes any
-        ledger session still open, so no pooled connection outlives the worker.
+        ledger session still open, so no pooled connection outlives the worker, and gives
+        the worker lease up.
         """
         tasks = [t for t in [self._task, *self._expiry.values()] if t is not None]
         for task in tasks:
@@ -780,7 +950,62 @@ class VisecaWorker:
         close = getattr(self._ledger, "close", None)
         if callable(close):
             close()
+        await asyncio.to_thread(self._lease.release)
         await self.client.drain()
+
+    # The worker lease --------------------------------------------------------------------
+
+    async def _try_lease(self) -> bool:
+        try:
+            held = await asyncio.to_thread(self._lease.acquire)
+        except (SQLAlchemyError, OSError) as exc:
+            self._note_error(f"worker lease unavailable: {type(exc).__name__}: {exc}")
+            return False
+        if not held and self._state != "standby":
+            log.warning("another process holds the worker lease and polls Viseca; this worker stands by")
+        self._lease_checked_at = time.monotonic()
+        return held
+
+    async def _lead(self, held: bool) -> None:
+        """Poll while this process holds the lease; stand by while another one does."""
+        while True:
+            if not held:
+                self._state = "standby"
+                while not await self._try_lease():
+                    await asyncio.sleep(self._standby_retry_s)
+                log.info("took the worker lease; polling Viseca")
+                await self._take_over()
+            await self._loop()
+            held = False
+            await self._step_down()
+
+    async def _take_over(self) -> None:
+        """What only the lease holder does before its first poll (it may ``/resolve``)."""
+        await self._recover_pending()
+        await self._reconcile_platform()
+        self._cursor = await asyncio.to_thread(self._load_cursor)
+        await self._track_unfinished_runs()
+
+    async def _step_down(self) -> None:
+        """The lease is gone: stop closing step-ups here; the new holder recovers them."""
+        log.warning("lost the worker lease; this worker stands by")
+        tasks = list(self._expiry.values())
+        self._expiry.clear()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._state = "standby"
+
+    async def _lease_lost(self) -> bool:
+        """At most every ``lease_check_s``: True once the lease no longer holds."""
+        if time.monotonic() - self._lease_checked_at < self._lease_check_s:
+            return False
+        self._lease_checked_at = time.monotonic()
+        try:
+            return not await asyncio.to_thread(self._lease.held)
+        except (SQLAlchemyError, OSError) as exc:
+            self._note_error(f"worker lease check failed: {type(exc).__name__}: {exc}")
+            return True
 
     async def revoke(self, viseca_mandate_id: str) -> None:
         """Revoke a mandate: locally at once (nothing more is approved), then at Viseca."""
@@ -795,6 +1020,23 @@ class VisecaWorker:
         await asyncio.to_thread(self._mark_mandate_revoked, viseca_mandate_id)
         log.info("mandate %s revoked; later requests under it are declined", viseca_mandate_id)
         await self.client.delete_mandate(viseca_mandate_id)
+
+    async def remember_profiles(self, obj: Any, source: str) -> list[ServedProfile]:
+        """Store every scenario → customer / card binding ``obj`` states (``profile_sightings``).
+
+        Returns the bindings found, with the customer filled in from the card where the
+        platform named only the card. A store failure is logged, never raised: a binding is
+        operator data and must not stop a decision.
+        """
+        sightings = profile_sightings(obj)
+        if not sightings:
+            return []
+        try:
+            return await asyncio.to_thread(self._save_profiles, sightings, source)
+        except Exception as exc:
+            log.exception("storing scenario profiles failed")
+            self._note_error(f"scenario profiles not stored: {type(exc).__name__}: {exc}")
+            return []
 
     async def ledger_entries(self, live_ids: list[str]) -> list[LedgerEntry]:
         """The stored entries for these live ids (read on the ledger's thread)."""
@@ -1024,6 +1266,69 @@ class VisecaWorker:
         with session(self._db_engine) as s:
             return StoreHistoryIndex.load(s)
 
+    async def _remember_served(self) -> None:
+        """Store which scenarios the platform serves and the bootstrap profile's binding."""
+        served = served_scenario_ids(self.bootstrap, self.reference_data)
+        if served is not None:
+            self.served_scenarios = served
+            try:
+                await asyncio.to_thread(self._save_state, SERVED_SCENARIOS_KEY, served)
+            except Exception as exc:
+                log.exception("storing the served scenarios failed")
+                self._note_error(f"served scenarios not stored: {type(exc).__name__}: {exc}")
+        profile = self.bootstrap.get("profile") if isinstance(self.bootstrap, dict) else None
+        await self.remember_profiles(profile, "bootstrap")
+
+    async def _reconcile_platform(self) -> None:
+        """Read every platform authorization once at start.
+
+        - Every run it lists says which card its scenario runs on (``remember_profiles``).
+        - A step-up the platform still serves as waiting (``pending_step_up``) that our
+          ledger already closed by the timeout rule never got its ``/resolve`` through
+          (a restart or a failed call): it is sent now, ``decline`` with the timeout
+          message, so the platform stops serving it (rules.md Q2). One the ledger does not
+          know is another decider's and is left alone; one the customer answered is only
+          logged, since a human answer is never re-sent on their behalf.
+        """
+        try:
+            items = await self.client.list_authorizations()
+        except VisecaError as exc:
+            log.warning("platform authorizations unavailable at start: %s", exc)
+            return
+        if not isinstance(items, list):
+            return
+        await self.remember_profiles(items, "authorization")
+        waiting = [
+            i["authorization_id"]
+            for i in items
+            if isinstance(i, dict) and i.get("status") == STEP_UP_WAITING and _text(i.get("authorization_id"))
+        ]
+        async with self._resolution_lock:
+            for live_id in waiting:
+                entry = await self._engine(self.ledger.get, live_id)
+                if entry is None or entry.outcome != "step_up" or not entry.final:
+                    continue
+                if entry.resolved_by != "timeout":
+                    log.warning(
+                        "Viseca still waits on step-up %s, which the ledger has %s by the %s; not re-sent",
+                        live_id,
+                        entry.uncertain_outcome,
+                        entry.resolved_by,
+                    )
+                    continue
+                if not self._claim_resolve(live_id):
+                    continue
+                try:
+                    await self.client.resolve(
+                        live_id, "decline", timeout_message(self.human_window_s), [_resolved_by_row("timeout")]
+                    )
+                    log.info("step-up %s expired in the ledger; its timeout decline is now at Viseca", live_id)
+                except VisecaError as exc:
+                    if exc.status == 409:
+                        log.info("Viseca closed step-up %s itself (%s)", live_id, exc.code)
+                    else:
+                        self._note_error(f"timeout resolve of {live_id} at start failed: {exc}")
+
     async def _recover_pending(self) -> None:
         rows = await asyncio.to_thread(self._load_events)
         for live_id, source_id, event in rows:
@@ -1048,8 +1353,11 @@ class VisecaWorker:
     # The loop ----------------------------------------------------------------------------
 
     async def _loop(self) -> None:
+        """Poll and decide until the worker lease is lost (then return) or the task stops."""
         self._state = "polling"
         while True:
+            if await self._lease_lost():
+                return
             try:
                 envelope = await self.client.next_decision_request(wait=self._poll_wait_s)
                 self._last_poll_at = self._now()
@@ -1059,6 +1367,8 @@ class VisecaWorker:
                     raise VisecaError(200, "invalid_response", "decision request is not an object")
                 else:
                     await self._handle(envelope)
+                if time.monotonic() - self._feed_synced_at >= self._feed_sync_s:
+                    await self._sync_events()
                 self._failures = 0
                 self._state = "polling"
             except asyncio.CancelledError:
@@ -1074,17 +1384,59 @@ class VisecaWorker:
                 await asyncio.sleep(min(LOOP_BACKOFF_MAX_S, 0.25 * 2 ** min(self._failures, 6)))
 
     async def _idle(self) -> None:
-        for run in list(self._runs.values()):
-            if run.state in ("done", "error"):
-                continue
+        await self._refresh_progress([run for run in self._runs.values() if run.state not in ("done", "error")])
+        await self._sync_events()
+
+    async def _refresh_progress(self, runs: list[RunState]) -> None:
+        """Read each run's progress from ``GET /v1/scenario-runs/{id}`` and store its row.
+
+        A run the platform no longer knows (404, e.g. after a team reset) is closed as
+        ``error`` so it is not read again.
+        """
+        for run in runs:
             try:
                 progress = await self.client.get_run(run.viseca_run_id)
             except VisecaError as exc:
-                log.warning("progress of run %s unavailable: %s", run.viseca_run_id, exc)
-                continue
-            self._apply_progress(run, progress)
+                if exc.status != 404:
+                    log.warning("progress of run %s unavailable: %s", run.viseca_run_id, exc)
+                    continue
+                run.state = "error"
+                run.last_error = "Viseca no longer knows this run"
+                run.finished_at = run.finished_at or self._now()
+            else:
+                self._apply_progress(run, progress)
+                await self.remember_profiles(progress, "run")
             await asyncio.to_thread(self._save_run, run)
-        await self._sync_events()
+
+    async def _track_unfinished_runs(self) -> None:
+        """Follow the live runs the store still shows as unfinished, so their state is read
+        from the platform again: a run that completed while no worker polled (or while
+        another process decided it) is closed instead of staying ``running``."""
+        rows = await asyncio.to_thread(self._unfinished_run_rows)
+        runs = [self._track_row(row) for row in rows if row.viseca_run_id]
+        if runs:
+            log.info("following %d unfinished live run(s) from the store", len(runs))
+            await self._refresh_progress(runs)
+
+    def _track_row(self, row: Run) -> RunState:
+        assert row.viseca_run_id is not None
+        run = self._run(row.viseca_run_id)
+        run.started_at = min(run.started_at, row.started_at.replace(tzinfo=row.started_at.tzinfo or UTC))
+        run.scenario_id = run.scenario_id or row.scenario_id
+        run.mandate_id = run.mandate_id or row.mandate_id or None
+        run.card_id = run.card_id or row.card_id or None
+        run.total = max(run.total, row.total)
+        if run.state == "starting":
+            run.state = "running"
+        return run
+
+    def _unfinished_run_rows(self) -> list[Run]:
+        with session(self._db_engine) as s:
+            return list(
+                s.scalars(
+                    select(Run).where(Run.kind == "live", Run.state.in_(("starting", "running")))
+                )
+            )
 
     def _apply_progress(self, run: RunState, progress: Any) -> None:
         total = run_total(progress)
@@ -1126,6 +1478,7 @@ class VisecaWorker:
             # answers over from earlier live runs, so the row is written before the first
             # decision; a run with no row is treated as a replay.
             await asyncio.to_thread(self._save_run, run)
+            await self.remember_profiles(auth, "authorization")
         self._run_of[live_id] = run
         self._events[live_id] = data
         self.source_ids[live_id] = auth["source_authorization_id"]
@@ -1650,6 +2003,7 @@ class VisecaWorker:
     # Event feed --------------------------------------------------------------------------
 
     async def _sync_events(self) -> None:
+        self._feed_synced_at = time.monotonic()
         try:
             reply = await self.client.events(since=self._cursor)
         except VisecaError as exc:
@@ -1660,13 +2014,37 @@ class VisecaWorker:
             log.warning("event feed reply has no events list; cursor stays at %s", self._cursor)
             return
         next_cursor = reply.get("next_cursor")
+        await self.remember_profiles(items, "run")
+        completed: list[str] = []
         async with self._resolution_lock:
             for item in items:
-                if isinstance(item, dict):
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "scenario.completed" and isinstance(item.get("run_id"), str):
+                    completed.append(item["run_id"])
+                else:
                     await self._check_feed_item(item)
+        await self._close_completed(completed)
         if next_cursor is not None and next_cursor != self._cursor:
             await asyncio.to_thread(self._save_cursor, next_cursor)
             self._cursor = next_cursor
+
+    async def _close_completed(self, viseca_run_ids: list[str]) -> None:
+        """The feed says these runs completed: read their state and close the ones we know
+        (followed here, or stored as live runs), so no row stays ``running``."""
+        runs: list[RunState] = []
+        for viseca_run_id in dict.fromkeys(viseca_run_ids):
+            run = self._runs.get(viseca_run_id)
+            if run is None:
+                row = await asyncio.to_thread(self._live_run_row, viseca_run_id)
+                run = self._track_row(row) if row is not None else None
+            if run is not None and run.state not in ("done", "error"):
+                runs.append(run)
+        await self._refresh_progress(runs)
+
+    def _live_run_row(self, viseca_run_id: str) -> Run | None:
+        with session(self._db_engine) as s:
+            return s.scalar(select(Run).where(Run.viseca_run_id == viseca_run_id, Run.kind == "live"))
 
     async def _check_feed_item(self, item: dict[str, Any]) -> None:
         live_id = item.get("authorization_id")
@@ -1712,27 +2090,63 @@ class VisecaWorker:
             )
 
     def _save_run(self, run: RunState) -> None:
+        """Write the run's row. Its counters are recomputed from the store (``events_raw``
+        and the ledger) and ``started_at`` keeps its first write, so a restart or a second
+        process never resets them; ``run.stored`` takes the recomputed counters."""
         with self._run_write_lock, session(self._db_engine) as s:
+            counts = self._run_counts(s, run.run_id)
+            run.stored = counts
             status = run.status()
-            s.merge(
-                Run(
-                    run_id=run.run_id,
-                    viseca_run_id=run.viseca_run_id,
-                    kind="live",
-                    scenario_id=run.scenario_id,
-                    mandate_id=run.mandate_id or run.viseca_mandate_id or "",
-                    card_id=run.card_id or "",
-                    state=run.state,
-                    delivered=status.delivered,
-                    decided=status.decided,
-                    pending_human=status.pending_human,
-                    total=status.total,
-                    started_at=run.started_at,
-                    finished_at=run.finished_at,
-                    worker_last_poll_at=self._last_poll_at,
-                    last_error=run.last_error,
+            row = s.get(Run, run.run_id)
+            if row is None:
+                s.add(
+                    Run(
+                        run_id=run.run_id,
+                        viseca_run_id=run.viseca_run_id,
+                        kind="live",
+                        scenario_id=run.scenario_id,
+                        mandate_id=run.mandate_id or run.viseca_mandate_id or "",
+                        card_id=run.card_id or "",
+                        state=run.state,
+                        delivered=counts.delivered,
+                        decided=counts.decided,
+                        pending_human=counts.pending_human,
+                        total=status.total,
+                        started_at=run.started_at,
+                        finished_at=run.finished_at,
+                        worker_last_poll_at=self._last_poll_at,
+                        last_error=run.last_error,
+                    )
                 )
-            )
+                return
+            row.viseca_run_id = row.viseca_run_id or run.viseca_run_id
+            row.scenario_id = row.scenario_id or run.scenario_id
+            row.mandate_id = run.mandate_id or run.viseca_mandate_id or row.mandate_id
+            row.card_id = run.card_id or row.card_id
+            row.state = run.state
+            row.delivered = counts.delivered
+            row.decided = counts.decided
+            row.pending_human = counts.pending_human
+            row.total = max(row.total, status.total)
+            row.finished_at = run.finished_at
+            row.worker_last_poll_at = self._last_poll_at or row.worker_last_poll_at
+            row.last_error = run.last_error
+
+    def _run_counts(self, s: Session, run_id: str) -> RunCounts:
+        """Events received for the run (``events_raw``); decisions recorded and step-ups
+        still waiting (the ``decisions`` rows, or the ledger when it is not the store)."""
+        live_ids = list(s.scalars(select(EventRaw.live_authorization_id).where(EventRaw.run_id == run_id)))
+        if isinstance(self._ledger, ScopedStoreLedger | StoreLedger) or self._ledger is None:
+            decided, pending = s.execute(
+                select(
+                    func.count(),
+                    func.count().filter(Decision.outcome == "step_up", Decision.final.is_(False)),
+                ).where(Decision.run_id == run_id)
+            ).one()
+            return RunCounts(len(live_ids), int(decided), int(pending))
+        entries = [e for e in (self._ledger.get(i) for i in live_ids) if e is not None]
+        waiting = sum(e.outcome == "step_up" and not e.final for e in entries)
+        return RunCounts(len(live_ids), len(entries), waiting)
 
     def _load_cursor(self) -> int | str:
         with session(self._db_engine) as s:
@@ -1744,8 +2158,95 @@ class VisecaWorker:
         return row.value
 
     def _save_cursor(self, cursor: int | str) -> None:
+        self._save_state(EVENTS_CURSOR_KEY, cursor)
+
+    def _save_state(self, key: str, value: Any) -> None:
         with session(self._db_engine) as s:
-            s.merge(WorkerState(key=EVENTS_CURSOR_KEY, value=cursor, updated_at=self._now()))
+            s.merge(WorkerState(key=key, value=value, updated_at=self._now()))
+
+    def _save_profiles(self, sightings: list[ServedProfile], source: str) -> list[ServedProfile]:
+        """Upsert ``scenario_profiles``, the last sighting of a scenario winning. The customer
+        is the card's holder in the store (the platform's own id when the card is unknown).
+        A row is written only when the binding is new or changed; a sighting that names no
+        profile id keeps the stored one."""
+        latest = {p.scenario_id: p for p in sightings}
+        saved: list[ServedProfile] = []
+        with session(self._db_engine) as s:
+            for scenario_id, p in latest.items():
+                customer = s.scalar(
+                    select(Account.customer_id)
+                    .join(Card, Card.account_id == Account.account_id)
+                    .where(Card.card_id == p.card_id)
+                ) or p.customer_id
+                if customer is None:
+                    log.warning("scenario %s runs on card %s, which the store does not know", scenario_id, p.card_id)
+                    continue
+                known = self._profiles.get(scenario_id)
+                if known is not None and known[:2] == (customer, p.card_id) and p.profile_id in (None, known[2]):
+                    saved.append(ServedProfile(scenario_id, customer, p.card_id, known[2]))
+                    continue
+                row = s.get(ScenarioProfile, scenario_id)
+                same = row is not None and (row.customer_id, row.card_id) == (customer, p.card_id)
+                profile_id = p.profile_id or (row.profile_id if same and row is not None else None)
+                if row is None:
+                    row = ScenarioProfile(scenario_id=scenario_id)
+                    s.add(row)
+                if not same or row.profile_id != profile_id:
+                    row.customer_id, row.card_id, row.profile_id = customer, p.card_id, profile_id
+                    row.source = source
+                    row.seen_at = self._now()
+                    log.info("scenario %s runs on customer %s, card %s (%s)", scenario_id, customer, p.card_id, source)
+                self._profiles[scenario_id] = (customer, p.card_id, profile_id)
+                saved.append(ServedProfile(scenario_id, customer, p.card_id, profile_id))
+        return saved
+
+    def _load_cursor(self) -> int | str:
+        with session(self._db_engine) as s:
+            row = s.get(WorkerState, EVENTS_CURSOR_KEY)
+        if row is None or not isinstance(row.value, int | str) or isinstance(row.value, bool):
+            log.info("no stored event feed cursor; reading the feed from 0")
+            return 0
+        log.info("event feed cursor resumed at %s", row.value)
+        return row.value
+
+    def _save_cursor(self, cursor: int | str) -> None:
+        self._save_state(EVENTS_CURSOR_KEY, cursor)
+
+    def _save_state(self, key: str, value: Any) -> None:
+        with session(self._db_engine) as s:
+            s.merge(WorkerState(key=key, value=value, updated_at=self._now()))
+
+    def _save_profiles(self, sightings: list[ServedProfile], source: str) -> list[ServedProfile]:
+        """Upsert ``scenario_profiles``, the last sighting of a scenario winning. A row is
+        written only when the binding is new or changed."""
+        latest = {p.scenario_id: p for p in sightings}
+        saved: list[ServedProfile] = []
+        with session(self._db_engine) as s:
+            for scenario_id, p in latest.items():
+                customer = s.scalar(
+                    select(Account.customer_id)
+                    .join(Card, Card.account_id == Account.account_id)
+                    .where(Card.card_id == p.card_id)
+                ) or p.customer_id
+                if customer is None:
+                    log.warning("scenario %s runs on card %s, which the store does not know", scenario_id, p.card_id)
+                    continue
+                known = self._profiles.get(scenario_id)
+                binding = (customer, p.card_id, p.profile_id or (known[2] if known else None))
+                saved.append(ServedProfile(scenario_id, customer, p.card_id, binding[2]))
+                if known == binding:
+                    continue
+                row = s.get(ScenarioProfile, scenario_id)
+                if row is None or (row.customer_id, row.card_id, row.profile_id) != binding:
+                    if row is None:
+                        row = ScenarioProfile(scenario_id=scenario_id)
+                        s.add(row)
+                    row.customer_id, row.card_id, row.profile_id = binding
+                    row.source = source
+                    row.seen_at = self._now()
+                    log.info("scenario %s runs on customer %s, card %s (%s)", scenario_id, customer, p.card_id, source)
+                self._profiles[scenario_id] = binding
+        return saved
 
     def _mark_mandate_revoked(self, viseca_mandate_id: str) -> None:
         with session(self._db_engine) as s:

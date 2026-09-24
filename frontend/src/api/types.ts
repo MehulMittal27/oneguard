@@ -212,6 +212,11 @@ export interface Decision {
    * requested from P1. Absent means the ordinary approve button.
    */
   confirmable?: { rule_id: string; phrase: string } | null
+  // The run this decision belongs to, and that run's start on the real clock
+  // (`../docs/api-contract.md` §2, §6 item 14). Activity and Home list a card's
+  // newest run and fold older ones away (`lib/runs.ts`).
+  run_id?: string
+  run_started_at?: string
 }
 
 // Operator-only shapes (`../docs/api-contract.md` §1.1 D1–D6), for the `?demo=1`

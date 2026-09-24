@@ -213,6 +213,41 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
         "total": 10,
         "worker_ok": True,
         "last_error": None,
+        "customer_id": "CU1217",
+        "customer_name": "Omar Chen",
+    },
+    api.ScenarioProfile: {
+        "customer_id": "CU1217",
+        "name": "Omar Chen",
+        "card_id": "CA1331",
+        "profile_id": "PROFILE_AUTH0101",
+        "source": "bootstrap",
+    },
+    api.Scenario: {
+        "scenario_id": "S1",
+        "scenario_name": "Connection check",
+        "cardholder_instruction": "Buy one grocery item for CHF 20 or less.",
+        "served": True,
+        "profile": None,
+        "active_run_id": "run_1",
+    },
+    api.ScenariosResponse: {
+        "scenarios": [
+            {
+                "scenario_id": "S1",
+                "scenario_name": "Connection check",
+                "cardholder_instruction": "Buy one grocery item for CHF 20 or less.",
+                "served": True,
+                "profile": {
+                    "customer_id": "CU1217",
+                    "name": "Omar Chen",
+                    "card_id": "CA1331",
+                    "profile_id": None,
+                    "source": "run",
+                },
+                "active_run_id": None,
+            }
+        ]
     },
     api.LedgerSnapshotEntry: {
         "authorization_id": "live_1",
@@ -245,7 +280,7 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
     api.TightenRequest: {"add_checks": [CHECK], "uncertainty_policy": "decline"},
     api.ResolveRequest: {"decision": "approve"},
     api.ReplayRestartRequest: {"scenario_id": "S1", "card_id": "CA0001", "speed_ms": 4000},
-    api.CreateRunRequest: {"scenario_id": "S1", "card_id": "CA0001"},
+    api.CreateRunRequest: {"scenario_id": "S1", "card_id": "CA0001", "force": True},
     api.SoftSignalsToggle: {"enabled": True},
     api.ErrorBody: {"code": "lint_failed", "message": "No per-order cap.", "detail": {"missing": ["amount"]}},
     api.ErrorResponse: {"error": {"code": "not_found", "message": "No such card."}},

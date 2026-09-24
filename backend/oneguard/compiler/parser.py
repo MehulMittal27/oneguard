@@ -14,6 +14,7 @@ from datetime import date
 from decimal import Decimal
 
 from oneguard.compiler.draft import (
+    COUNT_FIELD,
     COUNTRY_NAMES,
     KNOWN_SHOP_FIELD,
     MONEY_FIELDS,
@@ -560,19 +561,37 @@ def _ask_if_changed(reading: _Reading, text: str) -> None:
         "ask_clause": f"{clause}, {m.group(0)}", "on_fail": "ask" if ask else spec.on_fail})
 
 
+TIMES_WORDS = {"once": 1, "twice": 2}
+PERIOD_WORD_DAYS = {"day": 1, "week": 7, "fortnight": 14, "month": 30}
 _COUNT_PER_PERIOD = re.compile(
-    rf"\b(?:at most\s+|no more than\s+|up to\s+|max(?:imum)?\s+)?{_NUM}\s+(?:[\w-]+\s+){{0,2}}?"
-    r"(?:deliver(?:y|ies)|orders?|purchases?|bookings?|payments?)\s+(?:a|per|each|every)\s+(?:day|week|month)\b",
+    rf"\b(?:(?P<bound>at most|no more than|not more than|up to|max(?:imum)?|only|fewer than|less than)\s+)?"
+    rf"(?P<n>{_NUM}|once|twice)"
+    r"(?P<noun>\s+(?:[\w-]+\s+){0,2}?(?:deliver(?:y|ies)|orders?|purchases?|bookings?|payments?|meals?|times))?"
+    r"\s+(?:a|per|each|every)\s+(?P<unit>day|week|fortnight|month)\b",
     re.IGNORECASE,
 )
 
 
-def _count_per_period(reading: _Reading, text: str) -> None:
-    """"one delivery a day", "one meal delivery a day": a purchase count in a rolling
-    window. Engine gap: no field counts purchases yet, so it is an unverifiable rule the
-    customer is asked about (a period rule would be read as a CHF limit, P3)."""
-    if m := _COUNT_PER_PERIOD.search(text):
-        reading.specs.append(RuleSpec(field="unverifiable", operator="=", value=m.group(0), words=m.group(0)))
+def _count_per_period(reading: _Reading, money: str) -> None:
+    """"one delivery a day", "at most two orders a week", "once a week": a purchase count in
+    a rolling window, ``cart.purchases_in_period`` (api-contract §3.3). Read from the
+    instruction with shared currencies written out, so an amount ("CHF 300 a week") is never
+    a count. Without a purchase noun, only a count word reads as a count ("one a day")."""
+    amounts = [(a.start(), a.end()) for a in _AMOUNT.finditer(money)]
+    for m in _COUNT_PER_PERIOD.finditer(money):
+        if any(a < m.end("n") and m.start("n") < b for a, b in amounts):
+            continue
+        n = m.group("n").lower()
+        if not m.group("noun") and n.isdigit():
+            continue
+        count = TIMES_WORDS.get(n) or _num(n)
+        if count is None:
+            continue
+        bound = (m.group("bound") or "").lower()
+        reading.specs.append(RuleSpec(
+            field=COUNT_FIELD, operator="<" if bound in ("fewer than", "less than") else "<=", value=count,
+            scope="period", period_days=PERIOD_WORD_DAYS[m.group("unit").lower()], words=m.group(0)))
+        return
 
 
 _MONTHS = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
@@ -657,7 +676,7 @@ def parse(instruction: str, history=None, card_id: str = "", today: date | None 
         today = simulated_today(history, card_id)
     _terms(reading, text, today)
     _time(reading, text)
-    _count_per_period(reading, text)
+    _count_per_period(reading, money)
     _shops(reading, text)
     _stay(reading, text)
     if history is not None:
