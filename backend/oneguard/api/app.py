@@ -1,0 +1,312 @@
+"""The OneGuard app: ``/api`` (routes_customer, routes_dev), ``/healthz``, then the UI.
+
+    uvicorn oneguard.api.app:app
+
+The lifespan, in order (docs/architecture.md Runtime, docs/database.md §5):
+
+1. ``init_db`` (creates missing tables, never drops or truncates); an empty store is
+   seeded from the data pack, a seeded one is left as it is;
+2. ``authorization_history`` loaded into memory (``StoreHistoryIndex``);
+3. the database pool warmed, so the first decision does not pay a new connection;
+4. soft signals warmed when enabled (``ONEGUARD_SOFT_SIGNALS``: off | keywords | laya);
+5. the Viseca worker started, only when ``VISECA_API_KEY`` is set, in the background:
+   it reads bootstrap and reference data, then long-polls. ``/healthz`` shows it.
+
+``/healthz`` reports the worker (state, last poll, events cursor), whether a model
+provider is configured, the signals backend and whether its model loaded, the database
+engine and a one-row round trip. It names no secret and no URL.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import logging
+import os
+import re
+import time
+from collections.abc import AsyncIterator, Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy import Engine, text
+from sqlalchemy.exc import SQLAlchemyError
+
+from oneguard import __version__
+from oneguard.api import errors, queries, routes_customer, routes_dev, static
+from oneguard.api.models import _utc_z
+from oneguard.api.offline import OfflineRunner
+from oneguard.api.services import (
+    COMPILE_TIMEOUT_S,
+    DB_TIMEOUT_S,
+    VISECA_TIMEOUT_S,
+    Services,
+    SignalsBackend,
+)
+from oneguard.engine import stubs
+from oneguard.engine.types import HistoryIndex
+from oneguard.llm.provider import (
+    PROVIDER_ENV,
+    Provider,
+    get_provider,
+    provider_available,
+)
+from oneguard.store import seed as seed_module
+from oneguard.store.db import get_engine, init_db, make_engine, session
+from oneguard.store.history import StoreHistoryIndex
+from oneguard.viseca.client import API_KEY_ENV, VisecaClient, runs_allowed, store_sink
+from oneguard.viseca.worker import VisecaWorker
+
+log = logging.getLogger(__name__)
+
+SIGNALS_ENV = "ONEGUARD_SOFT_SIGNALS"
+SIGNALS_BACKENDS: tuple[SignalsBackend, ...] = ("off", "keywords", "laya")
+SIGNALS_WARM_TIMEOUT_S = 60.0
+HEALTH_DB_TIMEOUT_S = 5.0
+_URL = re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE)
+_SECRETISH = re.compile(r"(?i)(password|passwd|pwd|token|key|secret)=\S+")
+
+
+@dataclass
+class AppConfig:
+    """How to build the app. Defaults read the environment; tests inject the rest."""
+
+    database_url: str | None = None
+    viseca_client: Callable[[Engine], VisecaClient | None] | None = None
+    """Builds the client; default: a real client when ``VISECA_API_KEY`` is set."""
+    worker_options: dict[str, Any] = field(default_factory=dict)
+    implementations: Mapping[str, Callable[..., Any]] | None = None
+    stubbed: frozenset[str] | None = None
+    provider: Provider | None = None
+    signals_backend: str | None = None
+    frontend_dist: Path | None = None
+    db_timeout_s: float = DB_TIMEOUT_S
+    viseca_timeout_s: float = VISECA_TIMEOUT_S
+    compile_timeout_s: float = COMPILE_TIMEOUT_S
+    now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+
+
+def signals_backend(value: str | None) -> SignalsBackend:
+    """``ONEGUARD_SOFT_SIGNALS``; an unknown value runs the keyword detector (more cautious)."""
+    chosen = (value if value is not None else os.environ.get(SIGNALS_ENV, "")).strip().lower() or "off"
+    if chosen not in SIGNALS_BACKENDS:
+        log.warning("%s=%r is not one of %s; using keywords", SIGNALS_ENV, chosen, "|".join(SIGNALS_BACKENDS))
+        return "keywords"
+    return chosen  # type: ignore[return-value]
+
+
+def _default_client(db: Engine) -> VisecaClient | None:
+    if not os.environ.get(API_KEY_ENV, "").strip():
+        log.info("%s is not set: no Viseca worker (offline replay only)", API_KEY_ENV)
+        return None
+    return VisecaClient(sink=store_sink(db))
+
+
+def _seed_if_empty(db: Engine) -> bool:
+    with session(db) as s:
+        if seed_module.history_row_count(s) > 0:
+            return False
+    log.warning("the store has no reference data; seeding it from the data pack")
+    seed_module.run(engine=db)
+    return True
+
+
+def _load_history(db: Engine) -> StoreHistoryIndex:
+    with session(db) as s:
+        return StoreHistoryIndex.load(s)
+
+
+def _warm_pool(db: Engine) -> int:
+    """Open every pooled connection once (one ``SELECT 1`` each), then hand them back."""
+    size = db.pool.size() if hasattr(db.pool, "size") else 1
+
+    def open_one(_: int) -> Any:
+        conn = db.connect()
+        conn.execute(text("SELECT 1"))
+        return conn
+
+    with ThreadPoolExecutor(max_workers=size) as pool:
+        conns = list(pool.map(open_one, range(size)))
+    for conn in conns:
+        conn.close()
+    return len(conns)
+
+
+def _warm_signals(backend: SignalsBackend) -> bool:
+    """Warm the soft-signal detector if its module offers ``warm()``; True if a model loaded."""
+    if backend == "off":
+        return False
+    try:
+        module = importlib.import_module("oneguard.engine.signals")
+    except ModuleNotFoundError:
+        log.info("no soft-signal module yet; signals are the stub")
+        return False
+    warm = getattr(module, "warm", None)
+    if not callable(warm):
+        return False
+    return bool(warm()) and backend == "laya"
+
+
+def sanitise(message: str | None) -> str | None:
+    """An error line safe for ``/healthz``: no URLs, no credentials."""
+    if message is None:
+        return None
+    return _SECRETISH.sub(r"\1=[redacted]", _URL.sub("[url]", message))[:300]
+
+
+async def _start_worker(s: Services) -> None:
+    assert s.worker is not None
+    try:
+        await s.worker.start()
+    except Exception as exc:
+        log.exception("the Viseca worker did not start")
+        s.worker_error = f"worker did not start: {type(exc).__name__}"
+        return
+    s.history = s.worker.history
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    config: AppConfig = app.state.config
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    # Every Viseca call is already summarised in viseca_calls; one INFO line per long-poll is noise.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    own_engine = config.database_url is not None
+    db = make_engine(config.database_url) if own_engine else get_engine()
+    await asyncio.to_thread(init_db, db)
+    await asyncio.to_thread(_seed_if_empty, db)
+    started = time.perf_counter()
+    history: HistoryIndex = await asyncio.to_thread(_load_history, db)
+    log.info("history loaded in %.1f s", time.perf_counter() - started)
+    warmed = await asyncio.to_thread(_warm_pool, db)
+    log.info("database pool warmed: %d connection(s)", warmed)
+
+    backend = signals_backend(config.signals_backend)
+    try:
+        model_loaded = await asyncio.wait_for(asyncio.to_thread(_warm_signals, backend), SIGNALS_WARM_TIMEOUT_S)
+    except Exception:
+        log.exception("soft signals did not warm; they run without a model")
+        model_loaded = False
+    provider = config.provider or get_provider()
+    try:
+        scenarios = routes_dev.scenario_bindings()
+    except Exception:
+        log.exception("could not read the scenario bindings")
+        scenarios = {}
+
+    s = Services(
+        db_engine=db,
+        history=history,
+        provider=provider,
+        provider_name=type(provider).__name__ if config.provider else os.environ.get(PROVIDER_ENV, "").strip() or "null",
+        signals_backend=backend,
+        offline=OfflineRunner(db, implementations=config.implementations, stubbed=config.stubbed, now=config.now),
+        scenarios=scenarios,
+        implementations=config.implementations,
+        stubbed=config.stubbed,
+        model_loaded=model_loaded,
+        db_timeout_s=config.db_timeout_s,
+        viseca_timeout_s=config.viseca_timeout_s,
+        compile_timeout_s=config.compile_timeout_s,
+        now=config.now,
+    )
+    app.state.services = s
+
+    s.client = (config.viseca_client or _default_client)(db)
+    start: asyncio.Task[None] | None = None
+    if s.client is not None:
+        models = s.live_models()
+        options = {
+            "implementations": config.implementations,
+            "stubbed": config.stubbed,
+            "now": config.now,
+            **config.worker_options,
+        }
+        s.worker = VisecaWorker(
+            s.client, db=db, provider=s.decision_provider(models), signals_enabled=models, **options
+        )
+        for mandate in await asyncio.to_thread(queries.mandates, db):
+            s.bind_mandate(mandate)
+        start = asyncio.create_task(_start_worker(s), name="viseca-worker-start")
+    try:
+        yield
+    finally:
+        if start is not None and not start.done():
+            start.cancel()
+            await asyncio.gather(start, return_exceptions=True)
+        if s.worker is not None:
+            await s.worker.stop()
+        if s.client is not None:
+            await s.client.aclose()
+        await s.offline.stop()
+        if own_engine:
+            db.dispose()
+
+
+def _database_engine(db: Engine) -> str:
+    return db.url.get_backend_name()
+
+
+async def healthz(request: Request) -> JSONResponse:
+    s: Services = request.app.state.services
+    db_ok, round_trip = True, None
+    try:
+        round_trip = await asyncio.wait_for(asyncio.to_thread(queries.round_trip_ms, s.db_engine), HEALTH_DB_TIMEOUT_S)
+    except (TimeoutError, OSError, SQLAlchemyError) as exc:
+        log.warning("health check round trip failed: %s", type(exc).__name__)
+        db_ok = False
+
+    worker: dict[str, Any] = {"configured": s.worker is not None}
+    worker_ok = True
+    if s.worker is not None:
+        status = s.worker.status()
+        worker_ok = status.ok
+        worker.update(
+            state=status.state,
+            ok=status.ok,
+            polling=status.state == "polling",
+            last_poll_at=_utc_z(status.last_poll_at) if status.last_poll_at else None,
+            events_cursor=status.events_cursor,
+            human_window_s=status.human_window_s,
+            decision_deadline_s=status.decision_deadline_s,
+            pending_step_ups=status.pending_step_ups,
+            history_reseeded=status.history_reseeded,
+            runs=len(status.runs),
+            last_error=sanitise(s.worker_error or status.last_error),
+        )
+    body = {
+        "status": "ok" if db_ok and worker_ok else "degraded",
+        "version": __version__,
+        "worker": worker,
+        "events_cursor": worker.get("events_cursor"),
+        "runs_allowed": runs_allowed(),
+        "provider": {"name": s.provider_name, "configured": provider_available(s.provider)},
+        "signals": {"backend": s.signals_backend, "enabled": s.live_models(), "model_loaded": s.model_loaded},
+        "model_loaded": s.model_loaded,
+        "database": {"engine": _database_engine(s.db_engine), "ok": db_ok, "round_trip_ms": round_trip},
+        "engine": {
+            "stubbed": sorted(s.stubbed if s.stubbed is not None else (frozenset() if s.implementations else stubs.STUBBED))
+        },
+    }
+    return JSONResponse(body, status_code=200 if db_ok else 503)
+
+
+def create_app(config: AppConfig | None = None) -> FastAPI:
+    app = FastAPI(title="OneGuard", version=__version__, lifespan=lifespan)
+    app.state.config = config or AppConfig()
+    errors.install(app)
+    app.add_api_route("/healthz", healthz, methods=["GET"], include_in_schema=False)
+    app.include_router(routes_customer.router)
+    app.include_router(routes_dev.router)
+    static.mount(app, app.state.config.frontend_dist)
+    return app
+
+
+app = create_app()

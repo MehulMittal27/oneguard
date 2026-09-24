@@ -111,3 +111,52 @@ def test_registered_soft_signals_is_this_module():
     from oneguard.engine.interfaces import load_implementations
 
     assert load_implementations()["soft_signals"] is S.soft_signals
+
+
+# --- warm() (API startup, /healthz model_loaded) ----------------------------------------
+
+
+def test_laya_loads_only_on_warm_and_only_once():
+    loads = []
+
+    def load():
+        loads.append(1)
+        return lambda text: 0.9
+
+    laya = S.LayaSignals(load=load)
+    assert loads == [] and not laya.available, "nothing loads at construction"
+    assert laya.warm() is True and laya.warm() is True
+    assert loads == [1]
+    assert only(laya(CLEAN[0], 0.5)).source == "model"
+
+
+def test_laya_warm_reports_a_failed_load():
+    laya = S.LayaSignals(load=_unavailable)
+    assert laya.warm() is False and laya.warm() is False
+
+
+def test_a_decision_before_warm_never_waits_for_the_model():
+    started, release = threading.Event(), threading.Event()
+
+    def slow_load():
+        started.set()
+        release.wait(2)
+        return lambda text: 0.9
+
+    laya = S.LayaSignals(load=slow_load)
+    try:
+        assert laya(DIRTY[0], 0.5) == S.KeywordSignals()(DIRTY[0], 0.5)  # answered at once
+        assert started.wait(1), "the load was started in the background"
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize(("backend", "expected"), [("off", False), ("keywords", False)])
+def test_module_warm_without_a_model_is_false(monkeypatch, backend, expected):
+    monkeypatch.setattr(S, "BACKEND", S.select_backend(backend))
+    assert S.warm() is expected
+
+
+def test_module_warm_with_laya_loads_it(monkeypatch):
+    monkeypatch.setattr(S, "BACKEND", S.LayaSignals(load=lambda: (lambda text: 0.1)))
+    assert S.warm() is True
