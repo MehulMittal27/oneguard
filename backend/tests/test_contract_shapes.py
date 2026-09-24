@@ -23,7 +23,7 @@ from oneguard.llm.provider import (
     get_provider,
     provider_available,
 )
-from oneguard.pipeline import PipelineContext, decide_event
+from oneguard.pipeline import PipelineContext, decide_event, to_api_decision
 from oneguard.store.history import StoreHistoryIndex
 
 REPO = Path(__file__).resolve().parents[2]
@@ -134,6 +134,7 @@ DECISION = {
     "engine_version": "oneguard/0.0.0 signals=off",
     "latency_ms": 3.2,
     "explanation_source": "template",
+    "confirmable": {"rule_id": "U1", "phrase": "from the official ticket seller"},
 }
 RESOLVED_DECISION = {
     **{k: v for k, v in DECISION.items() if k != "deadline_at"},
@@ -189,6 +190,7 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
     api.Related: DECISION["related"],
     api.Session: DECISION["session"],
     api.MerchantMeta: DECISION["merchant_meta"],
+    api.Confirmable: DECISION["confirmable"],
     api.Decision: DECISION,
     api.ReplayStatus: {
         "scenario_id": "S1",
@@ -288,11 +290,13 @@ def test_optional_fields_are_omitted_and_nullable_fields_are_null() -> None:
         counterfactual=None,
         related=None,
         session=None,
+        confirmable=None,
     )
     del minimal["deadline_at"]
     dumped = api.Decision.model_validate(minimal).model_dump(mode="json")
     assert dumped == minimal
-    for key in ("uncertain_outcome", "uncertainty", "injection_flag", "counterfactual", "related", "session"):
+    for key in ("uncertain_outcome", "uncertainty", "injection_flag", "counterfactual", "related", "session",
+                "confirmable"):
         assert key in dumped and dumped[key] is None
     for key in ("deadline_at", "merchant_meta", "resolved_by", "latency_ms"):
         assert key not in dumped
@@ -502,6 +506,32 @@ def test_stub_pipeline_returns_a_valid_decision_for_the_example_event() -> None:
     assert wire["explanation_source"] == "template"
     assert wire["engine_version"].endswith("stubs=all")
     assert ctx.ledger.get("AU_EXAMPLE_0001").reserved_chf == 20.0
+
+
+def test_confirmable_only_on_a_step_up_decided_by_one_unverifiable_rule() -> None:
+    u1 = Rule(id="U1", field="unverifiable", operator="=", value="from the official ticket seller",
+              text="official seller", source="exact")
+    c1 = Rule(id="C1", field="authorization.billing_amount_chf", operator="<=", value=120,
+              currency="CHF", text="Total at or below CHF 120", source="exact")
+    policy = Policy(mandate_id="mnd_1", status="active", instruction="stub", rules=[u1, c1],
+                    uncertainty_policy="ask")
+    ctx = _context(policy=policy)
+    decide_event(_event(), ctx)
+    stored = ctx.ledger.get("AU_EXAMPLE_0001")
+    view = ctx.ledger.view(run_id="run_1", customer_id=stored.customer_id, card_id=stored.card_id,
+                           at=stored.ts_sim, period_days=None)
+
+    def wire(**over: Any) -> Any:
+        entry = stored.model_copy(update=over)
+        return to_api_decision(_event(), entry, view, policy).model_dump(mode="json")["confirmable"]
+
+    assert wire(deciding_ids=["U1"]) == {"rule_id": "U1", "phrase": "from the official ticket seller"}
+    assert wire(deciding_ids=["C1"]) is None
+    assert wire(deciding_ids=["U1", "C1"]) is None
+    assert wire(deciding_ids=["U1", "A1"]) is None
+    assert wire(deciding_ids=[]) is None
+    assert wire(deciding_ids=["U1"], outcome="decline", final=True, uncertain_outcome=None,
+                deadline_at=None) is None
 
 
 def test_redelivery_returns_the_stored_result_and_counts_nothing() -> None:

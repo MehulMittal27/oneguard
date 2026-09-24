@@ -245,6 +245,14 @@ _VALID_STATES: frozenset[tuple[str, str | None, str]] = frozenset(
 )
 
 
+class Confirmable(ApiModel):
+    """A step-up decided by one restriction no data can check (field ``unverifiable``).
+    Approving it is remembered for this shop and item; ``phrase`` is the rule's value."""
+
+    rule_id: str
+    phrase: str
+
+
 class Decision(ApiModel):
     """One purchase decision. Only the combinations of §3.1a are valid."""
 
@@ -288,6 +296,7 @@ class Decision(ApiModel):
     latency_ms: float | None = Field(default=None, ge=0)
     explanation_source: Literal["template", "model"] | None = None
     resolved_by: Literal["customer", "timeout"] | None = None
+    confirmable: Confirmable | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> Decision:
