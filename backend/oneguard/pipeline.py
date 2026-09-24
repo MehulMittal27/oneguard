@@ -10,7 +10,8 @@
      T6, Q6); this holds whatever the engine functions are, stubs included
 4. ``evaluate_rules``
 5. ``resolve_unknowns`` only if a rule is unknown and a provider is configured (tier 2),
-   then ``evaluate_rules`` again on the new facts
+   then ``evaluate_rules`` again on the new facts; then ``policy.add_ledger_results`` adds
+   the results that need the LedgerView (C2 period limits, remembered answers)
 6. ``protections``, ``warning_signs``, ``soft_signals`` (only when signals are enabled)
 7. ``decide``, then ``explain``
 8. ``Ledger.record`` (and ``flag_merchant`` when A1 triggered), with any ``extra_evidence``
@@ -37,6 +38,7 @@ from oneguard import __version__
 from oneguard.api import models as api
 from oneguard.engine import stubs
 from oneguard.engine.ledger_base import Ledger, LedgerEntry
+from oneguard.engine.policy import add_ledger_results
 from oneguard.engine.types import (
     EngineDecision,
     EvidenceRow,
@@ -207,6 +209,8 @@ def decide_event(
         if resolved is not facts:
             facts = resolved
             rules = fn["evaluate_rules"](facts, ctx.policy)
+
+    rules = add_ledger_results(rules, facts, ctx.policy, view)  # C2 + remembered answers (P2)
 
     protections: list[Signal] = fn["protections"](facts, ctx.policy, view)
     warnings: list[Signal] = fn["warning_signs"](facts, view, ctx.policy)

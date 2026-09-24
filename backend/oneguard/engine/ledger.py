@@ -45,12 +45,12 @@ from sqlalchemy.orm import Session
 
 from oneguard.engine.ledger_base import (
     PRIOR_WINDOW,
-    Ledger,
     LedgerEntry,
     confirmation_key,
     is_final_approval,
     known_merchant_names,
 )
+from oneguard.engine.ledger_base import Ledger as LedgerBase
 from oneguard.engine.types import HistoryIndex, LedgerView, PriorDecision
 from oneguard.store.schema import Decision, MerchantFlag, Run
 
@@ -84,7 +84,7 @@ def _to_entry(row: Decision) -> LedgerEntry:
     return LedgerEntry.model_validate(data)
 
 
-class StoreLedger(Ledger):
+class StoreLedger(LedgerBase):
     """The ledger over a SQLAlchemy session (SQLite in tests, Postgres in the cloud)."""
 
     def __init__(self, session: Session, history: HistoryIndex | None = None) -> None:
@@ -286,20 +286,19 @@ class StoreLedger(Ledger):
         self.session.commit()
         return _to_entry(row)
 
-    def flag_merchant(self, run_id: str, merchant_id: str, reason: str, at: datetime) -> None:
-        self.session.add(MerchantFlag(run_id=run_id, merchant_id=merchant_id, reason=reason, flagged_at=at))
-        self.session.commit()
-
-    # --- added by P1 for the Viseca worker; P2 to review ---------------------------------
     def set_deadline(self, authorization_id: str, deadline_at: datetime) -> LedgerEntry:
-        """Move a pending step-up's ``deadline_at`` (accepted time + human window), commit.
-
-        Same contract as ``ledger_base.Ledger.set_deadline`` and ``InMemoryLedger``:
-        KeyError if unknown, ValueError if not a pending step-up; nothing else changes.
-        """
+        """The worker's accepted-time deadline for a pending step-up (api-contract §3.5)."""
         row = self._pending_row(authorization_id)
         if row.outcome != "step_up" or row.final:
             raise ValueError(f"{authorization_id} is not awaiting an answer")
         row.deadline_at = deadline_at
         self.session.commit()
         return _to_entry(row)
+
+    def flag_merchant(self, run_id: str, merchant_id: str, reason: str, at: datetime) -> None:
+        self.session.add(MerchantFlag(run_id=run_id, merchant_id=merchant_id, reason=reason, flagged_at=at))
+        self.session.commit()
+
+
+Ledger = StoreLedger
+"""The name the worker loads (``viseca.worker.default_ledger``: ``module.Ledger``)."""
