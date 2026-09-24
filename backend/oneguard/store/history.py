@@ -21,7 +21,7 @@ from types import MappingProxyType
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from oneguard.engine.types import HistoryRow
+from oneguard.engine.types import HistoryIndex, HistoryRow
 from oneguard.store.schema import AuthorizationHistory, Item, Merchant
 
 _EMPTY: Mapping[str, int] = MappingProxyType({})
@@ -172,3 +172,53 @@ class StoreHistoryIndex:
 
     def item_price_range(self, item_id: str) -> tuple[float, float, float] | None:
         return self._prices.get(item_id)
+
+
+class ReloadableHistory:
+    """A ``HistoryIndex`` whose index is replaced while it is in use.
+
+    The worker reloads the index after a reference sync adds merchants, items or history
+    rows (``VisecaWorker``); everything that holds this object (the ledger, every run's
+    pipeline context, the API's services) reads the new index from the next call on.
+    ``replace`` is one attribute assignment, so a reader sees the old or the new index,
+    never a mix inside one call.
+    """
+
+    def __init__(self, index: HistoryIndex) -> None:
+        self.current = index.current if isinstance(index, ReloadableHistory) else index
+
+    def replace(self, index: HistoryIndex) -> None:
+        self.current = index
+
+    def known_merchants(self, customer_id: str) -> Mapping[str, int]:
+        return self.current.known_merchants(customer_id)
+
+    def known_merchants_on_card(self, card_id: str) -> Mapping[str, int]:
+        return self.current.known_merchants_on_card(card_id)
+
+    def known_devices(self, customer_id: str) -> frozenset[str]:
+        return self.current.known_devices(customer_id)
+
+    def known_countries(self, customer_id: str) -> frozenset[str]:
+        return self.current.known_countries(customer_id)
+
+    def max_approved(self, customer_id: str) -> float | None:
+        return self.current.max_approved(customer_id)
+
+    def last_price(self, customer_id: str, merchant_id: str) -> float | None:
+        return self.current.last_price(customer_id, merchant_id)
+
+    def recent_rows(self, card_id: str, days: int, as_of: datetime | None = None) -> list[HistoryRow]:
+        return self.current.recent_rows(card_id, days, as_of)
+
+    def merchant_names_normalised(self) -> Mapping[str, str]:
+        return self.current.merchant_names_normalised()
+
+    def merchant_names(self, merchant_ids: Iterable[str]) -> dict[str, str]:
+        return self.current.merchant_names(merchant_ids)
+
+    def agent_history(self, customer_id: str) -> tuple[int, int]:
+        return self.current.agent_history(customer_id)
+
+    def item_price_range(self, item_id: str) -> tuple[float, float, float] | None:
+        return self.current.item_price_range(item_id)

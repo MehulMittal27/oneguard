@@ -51,8 +51,8 @@ from oneguard.engine.types import (
 )
 from oneguard.store import seed as seed_module
 from oneguard.store.db import make_engine, session
-from oneguard.store.schema import Decision, Mandate, PolicyDraft, Run
-from oneguard.viseca.client import VisecaClient, store_sink
+from oneguard.store.schema import Decision, Mandate, PolicyDraft, Run, VisecaCall
+from oneguard.viseca.client import LOG_CALLS_ENV, VisecaClient, call_sink
 from oneguard.viseca.demo import rule_to_viseca
 from tests.fake_viseca import FakeConfig, FakeViseca
 
@@ -252,7 +252,7 @@ async def running(
         if fake is None:
             return None
         return VisecaClient(
-            "http://fake-viseca", fake.config.api_key, transport=faulty, sink=store_sink(db), timeout_s=client_timeout_s
+            "http://fake-viseca", fake.config.api_key, transport=faulty, sink=call_sink(db), timeout_s=client_timeout_s
         )
 
     options = {
@@ -1335,5 +1335,43 @@ def test_d7_reads_the_stored_newest_run_after_a_restart(db_url: str) -> None:
         async with running(db_url) as run:  # no worker now
             current = (await run.get("/api/dev/runs/current")).json()
             assert (current["run_id"], current["decided"], current["worker_ok"]) == (live["run_id"], 1, False)
+
+    asyncio.run(scenario())
+
+
+def viseca_call_rows(run: Running) -> list[str]:
+    with session(run.services.db_engine) as s:
+        return list(s.scalars(select(VisecaCall.path)))
+
+
+def test_viseca_calls_are_not_logged_by_default_and_healthz_reads_the_worker(
+    db_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ONEGUARD_LOG_VISECA_CALLS`` unset: no ``viseca_calls`` row, and /healthz still names
+    the worker's last error (it comes from the worker's state, never from that table)."""
+    monkeypatch.delenv(LOG_CALLS_ENV, raising=False)
+
+    async def scenario() -> None:
+        fake = FakeViseca(fast(reference_status=503))
+        async with running(db_url, fake=fake) as run:
+            await until(lambda: fake.polls >= 2)
+            health = (await run.get("/healthz")).json()
+            assert "reference data unavailable" in health["worker"]["last_error"]
+            assert viseca_call_rows(run) == []
+
+    asyncio.run(scenario())
+
+
+def test_viseca_calls_are_logged_when_switched_on(db_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(LOG_CALLS_ENV, "true")
+
+    async def scenario() -> None:
+        fake = FakeViseca(fast())
+        async with running(db_url, fake=fake) as run:
+            await until(lambda: fake.polls >= 2)
+            await run.services.client.drain()
+            paths = viseca_call_rows(run)
+            assert "/v1/bootstrap" in paths and "/v1/reference-data" in paths
+            assert any(p.startswith("/v1/decision-requests/next") for p in paths)
 
     asyncio.run(scenario())
