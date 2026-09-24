@@ -20,7 +20,7 @@ flowchart LR
 ```
 
 Order inside the gate: customer rules → money rules → protections → uncertainty setting →
-warning signs → approve. Signals run in parallel with a 500 ms timeout and can only add
+warning signs → approve. Signals run in parallel with a 500 ms timeout (`ONEGUARD_SIGNAL_BUDGET_MS`) and can only add
 evidence or raise approve → step_up.
 
 `oneguard/llm/` is the one provider interface for generative models (OpenAI first,
@@ -95,16 +95,26 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
 - `Dockerfile`: a node stage builds `frontend/dist` (only when `frontend/package.json` is in
   the context) with `VITE_API_BASE_URL=/api` and `VITE_USE_MOCKS=false`; the runtime stage is
   `python:3.12-slim` + `tzdata` (Europe/Zurich rules), the backend installed editable with
-  its `compiler` extra (the OpenAI and Anthropic SDKs; the `signals` extra, Laya, stays out)
-  and `data/` beside it and `frontend/dist` copied in, run as a non-root user; `uvicorn
-  oneguard.api.app:app` listens on `$PORT` (8080); `ONEGUARD_SOFT_SIGNALS=keywords` and
-  `ONEGUARD_ENV=prod` are the image defaults.
-- `fly.toml`: region `lhr` (nearest Supabase in eu-west-1), one `shared-cpu-1x` machine with
-  1 GB, never auto-stopped (the worker polls from inside the app), no volume: state lives in
-  Supabase via `ONEGUARD_DATABASE_URL`. Health check `GET /healthz`, 60 s grace.
+  its `compiler` extra (the OpenAI and Anthropic SDKs) and its `signals` extra (Laya) on the
+  CPU-only torch wheel from the PyTorch index; the `laya-typed-decisions` checkpoint is
+  downloaded and loaded once at build time into `HF_HOME=/opt/huggingface`, and
+  `HF_HUB_OFFLINE=1` keeps the machine off the Hub. `data/` beside it, `backend/scripts`
+  (for `bench_engine.py --laya` on the machine) and `frontend/dist` copied in, run as a
+  non-root user; `uvicorn oneguard.api.app:app` listens on `$PORT` (8080);
+  `ONEGUARD_SOFT_SIGNALS=laya` and `ONEGUARD_ENV=prod` are the image defaults.
+- `fly.toml`: region `lhr` (nearest Supabase in eu-west-1), one `shared-cpu-4x` machine with
+  4 GB (Laya on CPU; shared rather than `performance-2x` on cost), never auto-stopped (the
+  worker polls from inside the app), no volume: state lives in Supabase via
+  `ONEGUARD_DATABASE_URL`. Health check `GET /healthz`, 120 s grace (the model loads before
+  the app answers).
 - Fly secrets: `VISECA_API_KEY`, `OPENAI_API_KEY`, `ONEGUARD_DATABASE_URL`,
-  `ONEGUARD_LLM_PROVIDER`, `ONEGUARD_SOFT_SIGNALS`; temporarily `ONEGUARD_ALLOW_RUNS=false`
+  `ONEGUARD_LLM_PROVIDER`; temporarily `ONEGUARD_ALLOW_RUNS=false`
   (D3 and `make demo-live` refuse to start a run while it is set). Set with `fly secrets`, never in files.
+  `ONEGUARD_SOFT_SIGNALS` is not a secret: the image default (`laya`) applies; a secret of that
+  name would override it (`keywords` turns the model off without a rebuild).
+- Rollback: every deploy is tagged in `registry.fly.io/oneguard`; `fly image show -a oneguard`
+  before a deploy names the running one, and `fly deploy -a oneguard --image <that ref>` puts
+  it back.
 - Makefile: `make deploy` (`fly deploy -a oneguard --ha=false`), `make logs`, `make image`
   (the same image locally), `make demo-live SCEN=…`, `make demo-offline`, `make seed`,
   `make reset-db` (refused when `ONEGUARD_ENV=prod`); `make matrix` arrives with P5-4.
@@ -125,12 +135,12 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
 
 Python 3.12 · fastapi · uvicorn · pydantic v2 · httpx · sqlalchemy · psycopg[binary] · jsonschema ·
 pyyaml · pandas (replay/ and store/seed.py only) · pytest · ruff · optional: openai, anthropic (compiler; `oneguard/llm/`), laya==0.3.20 (signals:
-agent_directed only; ~850 MB checkpoint cached outside the repo; ~5 s first load, keep warm).
+agent_directed only; ~850 MB checkpoint cached outside the repo, baked into the image; ~5 s first load, keep warm).
 
 ## Latency budget per decision
 
 Fact build < 5 ms · rules + protections + signs < 5 ms · ledger transaction < 10 ms ·
-signals ≤ 500 ms (parallel, optional) · tier 2 ≤ 1.5 s (only when a rule is `unknown`),
+signals ≤ 500 ms (parallel, optional; `ONEGUARD_SIGNAL_BUDGET_MS`) · tier 2 ≤ 1.5 s (only when a rule is `unknown`),
 inside the 2 s budget · Viseca POST ~100–300 ms. Internal budget 2 s; platform deadline
 8 s from queueing. Tier 3 runs after posting, not in the budget.
 Measured (docs/benchmark.md, `backend/scripts/bench_engine.py`): end-to-end P95 5.6 ms on

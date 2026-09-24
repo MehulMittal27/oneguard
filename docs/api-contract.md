@@ -327,7 +327,7 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 
 - Off by default in the offline replay; on by default in live runs if the model loaded.
   D5 toggles at runtime.
-- Timeout 500 ms; on timeout/error the keyword detector runs instead. Output only ever adds
+- Timeout 500 ms (`ONEGUARD_SIGNAL_BUDGET_MS`); on timeout/error the keyword detector runs instead. Output only ever adds
   `evidence` rows with `source: 'model'` and may raise `approve → uncertain`. It can never
   lower `stopped` or override a policy check. `engine_version` records whether the model
   was on, so a replay with it off is comparable.

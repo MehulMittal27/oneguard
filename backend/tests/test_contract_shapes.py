@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from oneguard import pipeline
 from oneguard.api import models as api
 from oneguard.engine import interfaces, stubs
 from oneguard.engine.ledger_base import InMemoryLedger
@@ -577,6 +578,27 @@ def test_tier2_is_skipped_without_a_provider_and_failures_are_contained() -> Non
     _, _, decision = decide_event(_event(), _context(implementations=functions, provider=Configured()))
     assert calls == ["tier2"]
     assert decision.status == "pending_human"
+
+
+@pytest.mark.parametrize(
+    ("raw", "budget_s"), [(None, 0.5), ("1000", 1.0), (" 250 ", 0.25), ("0", 0.5), ("-5", 0.5), ("fast", 0.5)]
+)
+def test_the_soft_signal_budget_comes_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None, budget_s: float
+) -> None:
+    if raw is None:
+        monkeypatch.delenv(pipeline.SIGNAL_BUDGET_ENV, raising=False)
+    else:
+        monkeypatch.setenv(pipeline.SIGNAL_BUDGET_ENV, raw)
+    budgets: list[float] = []
+
+    def soft_signals(facts, budget):
+        budgets.append(budget)
+        return []
+
+    functions = {**stubs.STUBS, "soft_signals": soft_signals}
+    decide_event(_event(), _context(implementations=functions, signals_enabled=True))
+    assert budgets == [budget_s]
 
 
 def test_the_lint_stub_never_passes_everything() -> None:

@@ -16,4 +16,3 @@ frontend/dist
 vendor
 docs
 backend/tests
-backend/scripts
