@@ -5,6 +5,7 @@ import { BottomSheet } from '../../components/BottomSheet'
 import { DeviceFrame } from '../../components/DeviceFrame'
 import { ShieldIcon } from '../../components/icons/lucide'
 import { StatusBar } from '../../components/StatusBar'
+import { splitSignInCustomers } from '../../lib/signInCustomers'
 import { useCustomer } from '../../state/CustomerContext'
 
 const CORD_STEPS = ['Agent proposes', 'Your rules decide', 'Money moves, or not']
@@ -45,11 +46,11 @@ export function SignIn() {
   }, [attempt])
 
   const selected = customers.find((c) => c.customer_id === selectedId) ?? null
-  const liveCustomers = customers.filter((c) => c.live)
-  const otherCustomers = customers.filter((c) => !c.live)
-  const visibleCustomers = selected && !selected.live
-    ? [selected, ...liveCustomers].slice(0, MAX_VISIBLE_CUSTOMERS)
-    : liveCustomers.slice(0, MAX_VISIBLE_CUSTOMERS)
+  const { visible: visibleCustomers, others: otherCustomers } = splitSignInCustomers(
+    customers,
+    selectedId,
+    MAX_VISIBLE_CUSTOMERS,
+  )
 
   return (
     <main>
@@ -121,7 +122,7 @@ export function SignIn() {
                   onClick={() => setShowOthers(true)}
                   className="min-h-11 self-start text-left text-[13px] text-ink-muted underline decoration-border-quiet underline-offset-4"
                 >
-                  + {otherCustomers.length} more customers in Sandbox mode
+                  + {otherCustomers.length} more customers
                 </button>
               )}
             </div>
