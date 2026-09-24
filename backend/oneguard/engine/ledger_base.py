@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
@@ -86,6 +87,24 @@ def is_final_approval(outcome: str, final: bool, uncertain_outcome: str | None) 
 def confirmation_key(rule_id: str, merchant_id: str, item_id: str) -> str:
     """One remembered answer: this rule, at this shop, for this item (``confirmed_keys``)."""
     return f"{rule_id}|{merchant_id}|{item_id}"
+
+
+def shop_confirmation_key(rule_id: str, merchant_id: str) -> str:
+    """One remembered answer for this rule at this shop, whatever the items (C9 known shop)."""
+    return f"{rule_id}|{merchant_id}|*"
+
+
+def confirmation_keys(rule_ids: Iterable[str], merchant_id: str, item_ids: Iterable[str]) -> set[str]:
+    """What one step-up the customer approved leaves in ``confirmed_keys``: every deciding
+    rule per item and per shop. The reader picks the grain: ``policy.add_ledger_results``
+    reads the shop key only for a known-shop check (C9), the item keys only for a
+    restriction no data can check."""
+    items = list(item_ids)
+    keys: set[str] = set()
+    for rule_id in rule_ids:
+        keys.add(shop_confirmation_key(rule_id, merchant_id))
+        keys.update(confirmation_key(rule_id, merchant_id, item_id) for item_id in items)
+    return keys
 
 
 def known_merchant_names(history: HistoryIndex | None, merchant_ids: set[str]) -> dict[str, str]:
@@ -256,11 +275,10 @@ class InMemoryLedger(Ledger):
             flagged_merchant_ids=set(self.flags.get(run_id, set())),
             frozen=False,
             confirmed_keys={
-                confirmation_key(rule_id, e.merchant_id, item_id)
+                key
                 for e in run
                 if e.outcome == "step_up" and e.uncertain_outcome == "approved" and e.resolved_by == "customer"
-                for rule_id in e.deciding_ids
-                for item_id in e.item_ids
+                for key in confirmation_keys(e.deciding_ids, e.merchant_id, e.item_ids)
             },
         )
 
