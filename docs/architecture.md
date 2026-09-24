@@ -143,8 +143,9 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
 - Fly secrets: `VISECA_API_KEY`, `OPENAI_API_KEY`, `ONEGUARD_DATABASE_URL`,
   `ONEGUARD_LLM_PROVIDER`; temporarily `ONEGUARD_ALLOW_RUNS=false`
   (D3 and `make demo-live` refuse to start a run while it is set). Set with `fly secrets`, never in files.
-  `ONEGUARD_SOFT_SIGNALS` is not a secret: the image default (`laya`) applies; a secret of that
-  name would override it (`keywords` turns the model off without a rebuild).
+  `ONEGUARD_SOFT_SIGNALS=keywords` is set as a secret and overrides the image default (`laya`):
+  on Fly's CPUs Laya does not answer a purchase inside its budget (docs/benchmark.md §3).
+  `fly secrets unset ONEGUARD_SOFT_SIGNALS` turns the model back on without a rebuild.
 - Rollback: every deploy is tagged in `registry.fly.io/oneguard`; `fly image show -a oneguard`
   before a deploy names the running one, and `fly deploy -a oneguard --image <that ref>` puts
   it back.
