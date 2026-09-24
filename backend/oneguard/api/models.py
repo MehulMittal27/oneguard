@@ -450,6 +450,7 @@ ErrorCode = Literal[
     "window_closed",
     "upstream_unavailable",
     "compiler_timeout",
+    "internal",
 ]
 
 

@@ -44,4 +44,15 @@ demo-offline:
 demo-live:
 	cd backend && . .venv/bin/activate && python -m oneguard.viseca.demo --scenario $(SCEN)
 
-.PHONY: setup test lint check seed reset-db replay replay-all dev build-frontend serve demo-offline demo-live
+# The image Fly builds (Dockerfile); runs locally with `docker run -p 8080:8080 --env-file .env oneguard`.
+image:
+	docker build -t oneguard .
+
+# One machine in lhr (fly.toml); secrets are set on the app with `fly secrets`, never here.
+deploy:
+	fly deploy -a oneguard --ha=false
+
+logs:
+	fly logs -a oneguard
+
+.PHONY: setup test lint check seed reset-db replay replay-all dev build-frontend serve demo-offline demo-live image deploy logs
