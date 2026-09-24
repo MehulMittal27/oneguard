@@ -405,7 +405,7 @@ neutral fallback for unknown codes.
 
 1. `Customer.scenario_id` → `scenario_ids: string[]`.
 2. `Decision.related` — one link row in DecisionDetail "Related decisions".
-3. `Decision.counterfactual` — one line under the message in DecisionDetail.
+3. `Decision.counterfactual` — one line under the message in DecisionDetail; when the message ends with the same suggestion, DecisionDetail drops that trailing copy so it is said once (lists keep the full message).
 4. `Mandate.usage` — `lib/spend.ts` prefers it when present; keep client math as mock fallback; ensure human-approved step-ups count as spend.
 5. `Evidence.outcome: 'info'` — neutral styling; unknown values fall back to neutral.
 6. Optional: `Decision.session` banner on DecisionDetail when trust ≠ normal; a "Revoke policy" shortcut on the Approvals card.
