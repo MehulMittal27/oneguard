@@ -324,7 +324,7 @@ async def confirm_form(run: Running, card_id: str = "CA0001", **form: Any) -> di
 
 async def live_run(run: Running, scenario_id: str = "SCEN0001", card_id: str = "CA0001", n: int = 10) -> list[dict[str, Any]]:
     """A confirmed policy, a Viseca run started through D3, all ``n`` decisions in C6, every
-    step-up's deadline the platform's."""
+    step-up's deadline the platform's and its expiry timer running."""
     await confirm_form(run, card_id)
     r = await run.post("/api/dev/runs", json={"scenario_id": scenario_id, "card_id": card_id})
     assert r.status_code == 200, r.text
@@ -332,17 +332,21 @@ async def live_run(run: Running, scenario_id: str = "SCEN0001", card_id: str = "
 
     async def settled() -> list[dict[str, Any]] | None:
         # A step-up is listed before the reply to its POST moves deadline_at to the
-        # platform's expiry; on a loaded machine that gap can pass a second.
+        # platform's expiry, and its expiry timer starts after that; on a loaded machine
+        # either gap can pass a second, and a test that moves the clock inside it expires
+        # the step-up at once.
         listed = await run.decisions(customer)
         if len(listed) != n:
             return None
         expiry = {a.live_id: a.expires_at for a in run.fake.all_auths()}
+        timers = run.services.worker._expiry if run.services.worker is not None else {}
         for d in listed:
             expires = expiry.get(d["authorization_id"])
             if d["status"] == "pending_human" and (
                 expires is None
                 or not d["deadline_at"]
                 or abs((datetime.fromisoformat(d["deadline_at"]) - expires).total_seconds()) > 1.0
+                or d["authorization_id"] not in timers
             ):
                 return None
         return listed
