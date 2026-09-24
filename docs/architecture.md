@@ -93,7 +93,8 @@ oneguard/
   `await VisecaWorker.wait_run_recorded(viseca_run_id)` returns once the final (done/error)
   row has committed. `add_handled_listener` is called with the live id once a delivered
   request is fully handled (decision posted and recorded, `events_raw` and `runs` rows
-  committed).
+  committed). `stop()` writes every stored run's row once more, so a request it cut short
+  leaves no stale counts for the next process (D7).
 - Every Viseca call is summarised in `viseca_calls` (no key, bodies ≤ 4 KB) by
   `oneguard/viseca/client.py`. `make demo-live SCEN=…` runs one scenario end to end
   (`oneguard/viseca/demo.py`); it needs `VISECA_API_KEY`.

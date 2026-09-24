@@ -1266,12 +1266,13 @@ def test_d7_reads_the_stored_newest_run_after_a_restart(db_url: str) -> None:
     async def scenario() -> None:
         async with running(db_url, fake=FakeViseca(fast())) as run:
             await confirm_form(run)
+            # the worker says when the purchase is handled: decision recorded and its runs row
+            # committed (reading D7 would only see the in-memory count, ahead of the row)
+            handled = asyncio.Event()
+            run.services.worker.add_handled_listener(lambda live_id: handled.set())
             live = (await run.post("/api/dev/runs", json={"scenario_id": "SCEN0000", "card_id": "CA0001"})).json()
-
-            async def decided() -> bool:
-                return (await run.get("/api/dev/runs/current")).json()["decided"] == 1
-
-            await until(decided)
+            await asyncio.wait_for(handled.wait(), timeout=120)  # a hang guard, not a wait
+            assert (await run.get("/api/dev/runs/current")).json()["decided"] == 1
         async with running(db_url) as run:  # no worker now
             current = (await run.get("/api/dev/runs/current")).json()
             assert (current["run_id"], current["decided"], current["worker_ok"]) == (live["run_id"], 1, False)

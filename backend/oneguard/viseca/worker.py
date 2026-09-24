@@ -853,8 +853,9 @@ class VisecaWorker:
     async def stop(self) -> None:
         """Stop polling and cancel expiry timers (pending step-ups are recovered on start).
 
-        Waits up to ``STOP_DRAIN_S`` for the engine thread's current work, then closes any
-        ledger session still open, so no pooled connection outlives the worker.
+        Waits up to ``STOP_DRAIN_S`` for the engine thread's current work, writes every stored
+        run's ``runs`` row once more (a request cut short never reached its write), then
+        closes any ledger session still open, so no pooled connection outlives the worker.
         """
         tasks = [t for t in [self._task, *self._expiry.values()] if t is not None]
         for task in tasks:
@@ -869,6 +870,15 @@ class VisecaWorker:
             )
         except TimeoutError:
             log.warning("the engine thread is still busy after %s s; closing its ledger session", STOP_DRAIN_S)
+        # A request cut short above never reached its runs write: bring every stored row up
+        # to what the worker knows, so a restarted process (D7) reads the same counts.
+        for run in list(self._runs.values()):
+            if run.recorded_state is None:
+                continue  # never stored (tracked, nothing delivered): nothing to bring up to date
+            try:
+                await self._persist_run(run)
+            except Exception:
+                log.exception("could not store run %s on stop", run.run_id)
         close = getattr(self._ledger, "close", None)
         if callable(close):
             close()

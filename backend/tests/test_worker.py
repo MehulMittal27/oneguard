@@ -442,6 +442,27 @@ def test_wait_run_recorded_returns_only_after_the_final_runs_row_commits(
     asyncio.run(scenario())
 
 
+def test_stop_brings_each_stored_runs_row_up_to_date(db: Engine, history: StoreHistoryIndex) -> None:
+    """A request cut short by ``stop`` never reached its runs write; stop writes the row."""
+
+    async def scenario() -> None:
+        async with harness(db, fast(), history=history) as (_, client, worker):
+            handled = asyncio.Event()
+            worker.add_handled_listener(lambda live_id: handled.set())
+            await worker.start()
+            _, run_id = await start_run(client, worker, "SCEN0000")
+            await asyncio.wait_for(handled.wait(), timeout=120)  # a hang guard, not a wait
+            run = worker._runs[run_id]
+            run.last_error = "known only in memory"  # as if its runs write had been cut short
+            await worker.stop()
+            with session(db) as s:
+                row = s.scalars(select(Run).where(Run.viseca_run_id == run_id)).one()
+            assert (row.decided, row.kind, row.last_error) == (1, "live", "known only in memory")
+            assert worker.run_status(run_id).recorded_state == row.state
+
+    asyncio.run(scenario())
+
+
 def test_an_unanswered_step_up_is_declined_at_the_window(db: Engine, history: StoreHistoryIndex) -> None:
     async def scenario() -> None:
         seen: list[api.Decision] = []
