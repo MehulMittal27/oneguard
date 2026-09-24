@@ -15,6 +15,7 @@ without depending on which engine lanes have landed.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import shutil
 import time
@@ -170,7 +171,8 @@ class Clock:
 
 
 class Faulty(httpx.AsyncBaseTransport):
-    """Wraps the fake: answers ``(method, path prefix)`` with an error, or hangs."""
+    """Wraps the fake: answers ``(method, path prefix)`` with an error (or an empty
+    success below 400), or hangs."""
 
     def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
         self.inner = inner
@@ -182,6 +184,8 @@ class Faulty(httpx.AsyncBaseTransport):
             await asyncio.sleep(30)
         for (method, prefix), status in self.fail.items():
             if request.method == method and request.url.path.startswith(prefix):
+                if status < 400:
+                    return httpx.Response(status)
                 return httpx.Response(status, json={"error": {"code": "unavailable", "message": "injected"}})
         return await self.inner.handle_async_request(request)
 
@@ -786,6 +790,51 @@ def test_revoke_flips_the_policy_and_leaves_purchases_alone(db_url: str) -> None
     asyncio.run(scenario())
 
 
+@covers("revoke_policy_only", "no_false_2xx")
+@pytest.mark.parametrize("platform", [204, 404, 409, 503])
+def test_revoke_succeeds_when_the_platform_no_longer_has_the_mandate_active(
+    db_url: str, platform: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    """C5 when Viseca answers the DELETE with 204, 404, 409 (the mandate was superseded:
+    the team keeps one active mandate, and a policy confirmed on another card took its
+    place) or 503. Only the 503 reaches the customer, and our row is revoked every time."""
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast())) as run:
+            mandate = await confirm_form(run)
+            (tm,) = run.fake.mandates
+            if platform == 409:
+                await confirm_form(run, card_id="CA0002")
+                assert run.fake.mandates[tm]["status"] == "superseded"
+            elif platform == 404:
+                run.faulty.fail[("DELETE", "/v1/mandates")] = 404
+                run.faulty.fail[("GET", "/v1/mandates")] = 404
+            else:
+                run.faulty.fail[("DELETE", "/v1/mandates")] = platform
+            with caplog.at_level(logging.INFO, logger="oneguard.api.routes_customer"):
+                r = await run.post("/api/cards/CA0001/policy/revoke")
+            policy = (await run.get("/api/cards/CA0001/policy")).json()["mandate"]
+            assert (policy["mandate_id"], policy["status"]) == (mandate["mandate_id"], "revoked")
+            assert run.services.worker._policies[tm].status == "revoked"
+            logged = [m for m in caplog.messages if "no longer has mandate" in m]
+            if platform == 503:
+                assert r.status_code == 503 and r.json()["error"]["code"] == "upstream_unavailable"
+                assert not logged
+                run.faulty.fail.clear()  # the customer's retry reaches the platform
+                assert (await run.post("/api/cards/CA0001/policy/revoke")).status_code == 204
+                assert run.fake.mandates[tm]["status"] == "revoked"
+                return
+            assert r.status_code == 204 and r.content == b""
+            expected = {204: None, 404: "(404 unavailable); platform status: unread (404 unavailable)",
+                        409: "(409 mandate_inactive); platform status: superseded"}[platform]  # fmt: skip
+            if expected is None:
+                assert not logged
+            else:
+                assert logged == [f"Viseca no longer has mandate {tm} active {expected}"]
+
+    asyncio.run(scenario())
+
+
 @covers("tighten_pure")
 def test_tighten_accepts_only_pure_additions(db_url: str) -> None:
     async def scenario() -> None:
@@ -964,10 +1013,13 @@ def test_policy_drafts_and_the_viseca_dance(db_url: str) -> None:
             assert bound.mandate_id == mandate["mandate_id"] and bound.requires_known_shop
             assert [rule_to_viseca(r) for r in bound.rules] == at_viseca["hard_rules"]
 
-            # a second policy replaces the first, which is revoked here and at Viseca
+            # a second policy replaces the first: revoked here, superseded at Viseca (one
+            # active mandate per team), so our DELETE's 409 counts as done
             second = await confirm_form(run, per_order_limit_chf=80)
             assert (await run.get("/api/cards/CA0001/policy")).json()["mandate"]["mandate_id"] == second["mandate_id"]
-            assert run.fake.mandates[tm]["status"] == "revoked"
+            assert run.fake.mandates[tm]["status"] == "superseded"
+            with session(run.services.db_engine) as s:
+                assert s.scalar(select(Mandate).where(Mandate.viseca_mandate_id == tm)).status == "revoked"
 
     asyncio.run(scenario())
 
