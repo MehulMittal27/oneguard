@@ -363,9 +363,55 @@ def test_a_request_failing_the_event_schema_is_declined(db: Engine, history: Sto
     asyncio.run(scenario())
 
 
-def test_an_engine_over_budget_posts_a_decline_before_the_deadline(
+def test_an_engine_over_budget_posts_a_step_up_before_the_deadline_that_expires_unanswered(
     db: Engine, history: StoreHistoryIndex
 ) -> None:
+    def slow_facts(event: dict, index: Any) -> Any:
+        time.sleep(1.5)
+        return stubs.build_facts(event, index)
+
+    async def scenario() -> None:
+        functions = {**stubs.STUBS, "build_facts": slow_facts}
+        config = fast(decision_deadline_s=1.2, human_window_s=2.0)
+        async with harness(
+            db, config, history=history, implementations=functions, budget_ms=100
+        ) as (fake, client, worker):
+            await worker.start()
+            _, run_id = await start_run(client, worker, "SCEN0000")
+            (auth,) = fake.runs[run_id].auths
+            await wait_until(lambda: bool(auth.decisions), timeout=5)
+            assert not auth.auto_declined
+            assert auth.accepted_at is not None and auth.accepted_at < auth.deadline_at
+            (posted,) = auth.decisions
+            assert posted["decision"] == "step_up" and posted["reason_codes"] == ["unevaluable"]
+            assert posted["customer_message"] == "We couldn't check this purchase in time; please review it"
+            assert posted["evidence"][0]["rule"] == "engine"
+
+            # the late engine result stores the claimed step-up, with its reservation
+            await wait_until(lambda: auth.live_id in worker._run_of[auth.live_id].pending)
+            (entry,) = await worker.ledger_entries([auth.live_id])
+            amount = auth.template["authorization"]["billing_amount_chf"]
+            assert (entry.outcome, entry.final, entry.uncertain_outcome) == ("step_up", False, "pending")
+            assert entry.reason_codes == ["unevaluable"] and entry.reserved_chf == amount
+            assert entry.deadline_at == auth.accepted_at + timedelta(seconds=2.0)
+            assert worker.status().pending_step_ups == 1
+
+            # unanswered: the timeout decline at accepted time + human window
+            await wait_until(lambda: bool(auth.resolutions), timeout=5)
+            (resolution,) = auth.resolutions
+            assert resolution["decision"] == "decline"
+            assert resolution["customer_message"] == timeout_message(2.0)
+            assert resolution["evidence"][0]["detail"] == "timeout"
+            assert resolution["at"] >= entry.deadline_at
+            (entry,) = await worker.ledger_entries([auth.live_id])
+            assert (entry.final, entry.uncertain_outcome, entry.resolved_by) == (True, "expired", "timeout")
+            assert entry.reserved_chf == 0.0 and entry.spent_chf == 0.0
+            assert len(auth.decisions) == 1
+
+    asyncio.run(scenario())
+
+
+def test_the_customer_can_answer_an_overrun_step_up(db: Engine, history: StoreHistoryIndex) -> None:
     def slow_facts(event: dict, index: Any) -> Any:
         time.sleep(1.5)
         return stubs.build_facts(event, index)
@@ -379,13 +425,12 @@ def test_an_engine_over_budget_posts_a_decline_before_the_deadline(
             _, run_id = await start_run(client, worker, "SCEN0000")
             (auth,) = fake.runs[run_id].auths
             await wait_until(lambda: bool(auth.decisions), timeout=5)
-            assert not auth.auto_declined
-            posted = auth.decisions[0]
-            assert posted["decision"] == "decline" and posted["reason_codes"] == ["unevaluable"]
-            # the late engine result is a step-up; its reservation is released at once
-            await wait_until(lambda: "after the fallback decline" in (worker.status().last_error or ""))
-            (entry,) = await worker.ledger_entries([auth.live_id])
-            assert entry.final and entry.reserved_chf == 0.0 and entry.spent_chf == 0.0
+            entry = await worker.resolve_by_customer(auth.live_id, "approve")
+            assert (entry.uncertain_outcome, entry.resolved_by) == ("approved", "customer")
+            assert entry.spent_chf == auth.template["authorization"]["billing_amount_chf"]
+            assert auth.resolutions[0]["customer_message"] == "The customer confirmed this purchase."
+            assert worker.status().pending_step_ups == 0
+            assert len(auth.decisions) == 1
 
     asyncio.run(scenario())
 

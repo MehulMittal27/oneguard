@@ -12,7 +12,9 @@ loop, never blocked by a human:
   event schema, remember the live → source id map (and the live related id), store the
   full event in ``events_raw``, reconcile ``context.approved_spend_in_period_chf``
   against the ledger, run ``pipeline.decide_event`` within ``ONEGUARD_ENGINE_BUDGET_MS``
-  and POST the decision before ``deadline_at``.
+  and POST the decision before ``deadline_at``. An engine still unfinished just before
+  ``deadline_at`` gets a pending ``step_up`` (``unevaluable``) posted in its place, which
+  then waits on the customer like any other step-up (rules.md D3).
 - redelivery of a known live id posts the stored decision again and counts nothing (M7).
 - a ``step_up`` accepted by Viseca gets ``deadline_at`` = accepted time + the bootstrap
   human window and an expiry task. The loop never waits for it. Unanswered at the
@@ -41,6 +43,7 @@ import hashlib
 import importlib
 import logging
 import math
+import threading
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -49,7 +52,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Engine, select
@@ -58,7 +61,14 @@ from sqlalchemy.orm import Session
 from oneguard import __version__
 from oneguard.api import models as api
 from oneguard.engine.ledger_base import InMemoryLedger, Ledger, LedgerEntry
-from oneguard.engine.types import EvidenceRow, HistoryIndex, Policy, Rule, RuleKind
+from oneguard.engine.types import (
+    EvidenceRow,
+    HistoryIndex,
+    LedgerView,
+    Policy,
+    Rule,
+    RuleKind,
+)
 from oneguard.llm.provider import Provider
 from oneguard.pipeline import (
     PipelineContext,
@@ -81,7 +91,7 @@ T = TypeVar("T")
 POLL_WAIT_S = 25.0
 DEFAULT_HUMAN_WINDOW_S = 120.0
 POST_MARGIN_S = 0.5
-"""Time kept free before ``deadline_at`` to POST when the engine overruns its budget."""
+"""Time kept free before ``deadline_at`` to POST the step-up when the engine overruns its budget."""
 POST_RETRY_DELAYS_S = (0.2, 0.5, 1.0)
 LOOP_BACKOFF_MAX_S = 10.0
 RECONCILE_TOLERANCE_CHF = Decimal("0.005")
@@ -93,6 +103,7 @@ CUSTOMER_MESSAGES = {
     "approve": "The customer confirmed this purchase.",
     "decline": "The customer declined this purchase.",
 }
+OVERRUN_MESSAGE = "We couldn't check this purchase in time; please review it"
 FALLBACK_MESSAGE = (
     "Declined: we could not finish checking this purchase before its deadline, "
     "so nothing was approved."
@@ -291,6 +302,59 @@ def default_ledger(db: Engine, history: HistoryIndex) -> Ledger:
     return module.Ledger(Session(db, expire_on_commit=False), history=history)
 
 
+class OverrunClaims:
+    """Which decision the ledger keeps for a live id when the engine overruns: first claim wins.
+
+    The worker claims a live id with its pending overrun step-up before posting it; the
+    engine's own ``record`` then stores that step-up instead of its late result. If the
+    engine recorded first, the claim fails and the engine's decision is posted. Shared
+    between the event loop and the engine thread.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._claimed: dict[str, LedgerEntry] = {}
+        self._engine_recorded: set[str] = set()
+
+    def claim(self, entry: LedgerEntry) -> bool:
+        with self._lock:
+            if entry.live_authorization_id in self._engine_recorded:
+                return False
+            self._claimed[entry.live_authorization_id] = entry
+            return True
+
+    def for_engine(self, entry: LedgerEntry) -> LedgerEntry:
+        """The entry the engine may record: the overrun step-up if one was claimed."""
+        with self._lock:
+            claimed = self._claimed.pop(entry.live_authorization_id, None)
+            if claimed is None:
+                self._engine_recorded.add(entry.live_authorization_id)
+            return claimed or entry
+
+    def take(self, live_id: str) -> LedgerEntry | None:
+        """The claimed step-up the engine has not recorded yet."""
+        with self._lock:
+            return self._claimed.pop(live_id, None)
+
+    def forget(self, live_id: str) -> None:
+        with self._lock:
+            self._engine_recorded.discard(live_id)
+
+
+class ClaimedLedger:
+    """The ledger as the engine sees it: ``record`` honours an overrun claim."""
+
+    def __init__(self, ledger: Ledger, claims: OverrunClaims) -> None:
+        self._ledger = ledger
+        self._claims = claims
+
+    def record(self, entry: LedgerEntry) -> LedgerEntry:
+        return self._ledger.record(self._claims.for_engine(entry))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._ledger, name)
+
+
 # Status ------------------------------------------------------------------------------------
 
 
@@ -422,6 +486,9 @@ class VisecaWorker:
         self._policies: dict[str, Policy] = {}
         self._revoked: set[str] = set()
         self._expiry: dict[str, asyncio.Task[None]] = {}
+        self._claims = OverrunClaims()
+        self._run_write_lock = threading.Lock()
+        """``_save_run`` runs on several threads; ``merge`` is not an atomic upsert."""
         self._resolution_lock = asyncio.Lock()
         self._feed_mismatches: list[EvidenceRow] = []
         self._feed_seen: set[tuple[str, str]] = set()
@@ -846,7 +913,7 @@ class VisecaWorker:
         run.state = "running"
         run.ctx = PipelineContext(
             policy=policy,
-            ledger=self.ledger,
+            ledger=cast(Ledger, ClaimedLedger(self.ledger, self._claims)),
             history=self._history or StoreHistoryIndex(),
             run_id=run.run_id,
             provider=self._provider,
@@ -904,7 +971,11 @@ class VisecaWorker:
         extra: list[EvidenceRow],
         deadline_at: datetime,
     ) -> api.Decision | None:
-        """The pipeline's decision, or None after posting a fallback decline."""
+        """The pipeline's decision, or None after posting a decision in its place.
+
+        An engine error posts a decline; an engine still running ``POST_MARGIN_S`` before
+        ``deadline_at`` gets an overrun step-up (``_overrun_step_up``).
+        """
         assert run.ctx is not None
         live_id = data["authorization"]["authorization_id"]
         future = asyncio.get_running_loop().run_in_executor(
@@ -912,64 +983,152 @@ class VisecaWorker:
         )
         waits = [self._budget_ms / 1000]
         waits.append((deadline_at - self._now()).total_seconds() - POST_MARGIN_S - waits[0])
-        for i, wait in enumerate(waits):
-            if wait <= 0:
-                continue
-            try:
-                _, _, decision = await asyncio.wait_for(asyncio.shield(future), wait)
-                return decision
-            except TimeoutError:
-                if i == 0:
-                    log.warning("engine over its %d ms budget on %s", self._budget_ms, live_id)
-            except Exception as exc:
-                log.exception("engine failed on %s", live_id)
-                await self._fallback(run, data, deadline_at, f"The engine failed: {type(exc).__name__}.", record=True)
-                return None
-        future.add_done_callback(
-            lambda f: asyncio.ensure_future(self._late_result(live_id, f))
-        )
-        await self._fallback(
-            run, data, deadline_at, f"The engine did not finish within {self._budget_ms} ms.", record=False
-        )
-        return None
+        try:
+            for i, wait in enumerate(waits):
+                if wait <= 0:
+                    continue
+                try:
+                    _, _, decision = await asyncio.wait_for(asyncio.shield(future), wait)
+                    return decision
+                except TimeoutError:
+                    if i == 0:
+                        log.warning("engine over its %d ms budget on %s", self._budget_ms, live_id)
+                except Exception as exc:
+                    log.exception("engine failed on %s", live_id)
+                    await self._decline_unevaluable(
+                        run, data, deadline_at, f"The engine failed: {type(exc).__name__}."
+                    )
+                    return None
+            entry = self._overrun_entry(run, data)
+            if not self._claims.claim(entry):
+                # The engine recorded its decision a moment ago; only its reply is left.
+                try:
+                    _, _, decision = await asyncio.shield(future)
+                    return decision
+                except Exception:
+                    log.exception("engine failed on %s after recording", live_id)
+                    stored = await self._engine(self.ledger.get, live_id)
+                    if stored is not None:
+                        await self._post_stored(data, stored, deadline_at)
+                    return None
+            future.add_done_callback(partial(_late_result, live_id))
+            await self._overrun_step_up(run, data, entry, deadline_at)
+            return None
+        finally:
+            self._claims.forget(live_id)
 
-    async def _fallback(
-        self, run: RunState, data: dict[str, Any], deadline_at: datetime, detail: str, *, record: bool
+    def _overrun_entry(self, run: RunState, data: dict[str, Any]) -> LedgerEntry:
+        """The pending step-up that stands in for an engine over its budget (D3)."""
+        assert run.ctx is not None
+        auth = data["authorization"]
+        detail = f"The engine did not finish within {self._budget_ms} ms."
+        decided_at = self._now()
+        return LedgerEntry(
+            live_authorization_id=auth["authorization_id"],
+            run_id=run.run_id,
+            mandate_id=run.ctx.policy.mandate_id,
+            card_id=auth["card_id"],
+            customer_id=data["mandate"]["customer_id"],
+            ts_sim=datetime.fromisoformat(auth["timestamp"]),
+            outcome="step_up",
+            final=False,
+            uncertain_outcome="pending",
+            merchant_id=auth["merchant"]["merchant_id"],
+            item_ids=[line["item_id"] for line in auth["items"]],
+            billing_amount_chf=auth["billing_amount_chf"],
+            step=4,
+            deciding_ids=["engine"],
+            reason_codes=["unevaluable"],
+            evidence=[EvidenceRow(rule="engine", outcome="uncertain", detail=detail, source="policy")],
+            message=OVERRUN_MESSAGE,
+            engine_version=run.ctx.engine_version,
+            latency_ms=float(self._budget_ms),
+            signals_enabled=run.ctx.signals_enabled,
+            decided_at=decided_at,
+            deadline_at=decided_at + timedelta(seconds=run.ctx.human_window_s),
+        )
+
+    async def _overrun_step_up(
+        self, run: RunState, data: dict[str, Any], entry: LedgerEntry, deadline_at: datetime
     ) -> None:
-        """Decline what could not be checked in time (D3; missing is never a pass)."""
+        """POST the claimed overrun step-up, then record it and wait for the customer.
+
+        The POST goes out at once. The ledger thread is still busy with the engine, so the
+        entry (and its reservation) is stored there once the engine returns: by the
+        engine's own ``record`` or by ``_settle_overrun``. From then on it is a pending
+        step-up like any other: C8, expiry at accepted time + human window, redelivery.
+        """
+        assert run.ctx is not None
+        live_id = entry.live_authorization_id
+        run.last_error = f"{live_id}: {entry.evidence[0].detail}"
+        try:
+            reply = await self._post(
+                live_id,
+                "step_up",
+                entry.reason_codes,
+                entry.message,
+                [row.model_dump(mode="json") for row in entry.evidence],
+                entry.engine_version,
+                deadline_at,
+            )
+        except VisecaError as exc:
+            reply = None
+            self._note_error(f"overrun step-up of {live_id} not accepted: {exc}")
+        run.decided.add(live_id)
+        stored, view = await self._engine(
+            self._settle_overrun, live_id, period_days_of(run.ctx.policy)
+        )
+        await self._await_answer(run, to_api_decision(data, stored, view), reply)
+
+    def _settle_overrun(self, live_id: str, period_days: int | None) -> tuple[LedgerEntry, LedgerView]:
+        claimed = self._claims.take(live_id)
+        stored = self.ledger.record(claimed) if claimed is not None else self.ledger.get(live_id)
+        assert stored is not None
+        view = self.ledger.view(
+            run_id=stored.run_id,
+            customer_id=stored.customer_id,
+            card_id=stored.card_id,
+            at=stored.ts_sim,
+            period_days=period_days,
+        )
+        return stored, view
+
+    async def _decline_unevaluable(
+        self, run: RunState, data: dict[str, Any], deadline_at: datetime, detail: str
+    ) -> None:
+        """Decline what the engine failed on (missing is never a pass)."""
         assert run.ctx is not None
         auth = data["authorization"]
         live_id = auth["authorization_id"]
         evidence = [EvidenceRow(rule="engine", outcome="uncertain", detail=detail, source="policy")]
-        if record:
-            entry = LedgerEntry(
-                live_authorization_id=live_id,
-                run_id=run.run_id,
-                mandate_id=run.ctx.policy.mandate_id,
-                card_id=auth["card_id"],
-                customer_id=data["mandate"]["customer_id"],
-                ts_sim=datetime.fromisoformat(auth["timestamp"]),
-                outcome="decline",
-                final=True,
-                uncertain_outcome=None,
-                merchant_id=auth["merchant"]["merchant_id"],
-                item_ids=[line["item_id"] for line in auth["items"]],
-                billing_amount_chf=auth["billing_amount_chf"],
-                step=4,
-                deciding_ids=["engine"],
-                reason_codes=["unevaluable"],
-                evidence=evidence,
-                message=FALLBACK_MESSAGE,
-                engine_version=run.ctx.engine_version,
-                latency_ms=0.0,
-                signals_enabled=run.ctx.signals_enabled,
-                decided_at=self._now(),
-            )
-            try:
-                await self._engine(self.ledger.record, entry)
-            except Exception as exc:
-                log.exception("fallback record failed")
-                self._note_error(f"could not record the fallback decline of {live_id}: {exc}")
+        entry = LedgerEntry(
+            live_authorization_id=live_id,
+            run_id=run.run_id,
+            mandate_id=run.ctx.policy.mandate_id,
+            card_id=auth["card_id"],
+            customer_id=data["mandate"]["customer_id"],
+            ts_sim=datetime.fromisoformat(auth["timestamp"]),
+            outcome="decline",
+            final=True,
+            uncertain_outcome=None,
+            merchant_id=auth["merchant"]["merchant_id"],
+            item_ids=[line["item_id"] for line in auth["items"]],
+            billing_amount_chf=auth["billing_amount_chf"],
+            step=4,
+            deciding_ids=["engine"],
+            reason_codes=["unevaluable"],
+            evidence=evidence,
+            message=FALLBACK_MESSAGE,
+            engine_version=run.ctx.engine_version,
+            latency_ms=0.0,
+            signals_enabled=run.ctx.signals_enabled,
+            decided_at=self._now(),
+        )
+        try:
+            await self._engine(self.ledger.record, entry)
+        except Exception as exc:
+            log.exception("fallback record failed")
+            self._note_error(f"could not record the fallback decline of {live_id}: {exc}")
         run.last_error = f"{live_id}: {detail}"
         try:
             await self._post(
@@ -984,19 +1143,6 @@ class VisecaWorker:
         except VisecaError as exc:
             self._note_error(f"fallback decline of {live_id} not accepted: {exc}")
         run.decided.add(live_id)
-
-    async def _late_result(self, live_id: str, future: Future[Any] | asyncio.Future[Any]) -> None:
-        """The engine finished after a fallback decline was posted: keep the ledger honest."""
-        if future.cancelled() or future.exception() is not None:
-            return
-        _, _, decision = future.result()
-        entry = await self._engine(self.ledger.get, live_id)
-        if entry is not None and entry.outcome == "step_up" and not entry.final:
-            await self._engine(self.ledger.resolve, live_id, "decline", "timeout", self._now())
-        self._note_error(
-            f"engine finished {live_id} after the fallback decline with {decision.decision}; "
-            "Viseca has the decline"
-        )
 
     async def _reject_invalid(self, envelope: dict[str, Any], errors: list[str]) -> None:
         data = envelope.get("data")
@@ -1089,17 +1235,26 @@ class VisecaWorker:
             self._note_error(run.last_error)
         run.decided.add(live_id)
         if outcome == "step_up" and decision.status == "pending_human":
-            run.pending.add(live_id)
-            deadline = decision.deadline_at
-            if reply is not None:
-                accepted = next(
-                    (t for t in (_parse_time(first_value(reply, k)) for k in _ACCEPTED_KEYS) if t), None
-                ) or self._now()
-                deadline = await self._set_deadline(
-                    live_id, accepted + timedelta(seconds=self.human_window_s), deadline
-                )
-                decision = decision.model_copy(update={"deadline_at": deadline})
-            self._schedule_expiry(live_id, deadline or self._now())
+            await self._await_answer(run, decision, reply)
+        else:
+            self._notify(decision)
+
+    async def _await_answer(
+        self, run: RunState, decision: api.Decision, reply: dict[str, Any] | None
+    ) -> None:
+        """A posted pending step-up: window from Viseca's accepted time, then expiry (Q2)."""
+        live_id = decision.authorization_id
+        run.pending.add(live_id)
+        deadline = decision.deadline_at
+        if reply is not None:
+            accepted = next(
+                (t for t in (_parse_time(first_value(reply, k)) for k in _ACCEPTED_KEYS) if t), None
+            ) or self._now()
+            deadline = await self._set_deadline(
+                live_id, accepted + timedelta(seconds=self.human_window_s), deadline
+            )
+            decision = decision.model_copy(update={"deadline_at": deadline})
+        self._schedule_expiry(live_id, deadline or self._now())
         self._notify(decision)
 
     async def _set_deadline(
@@ -1257,8 +1412,8 @@ class VisecaWorker:
             )
 
     def _save_run(self, run: RunState) -> None:
-        status = run.status()
-        with session(self._db_engine) as s:
+        with self._run_write_lock, session(self._db_engine) as s:
+            status = run.status()
             s.merge(
                 Run(
                     run_id=run.run_id,
@@ -1298,6 +1453,21 @@ class VisecaWorker:
     def _note_error(self, message: str) -> None:
         self._last_error = message
         log.error("%s", message)
+
+
+def _late_result(live_id: str, future: Future[Any] | asyncio.Future[Any]) -> None:
+    """The engine returned after the overrun step-up was posted; that step-up stands.
+
+    The engine's ``record`` stored the claimed step-up, not its own outcome, so nothing
+    is posted or counted again.
+    """
+    if future.cancelled():
+        return
+    exc = future.exception()
+    if exc is not None:
+        log.warning("engine failed on %s after the overrun step-up: %r", live_id, exc)
+        return
+    log.info("engine finished %s after the overrun step-up; the step-up stands", live_id)
 
 
 def _resolved_by_row(by: Literal["customer", "timeout"]) -> dict[str, Any]:
