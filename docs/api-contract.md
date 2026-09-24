@@ -73,6 +73,11 @@ Unchanged from the frontend README except: C1 gains `504`, C2 gains the two `409
 D3 requires an active mandate on the card (409 otherwise). While `ONEGUARD_ALLOW_RUNS=false` D3 starts nothing and
 answers 409 `runs_disabled` (unset: runs allowed); `make demo-live` refuses the same way. D1/D2 use the same engine and
 ledger as D3; only the event source differs (CSV vs Viseca long-poll).
+D3 accepts any scenario in the store's `scenario_catalogue`, which the worker syncs from Viseca's
+`/v1/reference-data` at start (docs/judging-pack.md): 404 for an unknown scenario or card, 422 when the scenario's card
+is known (the local pack's, or the served bootstrap profile's) and is another. D2 replays only scenarios the local pack
+has purchases for (404 otherwise). C12 lists the customers in the store, so served-only customers appear once synced;
+their `scenario_ids` / `live` include the scenario the served bootstrap profile runs on their card.
 
 ---
 

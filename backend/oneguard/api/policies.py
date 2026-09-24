@@ -23,7 +23,10 @@ POLICY_KEY = "__policy__"
 
 AMOUNT_FIELD = "authorization.billing_amount_chf"
 KNOWN_SHOP_FIELDS = ("merchant.known_shop", "merchant.familiar_on_card")
-PER_ORDER_OPERATORS = ("<", "<=")
+PER_ORDER_OPERATORS = ("<", "<=", "=")
+"""An amount rule with one of these bounds one purchase; an exact price ("same price as
+last time") counts, a floor (``>=``, ``>``) does not (docs/decisions.md)."""
+PERIOD_OPERATORS = ("<", "<=")
 DRY_RUN_DAYS = 90
 ALL_HISTORY_DAYS = 36500
 NO_CAP_QUESTION = "No amount stated: what is the most one purchase may cost?"
@@ -136,29 +139,10 @@ def period_limit(rules: Iterable[Rule]) -> tuple[float, int] | None:
         if r.field == AMOUNT_FIELD
         and r.scope == "period"
         and r.period_days
-        and r.operator in PER_ORDER_OPERATORS
+        and r.operator in PERIOD_OPERATORS
         and isinstance(r.value, (int, float))
     ]
     return min(limits, key=lambda x: (x[1], x[0])) if limits else None
-
-
-def relint(draft_checks: Sequence[api.RuleCheck], accepted: Sequence[Rule]) -> tuple[list[str], list[str]]:
-    """C2 re-lint of the accepted subset: (missing, reasons); both empty when it passes.
-
-    ``missing`` names ``per_order_limit`` when no per-purchase amount cap is left and the
-    id of every dropped check whose source is ``exact``.
-    """
-    missing: list[str] = []
-    reasons: list[str] = []
-    if per_order_cap(accepted) is None:
-        missing.append("per_order_limit")
-        reasons.append("the policy needs a limit on what one purchase may cost")
-    kept = {r.id for r in accepted}
-    for check in draft_checks:
-        if check.source == "exact" and check.id not in kept:
-            missing.append(check.id)
-            reasons.append(f'you stated "{check.text}" and it was left out')
-    return missing, reasons
 
 
 # C1 with a form: rules built directly, no model -----------------------------------------
