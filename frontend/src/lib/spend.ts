@@ -1,4 +1,4 @@
-import type { Decision, RuleCheck } from '../api/types'
+import type { Decision, Mandate, RuleCheck } from '../api/types'
 
 const PER_ORDER_PATTERN = /total at or below chf\s*([\d,]+(?:\.\d+)?)\s*per order/i
 const PERIOD_PATTERN = /total at or below chf\s*([\d,]+(?:\.\d+)?)\s*across any (\d+) days/i
@@ -24,13 +24,38 @@ export function parseLimits(checks: RuleCheck[]): PolicyLimits {
 }
 
 /**
+ * The mandate's limits: the engine ledger's `usage` when the backend sends
+ * it (docs/api-contract.md §2, authoritative), otherwise read back out of
+ * the check wording (§3.9).
+ */
+export function limitsFromMandate(mandate: Mandate): PolicyLimits {
+  const { usage } = mandate
+  if (!usage) return parseLimits(mandate.checks)
+  return {
+    perOrder: usage.per_order_limit_chf,
+    period:
+      usage.period_limit_chf !== null && usage.period_days !== null
+        ? { limitChf: usage.period_limit_chf, days: usage.period_days }
+        : null,
+  }
+}
+
+/** Final approvals only: approved by the rules, or approved by the customer after a step-up. */
+function isSpend(d: Decision): boolean {
+  return (
+    d.decision === 'approved' || (d.decision === 'uncertain' && d.uncertain_outcome === 'approved')
+  )
+}
+
+/**
  * Spend so far in a card's rolling period window (docs/rules.md M4:
- * "Only final approvals are spend"). The window
+ * "Only final approvals are spend", including a step-up the customer
+ * approved). The window
  * ends at the most recent approved purchase's own simulated timestamp, not
  * the real clock — these are demo/historical dates, not "today".
  */
 export function computePeriodSpend(decisions: Decision[], cardId: string, days: number): number {
-  const approved = decisions.filter((d) => d.card_id === cardId && d.decision === 'approved')
+  const approved = decisions.filter((d) => d.card_id === cardId && isSpend(d))
   if (approved.length === 0) return 0
   const windowEnd = approved.reduce(
     (latest, d) => (d.occurred_at > latest ? d.occurred_at : latest),

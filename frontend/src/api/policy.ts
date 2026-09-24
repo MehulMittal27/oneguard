@@ -1,4 +1,4 @@
-import type { DryRunResult, FormInput, Mandate, PolicyDraft, RuleCheck } from './types'
+import type { DryRunResult, FormInput, Mandate, MandateUsage, PolicyDraft, RuleCheck } from './types'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 
@@ -155,6 +155,9 @@ export async function confirmPolicy(draft: PolicyDraft): Promise<Mandate> {
       open_questions: draft.open_questions,
       status: 'active',
       confirmed_at: new Date().toISOString(),
+      // Fixture drafts carry the mandate's ledger view (build_policy_fixture.py);
+      // form and fallback drafts don't, so those fall back to the check wording.
+      usage: (draft as PolicyDraft & { usage?: MandateUsage }).usage,
     }
   }
 

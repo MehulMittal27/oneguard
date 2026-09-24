@@ -5,7 +5,9 @@ export interface Customer {
   // null for a customer with no scenario/mandate behind it (live: false) —
   // there's nothing to drive yet, so there's no card or scenario to name.
   card_id: string | null
-  scenario_id: string | null
+  // One customer can back several scenarios (CU0001: SCEN0000 and SCEN0001);
+  // empty for a customer with nothing behind it.
+  scenario_ids: string[]
   live: boolean
 }
 
@@ -41,8 +43,11 @@ export type UncertainOutcome = 'pending' | 'expired' | 'approved' | 'declined'
 
 export interface EvidenceItem {
   rule: string
-  outcome: 'pass' | 'fail' | 'uncertain'
+  // 'info' is context, never a pass or a fail; rendered neutrally, as is
+  // any value this client doesn't know yet.
+  outcome: 'pass' | 'fail' | 'uncertain' | 'info'
   detail: string
+  source?: 'policy' | 'ledger' | 'history' | 'merchant_text' | 'model'
 }
 
 export interface DecisionItem {
@@ -59,6 +64,8 @@ export interface RuleCheck {
   text: string
   source: 'exact' | 'inferred'
   uncertainty: string | null
+  // For icons only.
+  kind?: 'amount' | 'period' | 'merchant' | 'item' | 'terms' | 'session' | 'other'
 }
 
 export interface DryRunResult {
@@ -67,6 +74,13 @@ export interface DryRunResult {
   would_fit: number
   would_ask: number
   insight: string
+  examples?: {
+    occurred_at: string
+    merchant_name: string
+    billing_amount_chf: number
+    outcome: 'fit' | 'violate' | 'ask'
+    reason: string
+  }[]
 }
 
 export interface PolicyDraft {
@@ -79,6 +93,8 @@ export interface PolicyDraft {
   uncertainty_policy: 'ask' | 'decline'
   open_questions: string[]
   dry_run: DryRunResult
+  // 'fallback' = the LLM was unavailable and the rule-based parse was used.
+  compiler?: 'llm' | 'form' | 'fallback'
 }
 
 export interface FormInput {
@@ -99,7 +115,27 @@ export interface Mandate {
   open_questions: string[]
   status: 'active' | 'revoked'
   confirmed_at: string
+  usage?: MandateUsage
 }
+
+// The engine ledger's own view of the mandate, authoritative when present
+// (docs/api-contract.md §2).
+export interface MandateUsage {
+  per_order_limit_chf: number | null
+  period_limit_chf: number | null
+  period_days: number | null
+  // Final approvals only, including human-approved step-ups.
+  period_spent_chf: number
+  // Simulated time, ISO 8601.
+  period_window_start: string
+  // Stepped-up, awaiting the customer; not spent.
+  pending_chf: number
+  fulfilment?: { bought: number; requested: number } | null
+  // Simulated time of the last decision.
+  as_of: string
+}
+
+export type DecisionRelation = 'requote_of' | 'duplicate_of' | 'retry_of' | 'split_of'
 
 export interface Decision {
   authorization_id: string
@@ -134,4 +170,24 @@ export interface Decision {
   // (frontend/.claude/CLAUDE.md Conventions), so it's computed at read
   // time (src/api/decisions.ts), not stored in the fixture.
   deadline_at?: string
+
+  // Optional additions (docs/api-contract.md §2, §6), absent from older
+  // payloads, so every reader must cope with them missing.
+  counterfactual?: string | null
+  related?: { authorization_id: string; relation: DecisionRelation } | null
+  session?: { trust: 'normal' | 'elevated' | 'frozen'; note: string } | null
+  // Trusted catalogue fields, not merchant text.
+  merchant_meta?: {
+    category: string
+    country: string
+    familiar: boolean
+    prior_approvals_on_card: number
+    prior_approvals_other_cards: number
+  }
+  engine_version?: string
+  latency_ms?: number
+  // 'model' once a tier-3 rewrite of `message` has landed.
+  explanation_source?: 'template' | 'model'
+  // Resolved step-ups only: a customer's answer or the window timing out.
+  resolved_by?: 'customer' | 'timeout'
 }

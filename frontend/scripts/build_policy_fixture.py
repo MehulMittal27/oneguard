@@ -50,6 +50,12 @@ DRY_RUN_SPEC = {
 
 SAMPLE_SIZE = 30
 
+# scenario_id -> (period_limit_chf, period_days) for the scenarios that state
+# one; the per-order limit comes from DRY_RUN_SPEC.
+PERIOD_SPEC = {
+    "SCEN0001": (300, 7),
+}
+
 # scenario_id -> hand-curated review content (checks, uncertainty_policy,
 # open_questions, insight). "source": "exact" is wording lifted straight
 # from the instruction; "inferred" is the compiler's reading, shown as an
@@ -68,7 +74,7 @@ CURATION = {
     "SCEN0001": {
         "checks": [
             {"id": "per_order", "text": "Total at or below CHF 120 per order, delivery included", "source": "exact", "uncertainty": None},
-            {"id": "period", "text": "Total at or below CHF 300 across any rolling 7 days", "source": "exact", "uncertainty": None},
+            {"id": "period", "text": "Total at or below CHF 300 across any 7 days", "source": "exact", "uncertainty": None},
             {"id": "category", "text": "Household groceries", "source": "inferred", "uncertainty": "Items outside groceries in the same order are flagged, not blocked outright."},
         ],
         "uncertainty_policy": "ask",
@@ -132,8 +138,30 @@ def compute_dry_run(card_id, limit, category, history_by_card):
     }
 
 
+def mandate_usage(scenario_id, limit, run_start):
+    """The `usage` a freshly confirmed mandate carries (docs/api-contract.md
+    §2, MandateUsage): its limits, and nothing spent or pending yet as of the
+    run's first purchase. Spend in mock mode is still computed client-side
+    from the decisions feed; this carries the limits."""
+    period_limit, period_days = PERIOD_SPEC.get(scenario_id, (None, None))
+    return {
+        "per_order_limit_chf": limit,
+        "period_limit_chf": period_limit,
+        "period_days": period_days,
+        "period_spent_chf": 0,
+        "period_window_start": run_start,
+        "pending_chf": 0,
+        "as_of": run_start,
+    }
+
+
 def build():
     catalogue = load_csv("scenario_catalogue.csv")
+    run_start = {}
+    for row in load_csv("purchase_attempts.csv"):
+        sid = row["scenario_id"]
+        if sid not in run_start or row["timestamp"] < run_start[sid]:
+            run_start[sid] = row["timestamp"]
     history_by_card = {}
     for row in load_csv("authorization_history.csv"):
         history_by_card.setdefault(row["card_id"], []).append(row)
@@ -156,6 +184,10 @@ def build():
                 "uncertainty_policy": curated["uncertainty_policy"],
                 "open_questions": curated["open_questions"],
                 "dry_run": {**dry_run, "insight": curated["insight"]},
+                "compiler": "llm",
+                # Not a PolicyDraft field: mock confirmPolicy copies it onto the
+                # Mandate it returns, as the real backend's C2 would.
+                "usage": mandate_usage(scenario_id, limit, run_start[scenario_id]),
             }
         )
 

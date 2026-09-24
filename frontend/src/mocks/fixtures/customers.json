@@ -7,7 +7,10 @@
       "name": "Alex Meier",
       "home_region": "Zurich region",
       "card_id": "CA0001",
-      "scenario_id": "SCEN0001",
+      "scenario_ids": [
+        "SCEN0000",
+        "SCEN0001"
+      ],
       "live": true
     },
     {
@@ -15,7 +18,7 @@
       "name": "Sofia Keller",
       "home_region": "Basel region",
       "card_id": null,
-      "scenario_id": null,
+      "scenario_ids": [],
       "live": false
     },
     {
@@ -23,7 +26,7 @@
       "name": "Luca Bernasconi",
       "home_region": "Lugano region",
       "card_id": null,
-      "scenario_id": null,
+      "scenario_ids": [],
       "live": false
     },
     {
@@ -31,7 +34,7 @@
       "name": "Noor Haddad",
       "home_region": "Geneva region",
       "card_id": null,
-      "scenario_id": null,
+      "scenario_ids": [],
       "live": false
     },
     {
@@ -39,7 +42,7 @@
       "name": "Emma Roth",
       "home_region": "Bern region",
       "card_id": null,
-      "scenario_id": null,
+      "scenario_ids": [],
       "live": false
     },
     {
@@ -47,7 +50,9 @@
       "name": "Jonas Frei",
       "home_region": "Lucerne region",
       "card_id": "CA0011",
-      "scenario_id": "SCEN0002",
+      "scenario_ids": [
+        "SCEN0002"
+      ],
       "live": true
     },
     {
@@ -55,7 +60,7 @@
       "name": "Camille Dubois",
       "home_region": "Lausanne region",
       "card_id": null,
-      "scenario_id": null,
+      "scenario_ids": [],
       "live": false
     },
     {
@@ -63,7 +68,7 @@
       "name": "Priya Nair",
       "home_region": "Zurich region",
       "card_id": null,
-      "scenario_id": null,
+      "scenario_ids": [],
       "live": false
     },
     {
@@ -71,7 +76,7 @@
       "name": "Mateo Silva",
       "home_region": "Basel region",
       "card_id": null,
-      "scenario_id": null,
+      "scenario_ids": [],
       "live": false
     },
     {
@@ -79,7 +84,7 @@
       "name": "Lea Baumann",
       "home_region": "Winterthur region",
       "card_id": null,
-      "scenario_id": null,
+      "scenario_ids": [],
       "live": false
     },
     {
@@ -87,7 +92,7 @@
       "name": "Daniel Schmid",
       "home_region": "St. Gallen region",
       "card_id": null,
-      "scenario_id": null,
+      "scenario_ids": [],
       "live": false
     },
     {
@@ -95,7 +100,9 @@
       "name": "Giulia Rossi",
       "home_region": "Lugano region",
       "card_id": "CA0023",
-      "scenario_id": "SCEN0003",
+      "scenario_ids": [
+        "SCEN0003"
+      ],
       "live": true
     },
     {
@@ -103,7 +110,7 @@
       "name": "Sami El-Amin",
       "home_region": "Neuchatel region",
       "card_id": null,
-      "scenario_id": null,
+      "scenario_ids": [],
       "live": false
     },
     {
@@ -111,7 +118,7 @@
       "name": "Hannah Weber",
       "home_region": "Bern region",
       "card_id": null,
-      "scenario_id": null,
+      "scenario_ids": [],
       "live": false
     },
     {
@@ -119,7 +126,7 @@
       "name": "Tomas Pereira",
       "home_region": "Fribourg region",
       "card_id": null,
-      "scenario_id": null,
+      "scenario_ids": [],
       "live": false
     },
     {
@@ -127,7 +134,7 @@
       "name": "Amina Diallo",
       "home_region": "Geneva region",
       "card_id": null,
-      "scenario_id": null,
+      "scenario_ids": [],
       "live": false
     },
     {
@@ -135,7 +142,7 @@
       "name": "Nils Andersson",
       "home_region": "Lausanne region",
       "card_id": null,
-      "scenario_id": null,
+      "scenario_ids": [],
       "live": false
     },
     {
@@ -143,7 +150,7 @@
       "name": "Mei Chen",
       "home_region": "Zurich region",
       "card_id": null,
-      "scenario_id": null,
+      "scenario_ids": [],
       "live": false
     },
     {
@@ -151,7 +158,9 @@
       "name": "Oliver Graf",
       "home_region": "Basel region",
       "card_id": "CA0039",
-      "scenario_id": "SCEN0004",
+      "scenario_ids": [
+        "SCEN0004"
+      ],
       "live": true
     },
     {
@@ -159,7 +168,7 @@
       "name": "Elif Kaya",
       "home_region": "Winterthur region",
       "card_id": null,
-      "scenario_id": null,
+      "scenario_ids": [],
       "live": false
     }
   ]

@@ -64,6 +64,10 @@ function sameDecision(a: Decision, b: Decision): boolean {
     a.status === b.status &&
     a.deadline_at === b.deadline_at &&
     a.message === b.message &&
+    // A tier-3 rewrite changes the explanation, not the outcome; it still
+    // has to re-render.
+    a.explanation_source === b.explanation_source &&
+    a.counterfactual === b.counterfactual &&
     a.evidence.length === b.evidence.length
   )
 }

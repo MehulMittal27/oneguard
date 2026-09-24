@@ -62,10 +62,14 @@ export function PeriodLeashMeter({
   const spentEndDeg = degForFraction(spentFraction)
   const pendingEndDeg = degForFraction(Math.min(1, spentFraction + pendingFraction))
   const limitTick = arcPoint(359.9)
+  const remainingLabel = formatChf(remaining)
+  // The figure sits between the arc's two ends; a long amount steps down a
+  // size so it never runs into the stroke.
+  const remainingSize = remainingLabel.length > 9 ? 'text-[26px]' : 'text-[30px]'
 
   return (
     <div>
-      <div className="relative mx-auto max-w-[260px]">
+      <div className="relative mx-auto max-w-[280px]">
         <svg viewBox="0 0 220 112" className="w-full" aria-hidden="true">
           <path
             d={arcPath(180, 360)}
@@ -107,8 +111,8 @@ export function PeriodLeashMeter({
           />
         </svg>
         <div className="absolute inset-x-0 bottom-0 flex flex-col items-center">
-          <p className="font-display text-[34px] leading-none font-bold text-ink tabular-nums">
-            {formatChf(remaining)}
+          <p className={`font-display ${remainingSize} leading-none font-bold text-ink tabular-nums`}>
+            {remainingLabel}
           </p>
           <p className="mt-1 text-[13px] text-ink-muted">left in the last {days} days</p>
         </div>

@@ -5,7 +5,7 @@ import { BackChevronIcon, CheckIcon, HelpCircleIcon } from '../../components/ico
 import { OrderCapLeashMeter, PeriodLeashMeter } from '../../components/LeashMeter'
 import { RevokeSheet } from '../../components/RevokeSheet'
 import { formatShortDate } from '../../lib/datetime'
-import { computePendingChf, computePeriodSpend, parseLimits } from '../../lib/spend'
+import { computePendingChf, computePeriodSpend, limitsFromMandate } from '../../lib/spend'
 import { usePolicy } from '../../state/PolicyContext'
 import { useDecisions } from '../../state/DecisionsContext'
 import { DecisionDetail } from '../DecisionDetail/DecisionDetail'
@@ -58,7 +58,7 @@ export function CardDetail({
   const cardDecisions = decisions
     .filter((d) => d.card_id === cardId)
     .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))
-  const { perOrder, period } = parseLimits(mandate.checks)
+  const { perOrder, period } = limitsFromMandate(mandate)
 
   // A still-pending uncertain purchase is actionable, not just viewable —
   // route straight to where it can actually be answered.

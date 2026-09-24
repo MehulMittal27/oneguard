@@ -1,8 +1,14 @@
 import type { ComponentType } from 'react'
-import type { Decision, EvidenceItem, UncertainOutcome } from '../../api/types'
+import type { Decision, DecisionRelation, EvidenceItem, UncertainOutcome } from '../../api/types'
 import { DecisionMark } from '../../components/DecisionMark'
 import type { IconProps } from '../../components/icons/IconProps'
-import { BackChevronIcon, CheckIcon, CrossIcon, HelpCircleIcon } from '../../components/icons/lucide'
+import {
+  BackChevronIcon,
+  CheckIcon,
+  CrossIcon,
+  HelpCircleIcon,
+  InfoIcon,
+} from '../../components/icons/lucide'
 import { formatShortDate, formatTime } from '../../lib/datetime'
 import { getInitials } from '../../lib/initials'
 import { formatChf } from '../../lib/money'
@@ -35,6 +41,21 @@ const EVIDENCE_STYLE: Record<
   pass: { Icon: CheckIcon, iconFg: 'text-approved', border: 'border-hairline' },
   fail: { Icon: CrossIcon, iconFg: 'text-stopped', border: 'border-stopped-border' },
   uncertain: { Icon: HelpCircleIcon, iconFg: 'text-asked', border: 'border-asked-border' },
+  // Context, not a verdict: never pass/fail colours. Also the fallback for
+  // any outcome value this client doesn't know yet.
+  info: { Icon: InfoIcon, iconFg: 'text-ink-muted', border: 'border-hairline' },
+}
+
+const RELATION_LABEL: Record<DecisionRelation, string> = {
+  requote_of: 'Re-quote of',
+  duplicate_of: 'Duplicate of',
+  retry_of: 'Retry of',
+  split_of: 'Split of',
+}
+
+const SESSION_STYLE: Record<'elevated' | 'frozen', { label: string; box: string; fg: string }> = {
+  elevated: { label: 'Session under watch', box: 'border-asked-border bg-asked-tint', fg: 'text-asked-ink' },
+  frozen: { label: 'Session paused', box: 'border-stopped-border bg-stopped-tint', fg: 'text-stopped' },
 }
 
 // 'unknown' and 'not_applicable' are both real answers, never blank or "no"
@@ -104,11 +125,18 @@ export function DecisionDetail({
   // every decision's presentation.
   const isManipulated = Boolean(decision.injection_flag)
 
+  // The backend's own link, when it sends one (docs/api-contract.md §2).
+  const link = decision.related ?? null
+  const linked = link ? decisions.find((d) => d.authorization_id === link.authorization_id) : undefined
+
+  // Heuristic neighbours on the same card: the fallback when there is no
+  // backend link, and never repeating the linked decision when there is.
   const related = decisions
     .filter(
       (d) =>
         d.card_id === decision.card_id &&
         d.authorization_id !== decision.authorization_id &&
+        d.authorization_id !== link?.authorization_id &&
         (d.decision === 'stopped' || d.decision === 'uncertain'),
     )
     .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))
@@ -159,6 +187,19 @@ export function DecisionDetail({
         </div>
       )}
 
+      {decision.session && decision.session.trust !== 'normal' && (
+        <div className={`rounded-row border px-4 py-3 ${SESSION_STYLE[decision.session.trust].box}`}>
+          <p
+            className={`text-[11px] font-semibold tracking-[0.08em] uppercase ${SESSION_STYLE[decision.session.trust].fg}`}
+          >
+            {SESSION_STYLE[decision.session.trust].label}
+          </p>
+          <p className={`mt-1 text-[13px] ${SESSION_STYLE[decision.session.trust].fg}`}>
+            {decision.session.note}
+          </p>
+        </div>
+      )}
+
       <div className={`rounded-hero p-6 ${banner.bg}`}>
         <p className={`flex items-center gap-2 text-[15px] font-semibold ${banner.fg}`}>
           {isUncertain ? (
@@ -178,6 +219,9 @@ export function DecisionDetail({
         <p className="mt-1 text-[13px] text-ink-muted">
           {formatShortDate(decision.occurred_at)} · {formatTime(decision.occurred_at)}
         </p>
+        {decision.counterfactual && (
+          <p className="mt-3 text-[14px] font-medium text-ink-soft">{decision.counterfactual}</p>
+        )}
 
         <div className="mt-4 flex gap-6 border-t border-hairline pt-4 text-[13px]">
           <div>
@@ -222,7 +266,7 @@ export function DecisionDetail({
           What decided it
         </p>
         {decision.evidence.map((item, index) => {
-          const style = EVIDENCE_STYLE[item.outcome]
+          const style = EVIDENCE_STYLE[item.outcome] ?? EVIDENCE_STYLE.info
           return (
             <div
               key={index}
@@ -287,6 +331,19 @@ export function DecisionDetail({
           </p>
         )}
       </section>
+
+      {link && (
+        <section>
+          <p className="mb-3 text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
+            {RELATION_LABEL[link.relation] ?? 'Related to'}
+          </p>
+          {linked ? (
+            <DecisionMark decision={linked} onClick={() => selectRelated(linked)} />
+          ) : (
+            <p className="text-[13px] text-ink-muted">An earlier purchase that isn&apos;t loaded here.</p>
+          )}
+        </section>
+      )}
 
       {related.length > 0 && (
         <section>

@@ -37,6 +37,16 @@
         "would_fit": 0,
         "would_ask": 20,
         "insight": "Most of your recent grocery orders run well over CHF 20 — this cap fits a single small item, not a weekly shop."
+      },
+      "compiler": "llm",
+      "usage": {
+        "per_order_limit_chf": 20,
+        "period_limit_chf": null,
+        "period_days": null,
+        "period_spent_chf": 0,
+        "period_window_start": "2026-08-09T10:04:00Z",
+        "pending_chf": 0,
+        "as_of": "2026-08-09T10:04:00Z"
       }
     },
     {
@@ -54,7 +64,7 @@
         },
         {
           "id": "period",
-          "text": "Total at or below CHF 300 across any rolling 7 days",
+          "text": "Total at or below CHF 300 across any 7 days",
           "source": "exact",
           "uncertainty": null
         },
@@ -75,6 +85,16 @@
         "would_fit": 9,
         "would_ask": 20,
         "insight": "Almost all your recent grocery orders already fit under CHF 120 — this limit shouldn't cause much friction."
+      },
+      "compiler": "llm",
+      "usage": {
+        "per_order_limit_chf": 120,
+        "period_limit_chf": 300,
+        "period_days": 7,
+        "period_spent_chf": 0,
+        "period_window_start": "2026-08-10T09:12:00Z",
+        "pending_chf": 0,
+        "as_of": "2026-08-10T09:12:00Z"
       }
     },
     {
@@ -119,6 +139,16 @@
         "would_fit": 6,
         "would_ask": 23,
         "insight": "Most of your recent sporting-goods orders were under CHF 200, from a mix of specialist and general retailers."
+      },
+      "compiler": "llm",
+      "usage": {
+        "per_order_limit_chf": 200,
+        "period_limit_chf": null,
+        "period_days": null,
+        "period_spent_chf": 0,
+        "period_window_start": "2026-08-11T10:15:00Z",
+        "pending_chf": 0,
+        "as_of": "2026-08-11T10:15:00Z"
       }
     },
     {
@@ -163,6 +193,16 @@
         "would_fit": 2,
         "would_ask": 28,
         "insight": "Your recent clothing orders comfortably fit CHF 250 — the rest of this card's activity is outside clothing and won't be touched."
+      },
+      "compiler": "llm",
+      "usage": {
+        "per_order_limit_chf": 250,
+        "period_limit_chf": null,
+        "period_days": null,
+        "period_spent_chf": 0,
+        "period_window_start": "2026-08-14T18:20:00Z",
+        "pending_chf": 0,
+        "as_of": "2026-08-14T18:20:00Z"
       }
     },
     {
@@ -207,6 +247,16 @@
         "would_fit": 7,
         "would_ask": 23,
         "insight": "Your recent electronics purchases fit under CHF 400 — the strongest signal here is unfamiliar or lookalike sellers, not price."
+      },
+      "compiler": "llm",
+      "usage": {
+        "per_order_limit_chf": 400,
+        "period_limit_chf": null,
+        "period_days": null,
+        "period_spent_chf": 0,
+        "period_window_start": "2026-08-12T09:40:00Z",
+        "pending_chf": 0,
+        "as_of": "2026-08-12T09:40:00Z"
       }
     }
   ]

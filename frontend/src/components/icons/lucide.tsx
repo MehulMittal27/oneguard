@@ -7,6 +7,7 @@ import {
   CreditCard,
   Home,
   HelpCircle,
+  Info,
   LoaderCircle,
   LogOut,
   Plus,
@@ -53,6 +54,10 @@ export function ClockIcon({ size = 20, strokeWidth = 2.2 }: IconProps) {
 
 export function HelpCircleIcon({ size = 20, strokeWidth = 2.2 }: IconProps) {
   return <HelpCircle size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+}
+
+export function InfoIcon({ size = 20, strokeWidth = 2.2 }: IconProps) {
+  return <Info size={size} strokeWidth={strokeWidth} aria-hidden="true" />
 }
 
 export function LogOutIcon({ size = 20, strokeWidth = 1.8 }: IconProps) {

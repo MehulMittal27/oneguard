@@ -1,12 +1,14 @@
 import { useState } from 'react'
+import { revokePolicy } from '../../api/policy'
 import type { Decision, EvidenceItem, Mandate } from '../../api/types'
 import { CountdownBar } from '../../components/CountdownBar'
 import { DecisionMark } from '../../components/DecisionMark'
-import { CheckIcon, CrossIcon, HelpCircleIcon } from '../../components/icons/lucide'
+import { CheckIcon, CrossIcon, HelpCircleIcon, InfoIcon } from '../../components/icons/lucide'
 import { OrderCapLeashMeter, PeriodLeashMeter } from '../../components/LeashMeter'
+import { RevokeSheet } from '../../components/RevokeSheet'
 import { formatShortDate } from '../../lib/datetime'
 import { formatChf } from '../../lib/money'
-import { computePendingChf, computePeriodSpend, parseLimits } from '../../lib/spend'
+import { computePendingChf, computePeriodSpend, limitsFromMandate } from '../../lib/spend'
 import { useDecisions } from '../../state/DecisionsContext'
 import { usePolicy } from '../../state/PolicyContext'
 import { DecisionDetail } from '../DecisionDetail/DecisionDetail'
@@ -24,6 +26,8 @@ const EVIDENCE_STYLE: Record<EvidenceItem['outcome'], { Icon: typeof CheckIcon; 
   pass: { Icon: CheckIcon, iconFg: 'text-approved', border: 'border-hairline' },
   fail: { Icon: CrossIcon, iconFg: 'text-stopped', border: 'border-stopped-border' },
   uncertain: { Icon: HelpCircleIcon, iconFg: 'text-asked', border: 'border-asked-border' },
+  // Neutral: context, not a verdict, and the fallback for unknown values.
+  info: { Icon: InfoIcon, iconFg: 'text-ink-muted', border: 'border-hairline' },
 }
 
 function PendingCard({
@@ -42,6 +46,8 @@ function PendingCard({
 }) {
   const [resolving, setResolving] = useState(false)
   const [error, setError] = useState(false)
+  const [revoking, setRevoking] = useState(false)
+  const { revokePolicyForCard } = usePolicy()
 
   async function handle(answer: 'approve' | 'decline') {
     setResolving(true)
@@ -57,7 +63,7 @@ function PendingCard({
 
   // A revoked mandate has no live limit to preview against.
   const { perOrder, period } =
-    mandate && mandate.status === 'active' ? parseLimits(mandate.checks) : { perOrder: null, period: null }
+    mandate && mandate.status === 'active' ? limitsFromMandate(mandate) : { perOrder: null, period: null }
   const cardDecisions = decisions
     .filter((d) => d.card_id === decision.card_id)
     .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))
@@ -136,7 +142,7 @@ function PendingCard({
             What your rules checked
           </p>
           {decision.evidence.map((item, index) => {
-            const style = EVIDENCE_STYLE[item.outcome]
+            const style = EVIDENCE_STYLE[item.outcome] ?? EVIDENCE_STYLE.info
             return (
               <div
                 key={index}
@@ -204,6 +210,30 @@ function PendingCard({
         If the timer runs out, this request expires — nothing is approved or charged
         automatically.
       </p>
+
+      {/* A shortcut to the same revoke as Card detail, for when this request
+          looks like someone else is driving. */}
+      {mandate?.status === 'active' && (
+        <button
+          type="button"
+          onClick={() => setRevoking(true)}
+          className="mt-2 min-h-11 text-[13px] font-semibold text-destructive"
+        >
+          Revoke policy
+        </button>
+      )}
+
+      {revoking && (
+        <RevokeSheet
+          cardId={decision.card_id}
+          onClose={() => setRevoking(false)}
+          onConfirm={async () => {
+            await revokePolicy(decision.card_id)
+            revokePolicyForCard(decision.card_id)
+            setRevoking(false)
+          }}
+        />
+      )}
     </div>
   )
 }

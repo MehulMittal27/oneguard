@@ -32,6 +32,7 @@ def money(value):
 
 
 # authorization_id -> curated {decision, reason_codes, message, uncertainty, injection_flag, evidence}
+# plus, on some rows, the optional contract additions in OPTIONAL_KEYS.
 CURATION = {
     "AU0001": {
         "decision": "approved",
@@ -202,14 +203,31 @@ CURATION = {
     "AU0042": {
         "decision": "approved",
         "status": "final",
-        "reason_codes": ["within_limits", "duplicate_suspected"],
+        "reason_codes": ["within_limits", "requote_accepted"],
         "message": "CHF 350.00 — a corrected re-quote of an order stopped earlier for going over your limit.",
         "uncertainty": None,
         "injection_flag": None,
         "evidence": [
             {"rule": "Per-order limit", "outcome": "pass", "detail": "CHF 350.00 is within your CHF 400 limit."},
             {"rule": "Related order", "outcome": "pass", "detail": "Replaces AU0037, which was stopped for exceeding the limit — not charged twice."},
+            {"rule": "Earlier shop text", "outcome": "info", "detail": "This shop's text on the earlier order tried to instruct the agent. Noted; this order's own text is clean.", "source": "history"},
         ],
+        "related": {"authorization_id": "AU0037", "relation": "requote_of"},
+    },
+    "AU0036": {
+        "decision": "uncertain",
+        "uncertain_outcome": "declined",
+        "status": "final",
+        "reason_codes": ["duplicate_suspected", "customer_confirmation"],
+        "message": "The same monitor from the same shop at the same price, 25 minutes after the first order. You blocked it.",
+        "uncertainty": {"note": "Whether this is a second monitor you want or a repeat of the order you already placed."},
+        "injection_flag": None,
+        "evidence": [
+            {"rule": "Per-order limit", "outcome": "pass", "detail": "CHF 289.00 is within your CHF 400 limit."},
+            {"rule": "Repeat order", "outcome": "uncertain", "detail": "Same shop, same monitor, same price as the order approved 25 minutes earlier."},
+        ],
+        "related": {"authorization_id": "AU0035", "relation": "duplicate_of"},
+        "resolved_by": "customer",
     },
     "AU0037": {
         "decision": "stopped",
@@ -226,6 +244,7 @@ CURATION = {
             {"rule": "Merchant text", "outcome": "fail", "detail": "Tried to change your spending rules. Flagged and ignored — read for facts only."},
             {"rule": "Seller", "outcome": "pass", "detail": "PixelHarbor is a seller you've bought from before."},
         ],
+        "counterfactual": "Would approve at CHF 400 or less.",
     },
     "AU0039": {
         "decision": "stopped",
@@ -255,8 +274,14 @@ CURATION = {
             {"rule": "Merchant text", "outcome": "fail", "detail": "Tried to instruct the agent directly. Flagged and ignored — read for facts only."},
             {"rule": "Seller", "outcome": "pass", "detail": "PixelHarbor is a seller you've bought from before."},
         ],
+        "counterfactual": "Would approve without the instructions in the shop's text.",
     },
 }
+
+
+# Optional contract additions (docs/api-contract.md §2): copied only when a
+# row curates them, so every other row keeps the older payload shape.
+OPTIONAL_KEYS = ("counterfactual", "related", "session", "explanation_source", "resolved_by")
 
 
 def build():
@@ -310,6 +335,7 @@ def build():
                 "evidence": curated["evidence"],
                 "order_returnable": attempt["order_returnable"],
                 "delivery_by": attempt["delivery_by"] or None,
+                **{key: curated[key] for key in OPTIONAL_KEYS if key in curated},
             }
         )
 
