@@ -9,6 +9,32 @@ every proposed purchase — `approve`, `decline`, or `step_up` (ask the customer
 milliseconds, with a plain-language explanation, and without any model in the decision
 path.
 
+## How it works
+
+```mermaid
+flowchart TB
+    subgraph SETUP["1 · Set the leash (once, with the customer)"]
+        direction LR
+        I[Customer instruction<br/>plain language] --> LLM[Policy compiler<br/>LLM, linted]
+        LLM --> DRY[Dry-run on own history<br/>“26 of 27 orders would pass”]
+        DRY --> OK[Customer confirms<br/>tighten or revoke any time]
+        OK --> MAN[(Mandate<br/>typed rules)]
+    end
+
+    subgraph LIVE["2 · Every purchase (milliseconds, no model in the path)"]
+        direction LR
+        AG[AI shopping agent<br/>proposes a purchase] --> FACTS[Trusted facts<br/>+ regex from shop text]
+        FACTS --> GATE{Deterministic gate<br/>rules → protections → signs}
+        LED[(Ledger<br/>spend · duplicates · re-quotes)] <--> GATE
+        SIG[Soft signals<br/>evidence only] -.-> GATE
+        GATE -->|approve| A[Goes ahead]
+        GATE -->|decline| D[Stopped + why]
+        GATE -->|step_up| S[Customer decides<br/>120 s, full purchase shown]
+    end
+
+    MAN --> GATE
+```
+
 ## What it does
 
 - **Policy compiler** — natural language → typed rules → linted → dry-run against the
