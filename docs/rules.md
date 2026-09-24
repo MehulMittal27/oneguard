@@ -147,6 +147,7 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 ## 10. Turning words into rules
 
 - **T1** Every stated restriction becomes a rule. **T2** No invented limits; vague requests produce open questions. **T3** Boundary wording preserved ("under" ≠ "at or below"). **T4** Foreign-currency limits converted with M1 and shown. **T5** Customer confirms before rules apply; then tighten only. **T6** Revoke stops everything: later purchases under it are declined (platform pre-check; queued ones per Q6). **T7** Same rules from DE/FR/IT/EN — LLM compiler path only; the fallback parser is English.
+- A requested product ("buy/order/get a|an|the|my|one <product>") is C5 on both compiler paths. When the item catalogue files that product under one item type ("hiking boots": sporting goods; "27-inch monitor": electronics; "camera lens": photography), C3 is added with that type (inferred); when it files it under none ("a bag"; bare "boots", which the catalogue has as sporting goods and clothing), C5 stays and the open question is "Which kind of item or shop counts as <product>?". Category words ("groceries", "electronics") stay C3 and are never a requested item. An LLM reading that loses the parser's requested item is rejected for the parser's (lint floor).
 
 ## 11. Open questions and defaults
 

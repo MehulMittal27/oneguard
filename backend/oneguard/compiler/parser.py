@@ -102,6 +102,57 @@ ITEM_WORDS: list[tuple[re.Pattern[str], list[str]]] = [
     (re.compile(r"\bhotels?\b", re.IGNORECASE), ["hotel"]),
     (re.compile(r"\b(?:flights?|plane tickets?|(?:travel )?insurance)\b", re.IGNORECASE), ["travel"]),
 ]
+# Products the item catalogue files under one item_category (data/items.csv and the served
+# items, tests/fixtures/compiler/served_items.yaml). A pattern names only products every
+# catalogue item it matches shares one category with: "hiking boots" are sporting goods,
+# "winter boots" clothing, so bare "boots" or "shoes" map to none. A requested item that
+# maps to none keeps its C5 rule and becomes an open question (product_question).
+PRODUCT_WORDS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bhiking (?:boots?|backpacks?)\b|\b(?:road-|trail-)?running (?:shoes?|socks?)\b"
+                r"|\btrail shoes?\b|\bcycling (?:helmets?|accessor(?:y|ies))\b|\btraining equipment\b",
+                re.IGNORECASE), "sporting_goods"),
+    (re.compile(r"\bjackets?\b|\brain ?coats?\b|\bwork shoes?\b|\bwinter boots?\b", re.IGNORECASE), "clothing"),
+    (re.compile(r"\bmonitors?\b|\bheadphones\b|\bphone chargers?\b|\busb-c hubs?\b|\btablet accessor(?:y|ies)\b",
+                re.IGNORECASE), "electronics"),
+    (re.compile(r"\bcamera lens(?:es)?\b", re.IGNORECASE), "photography"),
+    (re.compile(r"\btool sets?\b|\bwall paint\b|\bshelving materials?\b|\brepair parts\b", re.IGNORECASE),
+     "home_improvement"),
+    (re.compile(r"\bcleaning supplies\b|\bstorage containers?\b|\blight bulbs?\b|\bvacuum cleaners?\b",
+                re.IGNORECASE), "household"),
+    (re.compile(r"\bfragrances?\b|\bpersonal care sets?\b", re.IGNORECASE), "cosmetics"),
+    (re.compile(r"\bgift vouchers?\b", re.IGNORECASE), "gift_card"),
+    (re.compile(r"\b(?:music|cloud storage|newspaper|protection) plans?\b", re.IGNORECASE), "subscriptions"),
+    (re.compile(r"\brail tickets?\b|\b(?:city )?day pass(?:es)?\b|\btransit pass(?:es)?\b|\bairport transfers?\b",
+                re.IGNORECASE), "transport"),
+    (re.compile(r"\bhostel beds?\b|\bserviced apartments?\b", re.IGNORECASE), "hotel"),
+]
+
+
+_PRODUCT_QUESTION = "Which kind of item or shop counts as"
+
+
+def product_question(item: str) -> str:
+    """The one wording both paths ask when a requested item maps to no item type."""
+    return f"{_PRODUCT_QUESTION} {item}?"
+
+
+def is_product_question(question: str) -> bool:
+    return question.startswith(_PRODUCT_QUESTION)
+
+
+def product_categories(item: str) -> list[str]:
+    """The item types a requested item is, from the words for item types and then the
+    catalogue's products: "gym membership" is membership, "hiking boots" sporting goods,
+    "a bag" nothing (the caller asks, T2: never a guessed category)."""
+    categories: list[str] = []
+    for pattern, cats in ITEM_WORDS:
+        if pattern.search(item):
+            categories += [c for c in cats if c not in categories]
+    if categories:
+        return categories
+    return next(([c] for p, c in PRODUCT_WORDS if p.search(item)), [])
+
+
 # Things a customer may exclude that no item category holds (wine and spirits are
 # "groceries" in the served pack): the rule is unverifiable, and an engine gap.
 _NO_CATEGORY = re.compile(r"alcohol(?:ic drinks)?|wine|spirits|beer|tobacco|premium tiers?|annual prepayments?"
@@ -308,6 +359,7 @@ def _item(reading: _Reading, text: str) -> None:
         reading.item_noun = head
         return
     if head in _CATEGORY_HEADS or (not phrase and categories):
+        categories = categories or product_categories(phrase)  # "cleaning supplies": household
         if categories:
             exact = any(re.search(rf"\b{c}\b", text, re.IGNORECASE) for c in categories)
             reading.specs.append(RuleSpec(
@@ -319,9 +371,14 @@ def _item(reading: _Reading, text: str) -> None:
     item = " ".join(w for w in words if w not in _FILLER)
     reading.requested_item = item
     reading.item_noun = head
-    if categories:  # "gym membership": the item has a type as well (oracle C3)
+    # "gym membership", "hiking boots": the item has a type as well (oracle C3); "a bag"
+    # has none the catalogue knows, so the customer is asked which (T1, T2).
+    categories = categories or product_categories(item)
+    if categories:
         reading.specs.append(RuleSpec(field="items[].item_category", operator="in", value=categories,
                                       words=phrase, source="inferred"))
+    else:
+        reading.questions.append(product_question(item))
 
 
 _NEGATED = re.compile(r"\b(?:no|never|not|without|except|excluding)\b[^.;:!?]*", re.IGNORECASE)
