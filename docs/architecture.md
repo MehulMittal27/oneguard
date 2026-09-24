@@ -73,7 +73,7 @@ code; this section is the target they are built to.
   `python:3.12-slim` with the backend installed and `frontend/dist` copied in; `uvicorn`
   listens on `$PORT`; `ONEGUARD_SOFT_SIGNALS=keywords` is the image default.
 - python:3.12-slim needs the tzdata package for Europe/Zurich rules
-- `fly.toml`: region `ams` or `fra`, one machine, no volume (state lives in Supabase via
+- `fly.toml`: region `lhr`, one machine, no volume (state lives in Supabase via
   `ONEGUARD_DATABASE_URL`).
 - Fly secrets: `VISECA_API_KEY`, `OPENAI_API_KEY`, `ONEGUARD_DATABASE_URL`.
 - Makefile targets: `make deploy`, `make demo-live SCEN=…`, `make demo-offline`,

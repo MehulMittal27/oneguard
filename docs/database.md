@@ -122,6 +122,23 @@ reads it to build `Decision` responses and `Mandate.usage`. Nobody else writes i
   end; `public` is never touched). CI does not set the variable, so it is skipped.
   `backend/scripts/store_latency.py` reproduces the timings above.
 
+### 5.2 Measured latency and what it requires (24 Sep 2026, from the laptop)
+
+| Measurement | Result |
+|---|---|
+| `select 1` round trip | median 51 ms, P90 168 ms |
+| `HistoryIndex` load at startup | 2.5 s, once |
+| Decision write + read, two sessions | 613 ms |
+
+Requirements that follow:
+
+1. **One session and one transaction per decision** (P2 ledger): `Ledger.record` and the
+   `view` it needs share one session and one transaction; no session per query inside the
+   2 s budget.
+2. **Fly region `lhr`**, nearest the Supabase project in AWS eu-west-1.
+3. **Pool warmed in the app lifespan**: open the pool's connections at startup, so the first
+   decision does not pay a new connection (≈ 2 s).
+
 ## 6. Optional (Wave 3, P3, only if everything else is green)
 
 Supabase Realtime on the `decisions` table for the customer feed, merged through
