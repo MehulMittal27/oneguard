@@ -10,15 +10,19 @@ The lifespan, in order (docs/architecture.md Runtime, docs/database.md §5):
    (``queries.restore_form_instructions``);
 2. ``authorization_history`` loaded into memory (``StoreHistoryIndex``);
 3. the database pool warmed, so the first decision does not pay a new connection;
-4. soft signals warmed when enabled (``ONEGUARD_SOFT_SIGNALS``: off | keywords | laya);
-5. the Viseca worker started, only when ``VISECA_API_KEY`` is set, in the background:
+4. the Viseca worker started, only when ``VISECA_API_KEY`` is set, in the background:
    it reads bootstrap and reference data, syncs the served reference tables into the
    store, then long-polls. Once started, the routes use its history index (reloaded if
    the sync changed anything), and C12 / D3 / D8 read the scenario bindings it stores
-   (``scenario_profiles``) and the scenarios it serves. ``/healthz`` shows it.
+   (``scenario_profiles``) and the scenarios it serves. ``/healthz`` shows it;
+5. the soft-signal model (``ONEGUARD_SOFT_SIGNALS=laya``) loaded in the background, never
+   before the worker polls: until it has loaded, and for good if it fails to load, the
+   engine answers the signal with keywords (``signals.LayaSignals``). Loading Laya takes
+   about 35 s on the cloud machine; a platform request in that window must not wait.
 
 ``/healthz`` reports the worker (state, last poll, events cursor), whether a model
-provider is configured, the signals backend and whether its model loaded, the database
+provider is configured, the signals backend deciding now (``keywords`` while the model
+loads), the configured one and whether its model is loading or loaded, the database
 engine and a one-row round trip. It names no secret and no URL.
 """
 
@@ -72,7 +76,6 @@ log = logging.getLogger(__name__)
 
 SIGNALS_ENV = "ONEGUARD_SOFT_SIGNALS"
 SIGNALS_BACKENDS: tuple[SignalsBackend, ...] = ("off", "keywords", "laya")
-SIGNALS_WARM_TIMEOUT_S = 60.0
 HEALTH_DB_TIMEOUT_S = 5.0
 _URL = re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE)
 _SECRETISH = re.compile(r"(?i)(password|passwd|pwd|token|key|secret)=\S+")
@@ -90,6 +93,8 @@ class AppConfig:
     stubbed: frozenset[str] | None = None
     provider: Provider | None = None
     signals_backend: str | None = None
+    warm_signals: Callable[[SignalsBackend], bool] | None = None
+    """Loads the soft-signal model in a background thread; default: ``signals.warm()``."""
     frontend_dist: Path | None = None
     db_timeout_s: float = DB_TIMEOUT_S
     viseca_timeout_s: float = VISECA_TIMEOUT_S
@@ -165,6 +170,27 @@ def sanitise(message: str | None) -> str | None:
     return _SECRETISH.sub(r"\1=[redacted]", _URL.sub("[url]", message))[:300]
 
 
+async def _load_signals_model(s: Services, warm: Callable[[SignalsBackend], bool]) -> None:
+    """Load the model off the event loop; the engine answers with keywords until it has.
+
+    ``signals.LayaSignals`` switches itself the moment its model is set; this only keeps
+    ``/healthz`` truthful. A failed load leaves keywords in charge and says so in the log.
+    """
+    s.model_loading = True
+    started = time.perf_counter()
+    try:
+        s.model_loaded = await asyncio.to_thread(warm, s.signals_backend)
+    except Exception:
+        log.exception("the soft-signal model did not load; signals stay on keywords")
+        s.model_loaded = False
+    finally:
+        s.model_loading = False
+    if s.model_loaded:
+        log.info("soft-signal model loaded in %.1f s; signals now use it", time.perf_counter() - started)
+    else:
+        log.warning("no soft-signal model loaded; signals stay on keywords")
+
+
 async def _start_worker(s: Services) -> None:
     assert s.worker is not None
     try:
@@ -196,11 +222,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info("database pool warmed: %d connection(s)", warmed)
 
     backend = signals_backend(config.signals_backend)
-    try:
-        model_loaded = await asyncio.wait_for(asyncio.to_thread(_warm_signals, backend), SIGNALS_WARM_TIMEOUT_S)
-    except Exception:
-        log.exception("soft signals did not warm; they run without a model")
-        model_loaded = False
     provider = config.provider or get_provider()
     try:
         scenarios = routes_dev.scenario_bindings()
@@ -218,7 +239,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         scenarios=scenarios,
         implementations=config.implementations,
         stubbed=config.stubbed,
-        model_loaded=model_loaded,
         db_timeout_s=config.db_timeout_s,
         viseca_timeout_s=config.viseca_timeout_s,
         compile_timeout_s=config.compile_timeout_s,
@@ -242,12 +262,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         for mandate in await asyncio.to_thread(queries.mandates, db):
             s.bind_mandate(mandate)
         start = asyncio.create_task(_start_worker(s), name="viseca-worker-start")
+    load: asyncio.Task[None] | None = None
+    if backend == "laya":
+        load = asyncio.create_task(_load_signals_model(s, config.warm_signals or _warm_signals), name="signals-load")
     try:
         yield
     finally:
-        if start is not None and not start.done():
-            start.cancel()
-            await asyncio.gather(start, return_exceptions=True)
+        for task in (start, load):
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         if s.worker is not None:
             await s.worker.stop()
         if s.client is not None:
@@ -297,7 +321,13 @@ async def healthz(request: Request) -> JSONResponse:
         "events_cursor": worker.get("events_cursor"),
         "runs_allowed": runs_allowed(),
         "provider": {"name": s.provider_name, "configured": provider_available(s.provider)},
-        "signals": {"backend": s.signals_backend, "enabled": s.live_models(), "model_loaded": s.model_loaded},
+        "signals": {
+            "backend": s.active_signals(),
+            "configured": s.signals_backend,
+            "enabled": s.live_models(),
+            "model_loading": s.model_loading,
+            "model_loaded": s.model_loaded,
+        },
         "model_loaded": s.model_loaded,
         "database": {"engine": _database_engine(s.db_engine), "ok": db_ok, "round_trip_ms": round_trip},
         "engine": {

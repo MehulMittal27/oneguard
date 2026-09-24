@@ -9,9 +9,10 @@ may raise approve → step_up in decide; it can never approve or lower a decline
 
 - ``off``: no soft signal;
 - ``keywords`` (default): the A1 pattern list from protections.py;
-- ``laya``: keywords, plus the Laya checkpoint (loaded once by ``warm()`` at API startup, asked in a worker
-  thread within ``budget_s``). The signal is triggered if keywords OR Laya fire: Laya can
-  only add, never clear a keyword hit. On load failure, timeout or error it is keywords.
+- ``laya``: keywords, plus the Laya checkpoint (loaded once by ``warm()`` in the background
+  at API startup while the worker already polls, then asked in a worker thread within
+  ``budget_s``). The signal is triggered if keywords OR Laya fire: Laya can only add, never
+  clear a keyword hit. Until it has loaded, on load failure, timeout or error it is keywords.
 
 The pipeline calls ``soft_signals`` only when signals are enabled for the run.
 """
@@ -103,8 +104,9 @@ class LayaSignals:
     def warm(self) -> bool:
         """Load the model once (idempotent, thread-safe); True if it is ready.
 
-        The API calls this at startup. A decision before that answers with keywords and
-        starts the load in the background: loading never happens inside a decision.
+        The API calls this in a background thread at startup. Until ``predict`` is set a
+        decision answers with keywords (and starts the load if nobody has): loading never
+        happens inside a decision. Setting ``predict`` is the switch to the model.
         """
         with self._load_lock:
             if not self._tried:
@@ -203,8 +205,9 @@ BACKEND = select_backend(os.environ.get(SIGNALS_ENV))
 def warm() -> bool:
     """Load the soft-signal model if the backend has one; True when a model is loaded.
 
-    Called once at API startup and reported by /healthz as ``model_loaded``. With
-    ``off`` or ``keywords`` there is no model: it returns False and does nothing.
+    Called once in a background thread at API startup and reported by /healthz as
+    ``model_loaded``. With ``off`` or ``keywords`` there is no model: it returns False
+    and does nothing.
     """
     warm_backend = getattr(BACKEND, "warm", None)
     return bool(warm_backend()) if callable(warm_backend) else False

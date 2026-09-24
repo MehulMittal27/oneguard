@@ -18,6 +18,7 @@ import asyncio
 import logging
 import re
 import shutil
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
@@ -1350,6 +1351,82 @@ def test_healthz_shows_standby_while_another_process_holds_the_worker_lease(db_u
                 "standby", False, False, None,
             )  # fmt: skip
             assert r.json()["status"] == "degraded" and fake.polls == 0
+
+    asyncio.run(scenario())
+
+
+def _signals(health: dict[str, Any]) -> tuple[Any, ...]:
+    s = health["signals"]
+    return s["backend"], s["configured"], s["model_loading"], s["model_loaded"], health["model_loaded"]
+
+
+def test_the_worker_polls_while_the_model_loads_and_signals_switch_once_it_has(
+    db_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ONEGUARD_SOFT_SIGNALS=laya: the worker polls at once; keywords answer until the model is in."""
+    from oneguard.engine import signals
+    from tests.test_protections_signals import CLEAN, DIRTY
+
+    started, release = threading.Event(), threading.Event()
+
+    def slow_load() -> Callable[[str], float]:
+        started.set()
+        release.wait(10)
+        return lambda text: 0.9
+
+    monkeypatch.setattr(signals, "BACKEND", signals.LayaSignals(load=slow_load))
+
+    async def scenario() -> None:
+        fake = FakeViseca(fast())
+        try:
+            async with running(db_url, fake=fake, signals_backend="laya") as run:
+                assert await asyncio.to_thread(started.wait, 5)
+                await until(lambda: fake.polls > 0)  # polling before the model finished loading
+                health = (await run.get("/healthz")).json()
+                assert health["worker"]["polling"] is True and health["status"] == "ok"
+                assert _signals(health) == ("keywords", "laya", True, False, False)
+                for f in [*CLEAN, *DIRTY]:  # what a decision gets meanwhile: keywords
+                    assert signals.soft_signals(f, 0.5) == signals.KeywordSignals()(f, 0.5)
+
+                release.set()
+                await until(lambda: run.services.model_loaded)
+                health = (await run.get("/healthz")).json()
+                assert _signals(health) == ("laya", "laya", False, True, True)
+                [switched] = signals.soft_signals(CLEAN[0], 0.5)
+                assert (switched.triggered, switched.source) == (True, "model")
+        finally:
+            release.set()
+
+    asyncio.run(scenario())
+
+
+def test_a_model_that_fails_to_load_leaves_keywords_deciding(
+    db_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    def broken(backend: str) -> bool:
+        raise RuntimeError("no checkpoint")
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast()), signals_backend="laya", warm_signals=broken) as run:
+            await until(lambda: not run.services.model_loading)
+            health = (await run.get("/healthz")).json()
+            assert _signals(health) == ("keywords", "laya", False, False, False)
+            assert health["worker"]["polling"] is True and health["signals"]["enabled"] is True
+
+    with caplog.at_level(logging.WARNING, logger="oneguard.api.app"):
+        asyncio.run(scenario())
+    assert "the soft-signal model did not load; signals stay on keywords" in caplog.text
+
+
+@pytest.mark.parametrize("backend", ["off", "keywords"])
+def test_no_model_loads_without_laya(db_url: str, backend: str) -> None:
+    async def scenario() -> None:
+        loads: list[str] = []
+        async with running(db_url, signals_backend=backend, warm_signals=lambda b: bool(loads.append(b))) as run:
+            await asyncio.sleep(0.05)
+            health = (await run.get("/healthz")).json()
+            assert _signals(health) == (backend, backend, False, False, False)
+        assert loads == []
 
     asyncio.run(scenario())
 

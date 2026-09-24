@@ -52,9 +52,6 @@ const REASON_LABEL: Record<string, string> = {
   session_watch: "We're double-checking after unusual activity on your card",
   unusual_activity: 'Unusual activity on this card',
   rule_not_met: "One of your rules wasn't met",
-  session_risk: 'This session does not look like you',
-  velocity_burst: 'Several orders in a very short time',
-  night_purchase: 'Placed outside this card’s usual hours',
 
   // Development only (`../docs/api-contract.md` §4) — never emitted in a live
   // run, but labelled so a stubbed backend does not render as "another check".
@@ -71,4 +68,9 @@ export function reasonLabel(code: string): string {
 /** True when the code is one this build knows how to word. */
 export function isKnownReasonCode(code: string): boolean {
   return code in REASON_LABEL
+}
+
+/** Every code this build words, for the §4 parity test. */
+export function knownReasonCodes(): string[] {
+  return Object.keys(REASON_LABEL)
 }
