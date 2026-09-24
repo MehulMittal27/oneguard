@@ -218,7 +218,7 @@ def order_return_window(order_returnable: str, lines: list[ItemFacts]) -> FactVa
         return FactValue[int](known=False, source="regex", detail=contradictory[0].detail)
     if stated:
         best = min(stated, key=lambda f: f.value)  # strictest
-        return FactValue[int](value=best.value, known=True, source="regex", detail=best.detail)
+        return FactValue[int](value=best.value, known=True, source=best.source, detail=best.detail)
     not_stated = [ln.return_window_days.detail for ln in lines]
     detail = ("return policy not stated by seller"
               if "return policy not stated by seller" in not_stated else "return terms not stated")
@@ -309,3 +309,113 @@ def build_facts(event: dict, history: HistoryIndex | None = None) -> Facts:
         authority_status=auth.get("authority_status", "active"),
         card_status_at_attempt=auth.get("card_status_at_attempt", "active"),
     )
+
+
+# --- Tier 2 guardrails (rules.md §4a; P2 flag R2) ------------------------------------
+# Tier 2 (P4) may ask a model to read a fact the English patterns above missed, e.g.
+# German shop text ("Grösse 42", "Rückgabe innerhalb 30 Tagen"). These helpers say which
+# facts it may try and accept a model answer only when it is grounded in the shop text.
+#
+# Never tried: a contradiction (the shop said two things; picking one is a guess), a
+# seller statement that the policy is not stated, and exchange/store-credit-only terms
+# (a PM decision that they stay unknown). Only positive item facts are accepted, each
+# with a verbatim quote that is in the line's text and contains the value; absence is
+# never a fact, and amounts never come from text (A2).
+
+TIER2_FIELDS: tuple[str, ...] = ("size_eu", "size_letter", "return_window_days", "recurring")
+SELLER_STATED_UNKNOWN: tuple[str, ...] = (
+    "return policy not stated by seller",
+    "exchange or store credit only",
+)
+_TIER2_LETTER_SIZES = ("XS", "S", "M", "L", "XL", "XXL", "XXXL")
+_TIER2_SIZE_EU_RANGE = (15.0, 55.0)
+_TIER2_MAX_RETURN_DAYS = 365
+
+
+def tier2_may_resolve(field: str, fact: FactValue) -> bool:
+    """True if tier 2 may try to read this item fact from the shop text."""
+    if field not in TIER2_FIELDS or fact.known:
+        return False
+    detail = (fact.detail or "").lower()
+    if detail.startswith(CONTRADICTORY):
+        return False
+    return not any(detail.startswith(s) for s in SELLER_STATED_UNKNOWN)
+
+
+def _agent_directed(text: str) -> bool:
+    """A1: text aimed at the agent is never fed to a model (P5's detector)."""
+    try:
+        from oneguard.engine.protections import agent_directed_spans
+    except ImportError:  # P5 module missing: be safe, treat any imperative-looking text as flagged
+        return bool(re.search(r"\b(ignore|approve|system\s*:)", text or "", re.IGNORECASE))
+    return bool(agent_directed_spans(text or ""))
+
+
+def tier2_candidates(facts: Facts) -> list[tuple[int, str, str]]:
+    """``(line_no, field, text)`` for every fact tier 2 may try; ``text`` is the only text
+    the model may read (that line's ``item_details``). Lines with agent-directed text are
+    skipped entirely."""
+    out = []
+    for line in facts.items:
+        if not line.item_details or _agent_directed(line.item_details):
+            continue
+        for field in TIER2_FIELDS:
+            fact = getattr(line, field, None)
+            if fact is not None and tier2_may_resolve(field, fact):
+                out.append((line.line_no, field, line.item_details))
+    return out
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "")).strip().casefold()
+
+
+def _numbers(text: str) -> set[float]:
+    return {float(n.replace(",", ".")) for n in re.findall(r"\d+(?:[.,]\d+)?", text)}
+
+
+def tier2_accept(facts: Facts, line_no: int, field: str, value: Any, quote: str) -> FactValue | None:
+    """A model answer as a FactValue (``source="model"``), or None if it is not grounded.
+
+    Grounded means: the fact may be tried, ``quote`` appears verbatim (case and spacing
+    aside) in that line's ``item_details``, and the value is in the quote and plausible.
+    """
+    line = next((ln for ln in facts.items if ln.line_no == line_no), None)
+    if line is None or not quote or not quote.strip():
+        return None
+    current = getattr(line, field, None)
+    if current is None or not tier2_may_resolve(field, current):
+        return None
+    if _agent_directed(line.item_details) or _norm(quote) not in _norm(line.item_details):
+        return None
+    numbers = _numbers(quote)
+    ok = False
+    if field == "size_eu" and isinstance(value, int | float) and not isinstance(value, bool):
+        v = float(value)
+        low, high = _TIER2_SIZE_EU_RANGE
+        ok = low <= v <= high and (v * 2).is_integer() and (v in numbers or float(int(v)) in numbers)
+    elif field == "size_letter" and isinstance(value, str):
+        v = value.strip().upper()
+        # One-letter sizes must be capitals in the quote ("20 m" is metres, not size M).
+        flags = re.IGNORECASE if len(v) > 1 else 0
+        ok = v in _TIER2_LETTER_SIZES and bool(re.search(rf"(?<![A-Za-z]){v}(?![A-Za-z])", quote, flags))
+        value = v
+    elif field == "return_window_days" and isinstance(value, int) and not isinstance(value, bool):
+        weeks = value / 7
+        ok = 0 <= value <= _TIER2_MAX_RETURN_DAYS and (
+            value in numbers or (weeks.is_integer() and weeks in numbers) or (value == 0 and bool(quote.strip())))
+    elif field == "recurring":
+        ok = value is True  # only a stated recurring charge; "not recurring" is absence
+    if not ok:
+        return None
+    return current.__class__(value=value, known=True, source="model", detail=f'read by model from: "{quote.strip()}"')
+
+
+def with_tier2_fact(facts: Facts, line_no: int, field: str, fact: FactValue) -> Facts:
+    """Facts with one line's fact replaced by an accepted tier-2 value; the order-level
+    return window is recomputed from the lines (strictest wins, as for regex facts)."""
+    items = [ln.model_copy(update={field: fact}) if ln.line_no == line_no else ln for ln in facts.items]
+    update: dict[str, Any] = {"items": items}
+    if field == "return_window_days":
+        update["return_window_days"] = order_return_window(facts.order_returnable, items)
+    return facts.model_copy(update=update)
