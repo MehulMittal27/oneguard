@@ -75,7 +75,7 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
 
    | Card | Customer | Scenario | Instruction to send (verbatim, the scenario's cardholder instruction) | Checks the draft must show |
    |---|---|---|---|---|
-   | CA0039 | Oliver Graf (CU0019) | SCEN0004 | Buy the 27-inch monitor I chose, from a seller I have bought from before, for CHF 400 or less. Do not add anything I did not ask for. Ask me when uncertain. | CHF 400 per order; only sellers you have bought from before; the 27-inch monitor; nothing added |
+   | CA0039 | Oliver Graf (CU0019) | SCEN0004 | Buy the 27-inch monitor I chose, from a seller I have bought from before, for CHF 400 or less. Do not add anything I did not ask for. Ask me when uncertain. | CHF 400 per order; only sellers you have bought from before; requested item and nothing-added flags set (policy flags on this build, not visible checks) |
    | CA0023 | Giulia Rossi (CU0012) | SCEN0003 | The agent may buy clothing for me, up to CHF 250 per order, from shops I have used before. Pause anything that looks like someone other than me is driving the session. Ask me when uncertain. | CHF 250 per order; only clothing; only shops you have bought from before |
    | CA0011 | Jonas Frei (CU0006) | SCEN0002 | Replace my worn road-running shoes in size 43. Buy only from a specialist sports retailer, only if the order can be returned within 14 days or more, and pay no more than CHF 200. Ask me when uncertain. | CHF 200 per order; size 43; returns 14 days or more; sporting goods shop |
 
@@ -103,12 +103,17 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
 
    Run each `confirm` only after reading its draft. Expect `compiler: "llm"` and
    `status: "active"`. If a draft misses a check from the table (the rule-based fallback,
-   for one, reads no item and no "nothing added" check for CA0039), do not confirm it: run
+   for one, sets neither the requested-item nor the nothing-added flag for CA0039), do not confirm it: run
    `draft` again. The replay decides with this mandate, and the matrix outcomes assume those
    checks. Keep this CA0039 check as a safety line even once the requested-item compiler
    fix (in progress on `p4/requested-item`) lands: that fix should make the draft pass on
    its own. A card that already has an active policy from a rehearsal needs nothing; CA0023
    is revoked on stage, so after each rehearsal it needs a new one.
+
+   Confirming a policy on stage supersedes the platform's active mandate (the sandbox
+   keeps one active mandate per team; docs/decisions.md). That is irrelevant unless a
+   judging run is open, so no judging run during the stage demo. Revoking a superseded
+   policy still succeeds (C5 answers 204).
 
 6. **Rehearsal replay** (at least 3 minutes before going on stage, so its step-ups have
    expired by then): replay both stage scenarios at full speed and compare with the matrix.

@@ -26,6 +26,9 @@ behaviour the worker depends on:
   plus any served-only rows a test adds (``served_extra``), whose scenarios replay a pack
   scenario's purchases (``served_scenarios``) under the served id, on the card of their
   fixture profile (``fixture_profiles``) when one is set;
+- the team keeps one active mandate: confirming a draft supersedes the active one
+  (``status: "superseded"``, as the live sandbox showed on 25 Sep 2026); revoking a
+  superseded mandate is 409 ``mandate_inactive`` (assumed, like PATCH and scenario runs);
 - knobs for redelivery, corrupt or rewritten events, a served history file that differs, a
   context / event-feed that disagrees with the worker, whether team reset is enabled, a
   new pack (``pack_version``, ``served_extra`` changed while running), the long-poll cap
@@ -571,6 +574,9 @@ class FakeViseca:
             if draft["status"] != "draft":
                 return _error(409, "already_confirmed", "draft already confirmed")
             draft["status"] = "confirmed"
+            for other in fake.mandates.values():
+                if other["status"] == "active":
+                    other["status"] = "superseded"
             mandate_id = "TM" + secrets.token_hex(8)
             mandate = copy.deepcopy(draft)
             mandate.update(mandate_id=mandate_id, status="active")
@@ -605,6 +611,8 @@ class FakeViseca:
             mandate = fake.mandates.get(mandate_id)
             if mandate is None:
                 return _error(404, "not_found", "unknown mandate")
+            if mandate["status"] == "superseded":
+                return _error(409, "mandate_inactive", "mandate is not active")
             mandate["status"] = "revoked"
             return JSONResponse({"mandate_id": mandate_id, "status": "revoked"})
 
