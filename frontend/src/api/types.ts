@@ -230,6 +230,13 @@ export interface ReplayStatus {
   next_at: string | null
 }
 
+// D5 read: whether the models run now, for live runs and for the offline replay.
+// The two differ until an operator sets D5 (§3.7).
+export interface SoftSignalsState {
+  live: boolean
+  replay: boolean
+}
+
 export interface LiveRun {
   run_id: string
   scenario_id: string
