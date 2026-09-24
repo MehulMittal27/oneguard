@@ -220,7 +220,6 @@ def no_local_worker(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         real_init(self, *args, **kwargs)
 
     monkeypatch.setattr(worker_module.VisecaWorker, "__init__", counting_init)
-    monkeypatch.setattr(demo, "run_local", lambda *a, **k: pytest.fail("demo-live ran a local worker"))
     return built
 
 
@@ -263,6 +262,33 @@ def test_demo_live_starts_through_the_server_and_prints_whom_to_sign_in_as(
     asyncio.run(scenario())
 
 
+def test_follow_prints_this_runs_decisions_even_when_decided_before_its_first_read() -> None:
+    """The server's worker can decide the first purchase before ``follow`` reads anything;
+    the customer's decisions from other runs are still left out."""
+
+    def decision(live_id: str, run_id: str) -> dict[str, Any]:
+        return {"authorization_id": live_id, "run_id": run_id, "decision": "approved", "status": "final",
+                "billing_amount_chf": 20.0, "reason_codes": ["within_limits"], "message": "Approved."}
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/dev/runs/run_1":
+            return httpx.Response(200, json={"run_id": "run_1", "state": "done", "decided": 1,
+                                             "pending_human": 0, "total": 1})
+        assert request.url.path == "/api/customers/CU1/decisions"
+        return httpx.Response(200, json={"decisions": [decision("AU0001-1", "live-run_1"),
+                                                       decision("AU0001-0", "live-run_0")]})
+
+    async def scenario() -> list[str]:
+        lines: list[str] = []
+        async with httpx.AsyncClient(base_url=API, transport=httpx.MockTransport(reply)) as http:
+            assert await demo.follow(http, "run_1", "CU1", out=lines.append, max_seconds=5) == 0
+        return lines
+
+    lines = asyncio.run(scenario())
+    assert [line.split()[0] for line in lines if line.startswith("  AU")] == ["AU0001-1"]
+    assert lines[-1] == "Summary: {'approved': 1}"
+
+
 def test_demo_live_changes_nothing_while_a_run_is_active(
     db_url: str,  # noqa: F811
     no_local_worker: list[str],
@@ -286,14 +312,78 @@ def test_demo_live_changes_nothing_while_a_run_is_active(
     asyncio.run(scenario())
 
 
-def test_demo_live_without_a_server_says_it_falls_back(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+NO_SERVER = "http://127.0.0.1:9"
+"""Nothing listens there."""
+
+
+@pytest.mark.parametrize("offline", [False, True], ids=["demo-live", "demo-offline"])
+def test_without_a_server_nothing_starts(
+    offline: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    no_local_worker: list[str],
 ) -> None:
-    monkeypatch.delenv("VISECA_API_KEY", raising=False)
-    assert demo.main(["--scenario", "SCEN0101", "--api", "http://127.0.0.1:9"]) == 2
-    out, err = capsys.readouterr()
-    assert "No OneGuard server answers at http://127.0.0.1:9. Falling back to a local worker" in out
-    assert "VISECA_API_KEY is not set" in err
+    """No OneGuard answers at ONEGUARD_API_URL: exit 1, say so, start no run and no worker."""
+    monkeypatch.setenv("VISECA_API_KEY", "some-key")  # a key does not bring a local decider back
+    monkeypatch.setenv(demo.API_ENV, NO_SERVER)
+    sent: list[str] = []
+    real_call = demo._call
+
+    async def spy(http: httpx.AsyncClient, method: str, path: str, body: Any = None) -> Any:
+        sent.append(f"{method} {path}")
+        return await real_call(http, method, path, body)
+
+    monkeypatch.setattr(demo, "_call", spy)
+    assert demo.main(["--scenario", "SCEN0101", *(["--offline"] if offline else [])]) == 1
+    out = capsys.readouterr().out
+    assert f"No OneGuard server answers at {NO_SERVER}/healthz, so nothing was started" in out
+    assert f"export {demo.API_ENV}=<server url>" in out
+    assert sent == [] and no_local_worker == []
+
+
+def test_a_non_oneguard_answer_counts_as_no_server(no_local_worker: list[str]) -> None:
+    def elsewhere(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "ok"}) if request.url.path == "/healthz" else pytest.fail(
+            f"{request.method} {request.url.path} sent to a server that is not OneGuard"
+        )
+
+    lines: list[str] = []
+    code = asyncio.run(
+        demo.live("SCEN0101", api_base=API, transport=httpx.MockTransport(elsewhere), out=lines.append)
+    )
+    assert code == 1 and lines[0].startswith(f"No OneGuard server answers at {API}/healthz")
+
+
+def test_the_server_defaults_to_the_cloud_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    async def live(scenario_id: str, *, api_base: str, **_: Any) -> int:
+        seen.append(api_base)
+        return 0
+
+    monkeypatch.setattr(demo, "live", live)
+    monkeypatch.delenv(demo.API_ENV, raising=False)
+    assert demo.main(["--scenario", "SCEN0101"]) == 0
+    monkeypatch.setenv(demo.API_ENV, "http://localhost:8000/")
+    assert demo.main(["--scenario", "SCEN0101"]) == 0
+    assert seen == ["https://oneguard.fly.dev", "http://localhost:8000"]
+
+
+def test_demo_offline_restarts_the_servers_replay(db_url: str, no_local_worker: list[str]) -> None:  # noqa: F811
+    async def scenario() -> None:
+        lines: list[str] = []
+        async with running(db_url) as run:
+            await confirm_form(run, "CA0001")
+            code = await demo.offline(
+                "SCEN0000", api_base=API, card_id="CA0001", speed_ms=0,
+                transport=httpx.ASGITransport(app=run.app), out=lines.append,
+            )  # fmt: skip
+            assert code == 0, lines
+            assert lines == [f"Replay of SCEN0000 on card CA0001 started at {API}: 1 purchase, 0 ms apart."]
+            assert (await run.get("/api/dev/replay")).json()["scenario_id"] == "SCEN0000"
+        assert no_local_worker == []
+
+    asyncio.run(scenario())
 
 
 def test_demo_live_needs_a_server_connected_to_the_platform(db_url: str) -> None:  # noqa: F811
@@ -408,5 +498,33 @@ def test_demo_live_names_the_run_in_progress_and_starts_another_only_with_force(
             )
             assert "Sign in as Test Served (CU9001, card CA9001)" in lines
             assert len(fake.runs) == 2 and no_local_worker == []
+
+    asyncio.run(scenario())
+
+
+def test_a_run_started_after_a_pack_change_compiles_its_new_instruction(
+    db_url: str,  # noqa: F811
+    no_local_worker: list[str],
+) -> None:
+    """A judge serves a new pack (new ``pack_version``, a changed instruction) while the
+    server runs: D8 re-reads the bootstrap, the worker syncs the catalogue first, and
+    demo-live compiles and confirms the new instruction."""
+    new = "Buy one loaf of bread for CHF 10 or less. Ask me when uncertain."
+
+    async def scenario() -> None:
+        fake = two_profiles()
+        lines: list[str] = []
+        async with running(db_url, fake=fake, **REAL_ENGINE) as run:
+            assert await demo_live(run, "SCEN9001", lines) == 0
+            assert "Instruction: Buy one ordinary grocery item for CHF 20 or less. Ask me when uncertain." in lines
+
+            fake.config.pack_version = "saw27"
+            fake.config.served_extra["scenario_catalogue"][0]["cardholder_instruction"] = new
+            lines.clear()
+            assert await demo_live(run, "SCEN9001", lines) == 0
+            assert f"Instruction: {new}" in lines
+            latest = max(fake.mandates.values(), key=lambda m: m["created_at"])
+            assert latest["instruction"] == new
+            assert run.services.worker.pack_version == "saw27"
 
     asyncio.run(scenario())

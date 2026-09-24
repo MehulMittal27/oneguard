@@ -136,6 +136,7 @@ DECISION = {
     "latency_ms": 3.2,
     "explanation_source": "template",
     "confirmable": {"rule_id": "U1", "phrase": "from the official ticket seller"},
+    "policy_applied": {"mandate_id": "TM_1", "source": "platform", "checks": [CHECK]},
 }
 RESOLVED_DECISION = {
     **{k: v for k, v in DECISION.items() if k != "deadline_at"},
@@ -192,6 +193,7 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
     api.Session: DECISION["session"],
     api.MerchantMeta: DECISION["merchant_meta"],
     api.Confirmable: DECISION["confirmable"],
+    api.PolicyApplied: DECISION["policy_applied"],
     api.Decision: DECISION,
     api.ReplayStatus: {
         "scenario_id": "S1",

@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react'
 import type { Decision, DecisionRelation, EvidenceItem, UncertainOutcome } from '../../api/types'
 import { DecisionMark } from '../../components/DecisionMark'
+import { NetworkState } from '../../components/NetworkState'
 import type { IconProps } from '../../components/icons/IconProps'
 import {
   BackChevronIcon,
@@ -103,7 +104,7 @@ export function DecisionDetail({
   // every other decision reaches this screen via onBack/backLabel as usual.
   onGoHome: () => void
 }) {
-  const { decisions } = useDecisions()
+  const { decisions, status: decisionsStatus, retry: retryDecisions } = useDecisions()
   const { policiesByCard } = usePolicy()
   const { signedInAs, logout } = useCustomer()
   const decision = decisions.find((d) => d.authorization_id === authorizationId)
@@ -121,7 +122,15 @@ export function DecisionDetail({
           <BackChevronIcon size={20} strokeWidth={2} />
           {backLabel}
         </button>
-        <p className="text-[15px] text-ink-muted">This purchase couldn&apos;t be found.</p>
+        {decisionsStatus === 'loading' ? (
+          <NetworkState kind="loading" label="purchase details" />
+        ) : decisionsStatus === 'error' ? (
+          <NetworkState kind="error" label="purchase details" onRetry={retryDecisions} />
+        ) : (
+          <NetworkState kind="empty" label="purchase details">
+            This purchase couldn&apos;t be found.
+          </NetworkState>
+        )}
       </div>
     )
   }
@@ -132,6 +141,16 @@ export function DecisionDetail({
       ? UNCERTAIN_BANNER[decision.uncertain_outcome ?? 'pending']
       : BANNER_STYLE[decision.decision]
   const mandate = policiesByCard[decision.card_id]
+  // The rules that decided (docs/api-contract.md §6 item 17), not whatever the
+  // card holds now; absent on older backends, then the card's current policy.
+  const applied = decision.policy_applied ?? null
+  const appliedChecks = applied?.checks ?? mandate?.checks ?? []
+  const appliedNote =
+    applied?.source === 'platform'
+      ? 'Checked against the rules stored with the payment platform — no policy you confirmed here was linked to it.'
+      : applied && mandate && applied.mandate_id !== mandate.mandate_id
+        ? "Checked against an earlier policy on this card, not the one it has now."
+        : null
   // DESIGN.md #9's persona chrome (D-058) — extra framing only for the one
   // scenario it was drawn for (a real injection attempt), not a guess at
   // every decision's presentation.
@@ -354,8 +373,9 @@ export function DecisionDetail({
             {mandate.status === 'revoked' && (
               <span className="text-[12px] text-ink-muted">This policy was later revoked.</span>
             )}
+            {appliedNote && <span className="text-[12px] text-ink-muted">{appliedNote}</span>}
             <span className="flex flex-wrap gap-2">
-              {mandate.checks.map((check) => (
+              {appliedChecks.map((check) => (
                 <span
                   key={check.id}
                   className="rounded-pill bg-surface-sunken px-3 py-1.5 text-[13px] font-medium text-ink-soft"
@@ -365,6 +385,20 @@ export function DecisionDetail({
               ))}
             </span>
           </button>
+        ) : applied ? (
+          <div className="flex w-full flex-col items-start gap-2 rounded-card border border-hairline bg-surface p-4">
+            {appliedNote && <span className="text-[12px] text-ink-muted">{appliedNote}</span>}
+            <span className="flex flex-wrap gap-2">
+              {appliedChecks.map((check) => (
+                <span
+                  key={check.id}
+                  className="rounded-pill bg-surface-sunken px-3 py-1.5 text-[13px] font-medium text-ink-soft"
+                >
+                  {check.text}
+                </span>
+              ))}
+            </span>
+          </div>
         ) : (
           <p className="text-[13px] text-ink-muted">
             No policy was ever set up on card {decision.card_id} in this session.

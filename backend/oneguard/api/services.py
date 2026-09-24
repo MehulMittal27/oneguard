@@ -74,6 +74,8 @@ class Services:
     implementations: Mapping[str, Callable[..., Any]] | None = None
     stubbed: frozenset[str] | None = None
     model_loaded: bool = False
+    model_loading: bool = False
+    """The ``laya`` model is loading in the background (the lifespan); keywords answer meanwhile."""
     models_enabled: bool | None = None
     """D5 chaos toggle; None until an operator sets it."""
     worker_error: str | None = None
@@ -116,6 +118,10 @@ class Services:
     def live_models(self) -> bool:
         """Soft signals and tier 2 for live runs: on unless signals are off or D5 says so."""
         return self.signals_backend != "off" if self.models_enabled is None else self.models_enabled
+
+    def active_signals(self) -> SignalsBackend:
+        """The detector answering now: ``keywords`` stands in for ``laya`` until its model loads."""
+        return "keywords" if self.signals_backend == "laya" and not self.model_loaded else self.signals_backend
 
     def replay_models(self) -> bool:
         """Off by default in the offline replay (api-contract §3.7); D5 turns them on."""

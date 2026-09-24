@@ -53,26 +53,69 @@ def test_only_an_upper_bound_is_a_per_order_cap():
         assert lint_accepted_ids([amount(cap)], ["C1"]) == ([], [])
 
 
-def _row(n: int, day: int, chf: float, merchant: str) -> HistoryRow:
+def _row(n: int, day: int, chf: float, merchant: str, *, month: int = 7, card: str = CARD,
+         initiator: str = "human", status: str = "approved") -> HistoryRow:
     return HistoryRow(
-        authorization_id=f"TR_T{n:03d}", customer_id="CU_T1", card_id=CARD, initiator_type="human",
-        timestamp=datetime(2026, 7, day, 12, tzinfo=UTC), transaction_type="purchase", status="approved",
+        authorization_id=f"TR_T{n:03d}", customer_id="CU_T1", card_id=card, initiator_type=initiator,
+        timestamp=datetime(2026, month, day, 12, tzinfo=UTC), transaction_type="purchase", status=status,
         amount=chf, currency="CHF", billing_amount_chf=chf, merchant_id=merchant, merchant_name=merchant,
         merchant_category="groceries", merchant_country="CH", channel="ecommerce", recurring=False,
         customer_device_id="DVC_T1", description="Groceries")
 
 
+# ME_A was bought from in March, before the 90-day window; ME_B is new on 9 July.
+KNOWN_AND_NEW = [_row(0, 2, 20.0, "ME_A", month=3), _row(1, 1, 40.0, "ME_A"), _row(2, 5, 150.0, "ME_A"),
+                 _row(3, 9, 30.0, "ME_B")]
+KNOWN_SHOP = Rule(id="known_shop", field="merchant.known_shop", operator="=", value="true",
+                  text="Only from shops you have bought from before", source="exact", kind="merchant")
+
+
 def test_dry_run_of_a_form_policy_reads_the_known_shop_alias():
-    history = StoreHistoryIndex(rows=[_row(1, 1, 40.0, "ME_A"), _row(2, 5, 150.0, "ME_A"), _row(3, 9, 30.0, "ME_B")])
-    known_shop = Rule(id="known_shop", field="merchant.known_shop", operator="=", value="true",
-                      text="Only from shops you have bought from before", source="exact", kind="merchant")
-    policy = Policy(mandate_id="M_T", status="active", instruction="form", rules=[CAP, known_shop],
+    policy = Policy(mandate_id="M_T", status="active", instruction="form", rules=[CAP, KNOWN_SHOP],
                     uncertainty_policy="ask", requires_known_shop=True)
-    result = dry_run_policy(policy, history, CARD)
+    result = dry_run_policy(policy, StoreHistoryIndex(rows=KNOWN_AND_NEW), CARD, "CU_T1")
     assert result.sample_size == 3
-    assert result.would_fit + result.would_violate + result.would_ask == 3
-    assert result.would_violate == 1  # CHF 150 over CHF 120
-    assert result.examples and result.examples[0].outcome == "violate"
+    assert (result.would_fit, result.would_violate, result.would_ask) == (1, 1, 1)
+    assert result.examples and [e.outcome for e in result.examples] == ["violate", "ask", "fit"]
+    assert result.examples[1].merchant_name == "ME_B"
+
+
+def test_requires_known_shop_alone_asks_about_an_unfamiliar_shop_instead_of_breaking_a_rule():
+    """The flag with no typed known-shop rule is checked too, as in the form preview:
+    a shop the card had not bought from before is ``ask``, never ``violate``."""
+    policy = Policy(mandate_id="M_T", status="active", instruction="form", rules=[CAP],
+                    uncertainty_policy="ask", requires_known_shop=True)
+    result = dry_run_policy(policy, StoreHistoryIndex(rows=KNOWN_AND_NEW), CARD, "CU_T1")
+    assert (result.would_fit, result.would_violate, result.would_ask) == (1, 1, 1)
+    ask = next(e for e in result.examples or [] if e.outcome == "ask")
+    assert ask.merchant_name == "ME_B" and ask.reason == "a shop not bought from before on this card"
+
+
+def test_without_requires_known_shop_an_unfamiliar_shop_fits():
+    policy = Policy(mandate_id="M_T", status="active", instruction="form", rules=[CAP], uncertainty_policy="ask")
+    result = dry_run_policy(policy, StoreHistoryIndex(rows=KNOWN_AND_NEW), CARD, "CU_T1")
+    assert (result.would_fit, result.would_violate, result.would_ask) == (2, 1, 0)
+
+
+def test_a_declined_purchase_does_not_make_a_shop_known():
+    rows = [_row(0, 2, 20.0, "ME_B", month=3, status="declined"), *KNOWN_AND_NEW]
+    policy = Policy(mandate_id="M_T", status="active", instruction="form", rules=[CAP],
+                    uncertainty_policy="ask", requires_known_shop=True)
+    assert dry_run_policy(policy, StoreHistoryIndex(rows=rows), CARD, "CU_T1").would_ask == 1
+
+
+def test_agent_history_counts_the_customers_agent_purchases_on_every_card():
+    other = [_row(10, 3, 25.0, "ME_C", card="CA_T2", initiator="agent"),
+             _row(11, 4, 35.0, "ME_C", card="CA_T2", initiator="agent", status="declined")]
+    policy = Policy(mandate_id="M_T", status="active", instruction="form", rules=[CAP], uncertainty_policy="ask")
+    history = StoreHistoryIndex(rows=[*KNOWN_AND_NEW, *other])
+    result = dry_run_policy(policy, history, CARD, "CU_T1")
+    assert result.sample_size == 3  # the purchases stay card-scoped
+    assert result.agent_history is not None
+    assert (result.agent_history.attempts, result.agent_history.approved) == (2, 1)
+    empty = dry_run_policy(policy, history, "CA_T3", "CU_T1")  # a card with no purchases of its own
+    assert empty.sample_size == 0 and empty.agent_history is not None
+    assert (empty.agent_history.attempts, empty.agent_history.approved) == (2, 1)
 
 
 @pytest.mark.skipif("lint_accepted" not in INTERFACES, reason="waiting for the contract: PR")

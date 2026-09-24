@@ -60,7 +60,7 @@ The first step that applies decides.
 | Tier | When | What |
 |---|---|---|
 | 1 | Every purchase | Deterministic rules, protections, warning signs (§4–§8). |
-| 2 | Only when a customer rule is `unknown` because a needed fact could not be extracted deterministically | Constrained LLM fact extraction from shop text: schema-validated, 1.5 s timeout, evidence `source: model`. |
+| 2 | Only when a customer rule is `unknown` because a needed fact could not be extracted deterministically | Constrained LLM fact extraction from shop text: schema-validated, 1.5 s timeout, evidence `source: model`. Size and return window only; recurring billing is regex only. |
 | 3 | After the decision is posted | LLM explanation rewrite from structured evidence only (E8). The template message is the fallback and is always posted first. |
 
 ## 5. Customer rules (apply only when stated)

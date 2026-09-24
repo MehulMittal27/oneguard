@@ -203,7 +203,7 @@ CURATION = {
         "decision": "uncertain",
         "uncertain_outcome": "pending",
         "status": "pending_human",
-        "reason_codes": ["session_risk", "night_purchase", "velocity_burst"],
+        "reason_codes": ["new_device_burst", "unusual_activity"],
         "message": "Third order on this card in seven minutes, at 02:21. Within your limit, but the pace and hour don't look like you.",
         "uncertainty": {"note": "Whether you are the one driving this session, or something else is using your agent."},
         "injection_flag": None,

@@ -208,8 +208,9 @@ def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
         text = "No recurring charges" if v == "false" else "Recurring billing expected"
     elif f == "merchant.merchant_category":
         shop = f"a {human(str(v))} shop"
-        text = f'Only from {shop} ("{spec.words}")' if op == "=" else f"Not from {shop}"
-    elif f == KNOWN_SHOP_FIELD:
+        said = f' ("{spec.words}")' if spec.words and spec.words != str(v) else ""
+        text = f"Only from {shop}{said}" if op == "=" else f"Not from {shop}"
+    elif f in (KNOWN_SHOP_FIELD, "merchant.known_shop"):
         text = "Only shops you have bought from before"
     elif f == "merchant.merchant_country":
         where = COUNTRY_NAMES.get(str(v), str(v))
@@ -281,6 +282,25 @@ def _kind(spec: RuleSpec) -> RuleKind:
     if spec.field == "authorization.billing_amount_chf" and spec.scope == "period":
         return "period"
     return FIELDS[spec.field][2]
+
+
+def describe_rule(
+    field: str, operator: str, value: Any, *, currency: str | None = None, scope: str | None = None,
+    period_days: int | None = None, on_fail: str = "decline",
+) -> str | None:
+    """The customer-facing check text for a typed rule that did not come from this compiler
+    (a platform mandate's ``hard_rules``): the same wording a compiled rule gets, limits
+    in the api-contract §3.9 form. None when the rule is outside the vocabulary."""
+    field = "merchant.familiar_on_card" if field == "merchant.known_shop" else field
+    if field not in FIELDS:
+        return None
+    try:
+        spec = RuleSpec(field=field, operator=operator, value=value, currency=currency, scope=scope,
+                        period_days=period_days, on_fail=on_fail,
+                        words=", ".join(map(str, value)) if isinstance(value, list) else str(value))
+        return rule_text(spec)
+    except (ValueError, KeyError, TypeError, ArithmeticError):
+        return None
 
 
 def to_rule(spec: RuleSpec, taken: set[str], requested_item: str | None = None) -> Rule:
