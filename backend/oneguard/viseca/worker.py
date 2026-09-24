@@ -1041,10 +1041,11 @@ class VisecaWorker:
     async def stop(self) -> None:
         """Stop polling and cancel expiry timers (pending step-ups are recovered on start).
 
-        Waits up to ``STOP_DRAIN_S`` for the engine thread's current work, then closes any
-        ledger session still open, so no pooled connection outlives the worker, and gives
-        the worker lease up.
+        Waits up to ``STOP_DRAIN_S`` for the engine thread's current work, writes the rows
+        of the runs it drove, then closes any ledger session still open, so no pooled
+        connection outlives the worker, and gives the worker lease up.
         """
+        leading = self._state in ("polling", "degraded")
         tasks = [
             t
             for t in [self._task, self._sync_task, self._bootstrap_task, *self._expiry.values(), *self._background]
@@ -1064,6 +1065,8 @@ class VisecaWorker:
             )
         except TimeoutError:
             log.warning("the engine thread is still busy after %s s; closing its ledger session", STOP_DRAIN_S)
+        if leading:
+            await asyncio.to_thread(self._save_runs_while_held)
         close = getattr(self._ledger, "close", None)
         if callable(close):
             close()
@@ -2492,6 +2495,21 @@ class VisecaWorker:
             row.finished_at = run.finished_at
             row.worker_last_poll_at = self._last_poll_at or row.worker_last_poll_at
             row.last_error = run.last_error
+
+    def _save_runs_while_held(self) -> None:
+        """At stop: write every run's row once more. The loop writes a row a step after it
+        changes the run in memory (after the feed read that follows a decision, after the
+        profiles of a closed run), so a stop in between would leave the store behind what
+        this worker decided, and D7 after a restart reads the row. Only while this process
+        still holds the lease: after that the rows are the holder's."""
+        try:
+            if not self._lease.held():
+                return
+            for run in list(self._runs.values()):
+                self._save_run(run)
+        except Exception as exc:
+            log.exception("writing the run rows at stop failed")
+            self._note_error(f"run rows not written at stop: {type(exc).__name__}: {exc}")
 
     def _run_counts(self, s: Session, run_id: str) -> RunCounts:
         """Events received for the run (``events_raw``); decisions recorded and step-ups
