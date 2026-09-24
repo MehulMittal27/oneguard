@@ -35,6 +35,7 @@ from oneguard.compiler.parser import (
     _STRICT_BEFORE,
     ASK_IF_CHANGED,
     NUMBER_WORDS,
+    with_shared_currency,
 )
 from oneguard.engine.types import Rule
 
@@ -71,7 +72,9 @@ class LintResult(BaseModel):
 
 
 def _stated_amounts(text: str) -> list[tuple[Decimal, str | None]]:
-    """(value, expected operator) for each amount in the instruction."""
+    """(value, expected operator) for each amount in the instruction ("and 300 a week"
+    after a CHF amount is CHF too)."""
+    text = with_shared_currency(text)
     out = []
     for m in _AMOUNT.finditer(text):
         raw = (m.group("num") or m.group("num2")).replace(",", "").replace("'", "")
@@ -86,6 +89,13 @@ def _stated_amounts(text: str) -> list[tuple[Decimal, str | None]]:
             op = None
         out.append((Decimal(raw), op))
     return out
+
+
+def stated_boundary(text: str, value: Decimal) -> str | None:
+    """T3: the one operator the customer's boundary words give this amount ("under" is
+    "<"), or None when the words give none or disagree."""
+    ops = {op for v, op in _stated_amounts(text) if v == value and op}
+    return ops.pop() if len(ops) == 1 else None
 
 
 def _numbers_in(text: str) -> set[Decimal]:
