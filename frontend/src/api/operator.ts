@@ -1,4 +1,4 @@
-import type { ReplayStatus } from './types'
+import type { LiveRun } from './types'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 
@@ -14,12 +14,13 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
  * mode nothing *is* running — the decisions come from a fixture, not a replay.
  * Inventing counters here would put a number on screen that stands for nothing.
  */
-export async function getReplayStatus(): Promise<ReplayStatus | null> {
+export async function getCurrentRun(): Promise<LiveRun | null> {
   if (import.meta.env.VITE_USE_MOCKS === 'true') return null
 
-  const response = await fetch(`${API_BASE_URL}/dev/replay`)
-  if (!response.ok) throw new Error(`Failed to read replay status (${response.status})`)
-  return (await response.json()) as ReplayStatus
+  const response = await fetch(`${API_BASE_URL}/dev/runs/current`)
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error(`Failed to read current run (${response.status})`)
+  return (await response.json()) as LiveRun
 }
 
 /**

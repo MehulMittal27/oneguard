@@ -1,32 +1,30 @@
 import { useEffect, useState } from 'react'
-import { getReplayStatus, setSoftSignals } from '../api/operator'
-import type { ReplayStatus } from '../api/types'
+import { getCurrentRun, setSoftSignals } from '../api/operator'
+import type { LiveRun } from '../api/types'
 import { DECISIONS_POLL_SECONDS } from '../config'
 
 /**
  * P3-2's demo affordance: a thin operator strip behind `?demo=1`, showing the
- * current run's counters and a chaos toggle (D1, D5).
+ * current run's counters and a chaos toggle (D5, D7).
  *
  * Not a customer surface: opt-in by query param, above the app rather than in
  * any screen, and it shows engine plumbing the customer has no reason to see.
  *
- * Reads D1, not D4. D4 (`/api/dev/runs/{run_id}`) is the richer live view but
- * needs a `run_id` only D3 produces out of band, and who creates that run is
- * still open with P1. D1 needs no id, so the strip works today and gains the
- * live counters once that is settled.
+ * Reads D7 (`/api/dev/runs/current`), which avoids making the operator supply a
+ * run id and exposes the worker's decided and pending counters directly.
  */
 export function OperatorStrip() {
-  const [replay, setReplay] = useState<ReplayStatus | null>(null)
+  const [run, setRun] = useState<LiveRun | null>(null)
   const [signalsOn, setSignalsOn] = useState(true)
   const [unreachable, setUnreachable] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     const read = () => {
-      getReplayStatus()
-        .then((status) => {
+      getCurrentRun()
+        .then((currentRun) => {
           if (cancelled) return
-          setReplay(status)
+          setRun(currentRun)
           setUnreachable(false)
         })
         .catch(() => {
@@ -61,18 +59,18 @@ export function OperatorStrip() {
 
       {unreachable ? (
         <span>backend unreachable</span>
-      ) : replay ? (
+      ) : run ? (
         <>
           <span className="tabular-nums">
-            {replay.scenario_id} · {replay.card_id}
+            {run.scenario_id} · {run.card_id}
           </span>
           <span className="tabular-nums">
-            {replay.delivered}/{replay.total} delivered
+            {run.decided}/{run.total} decided · {run.pending_human} pending
           </span>
-          <span>{replay.running ? 'running' : 'idle'}</span>
+          <span>{run.state}</span>
         </>
       ) : (
-        <span>no replay running</span>
+        <span>no run</span>
       )}
 
       <button
