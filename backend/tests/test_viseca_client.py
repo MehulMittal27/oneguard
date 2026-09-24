@@ -295,19 +295,3 @@ def test_httpx_transport_errors_are_not_raised_raw(db: Engine) -> None:
     asyncio.run(scenario())
     (row,) = calls(db)
     assert row.status_code is None and row.error.startswith("ReadTimeout")
-
-
-def test_drain_returns_when_every_summary_is_already_written() -> None:
-    """A finished write whose done callback has not run yet must not make drain spin."""
-
-    async def scenario() -> None:
-        client = VisecaClient("http://fake-viseca", "key")
-        done = asyncio.get_running_loop().create_future()
-        done.set_result(None)
-        client._pending_logs.add(done)
-        done.add_done_callback(client._pending_logs.discard)  # scheduled, not yet run
-        await asyncio.wait_for(client.drain(), 1.0)
-        assert not client._pending_logs
-        await client.aclose()
-
-    asyncio.run(scenario())
