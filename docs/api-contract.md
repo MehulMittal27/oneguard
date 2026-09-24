@@ -199,11 +199,11 @@ Decision {
   confirmable?: { rule_id: string, phrase: string } | null,  // NEW: step-up decided by one `unverifiable` rule
                                               // (§3.3); phrase = its value. Approving can be remembered for the shop
   run_id?: string,                            // NEW: the run this decision belongs to (decisions.run_id); C6 sends it
-  run_started_at?: string                     // NEW: that run's start, REAL clock (runs.started_at); C6 sends it
-  policy_applied?: { mandate_id: string,        // NEW: the policy this decision was checked against
+  run_started_at?: string,                    // NEW: that run's start, REAL clock (runs.started_at); C6 sends it
+                                              // when the run has a `runs` row. The UI lists a card's newest run
+  policy_applied?: { mandate_id: string,      // NEW: the policy this decision was checked against
                      source: 'confirmed' | 'platform',   // platform = the Viseca mandate's own rules (no confirmed policy bound)
                      checks: RuleCheck[] } | null,       // what decided, whatever the card's policy is now
-                                              // when the run has a `runs` row. The UI lists a card's newest run
 }
 
 Evidence  { rule: string,                     // which check or signal
