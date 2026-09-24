@@ -55,7 +55,8 @@ reads it to build `Decision` responses and `Mandate.usage`. Nobody else writes i
 - `store/history.py` (P1) implements `engine.types.HistoryIndex` over `authorization_history`:
   `known_merchants(customer_id)`, `known_devices(customer_id)`, `known_countries(customer_id)`,
   `max_approved(customer_id)`, `last_price(customer_id, merchant_id)`,
-  `recent_rows(card_id, days)` for the dry-run, `merchant_names_normalised()` for A7,
+  `recent_rows(card_id, days)` for the dry-run, `merchant_names_normalised()` and
+  `merchant_names(ids)` (catalogue names, unknown ids left out) for A7,
   `agent_history(customer_id) -> (attempts, approved)` for the policy screen,
   `item_price_range(item_id) -> (min, typical, max)` for W6.
   Refunds and cash withdrawals are excluded from familiarity; card-level counts are also

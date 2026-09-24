@@ -108,15 +108,8 @@ def _a2(facts: Facts) -> Signal:
 
 
 def _may_be_approved(prior: PriorDecision) -> bool:
-    """A final approval or a pending step-up (A3, A4).
-
-    A step-up the customer has answered is ``final`` with outcome ``step_up`` whether
-    they approved or declined it; PriorDecision does not say which. It is counted, so
-    the check can only become more cautious (P5).
-    """
-    if prior.outcome == "approve":
-        return prior.final
-    return prior.outcome == "step_up"
+    """A final approval (including an approved step-up) or a pending step-up (A3, A4)."""
+    return prior.approved or (prior.outcome == "step_up" and not prior.final)
 
 
 def _earlier(facts: Facts, ledger: LedgerView, window: timedelta) -> list[PriorDecision]:
@@ -288,8 +281,6 @@ def lookalike(facts: Facts, known_names: Mapping[str, str]) -> tuple[str, int] |
 def _a7(facts: Facts, policy: Policy, known_names: Mapping[str, str] | None) -> Signal:
     outcome = "decline" if policy.requires_known_shop else "ask"
     if known_names is None:
-        # LedgerView carries known merchant ids but not their names; the comparison
-        # waits for that field (contract request). C9 still stops unknown shops.
         return Signal(
             id="A7", triggered=False, strength="protection", outcome_if_triggered=outcome,
             detail="Lookalike check not run: known shop names are not available.", source="ledger",
@@ -329,4 +320,4 @@ def evaluate(
 
 @register("protections")
 def protections(facts: Facts, policy: Policy, ledger: LedgerView) -> list[Signal]:
-    return evaluate(facts, policy, ledger)
+    return evaluate(facts, policy, ledger, ledger.known_merchant_names)

@@ -83,7 +83,7 @@ def build_facts(event: dict, history: "HistoryIndex") -> Facts: ...             
 def evaluate_rules(facts: Facts, policy: Policy) -> list[RuleResult]: ...           # P2 policy.py
 def resolve_unknowns(facts: Facts, rules: list[RuleResult], provider, budget_s: float) -> Facts: ...  # P4 tier2.py
 def protections(facts: Facts, policy: Policy, ledger: LedgerView) -> list[Signal]: ...   # P5 protections.py
-def warning_signs(facts: Facts, ledger: LedgerView) -> list[Signal]: ...            # P5 warnings.py
+def warning_signs(facts: Facts, ledger: LedgerView, policy: Policy) -> list[Signal]: ...  # P5 warnings.py
 def soft_signals(facts: Facts, budget_s: float) -> list[Signal]: ...                # P5 signals.py
 def decide(rules: list[RuleResult], protections_: list[Signal], warnings_: list[Signal],
            soft: list[Signal], policy: Policy, ledger: LedgerView) -> EngineDecision: ...  # P2 decide.py
@@ -118,10 +118,10 @@ class Rule:                    id, field, operator, value, currency, scope, peri
 class Policy:                  mandate_id, instruction, rules: list[Rule], uncertainty_policy, requested_item: str | None,
                                allowed_item_categories, blocked_item_categories, requires_known_shop: bool,
                                nothing_extra: bool, shop_type: str | None
-class PriorDecision:           authorization_id, timestamp, outcome, final, merchant_id, item_ids: list, billing_amount_chf, reserved: bool
+class PriorDecision:           authorization_id, timestamp, outcome, final, approved: bool, merchant_id, item_ids: list, billing_amount_chf, reserved: bool
 class LedgerView:              period_spent_chf, period_reserved_chf, period_window_start, priors: list[PriorDecision],
-                               known_merchant_ids: set, known_device_ids: set, known_countries: set,
-                               max_approved_chf: float, flagged_merchant_ids: set, frozen: bool
+                               known_merchant_ids: set, known_merchant_names: dict[str, str], known_device_ids: set, known_countries: set,
+                               max_approved_chf: float, flagged_merchant_ids: set, frozen: bool, confirmed_keys: set
 class RuleResult:              rule_id, outcome: RuleOutcome, detail, counterfactual: str | None, source: FactSource
 class Signal:                  id (A1..A7, W1..W6, S_agent_directed), triggered: bool, strength: Literal["strong","weak","protection"],
                                outcome_if_triggered: Literal["ask","decline","info"], detail, source, related: tuple[str, str] | None

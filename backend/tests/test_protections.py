@@ -53,17 +53,19 @@ def facts(items=None, amount=100.0, at=T0, merchant="ME1", name="Pixel Harbor",
 
 
 def prior(auth="LIVE-1", at=T0 - timedelta(hours=1), outcome="approve", final=True,
-          merchant="ME1", items=("IT1",), amount=100.0, reserved=False) -> PriorDecision:  # fmt: skip
+          merchant="ME1", items=("IT1",), amount=100.0, reserved=False, approved=None) -> PriorDecision:  # fmt: skip
     return PriorDecision(
         authorization_id=auth, timestamp=at, outcome=outcome, final=final, merchant_id=merchant,
         item_ids=list(items), billing_amount_chf=amount, reserved=reserved,
+        approved=outcome == "approve" and final if approved is None else approved,
     )  # fmt: skip
 
 
-def view(priors=(), flagged=()) -> LedgerView:
+def view(priors=(), flagged=(), names=None) -> LedgerView:
     return LedgerView(
         period_spent_chf=0, period_reserved_chf=0, period_window_start=T0, priors=list(priors),
         known_merchant_ids={"ME1"}, known_merchant_ids_on_card={"ME1"}, known_device_ids={"DVC-1"},
+        known_merchant_names=dict(names or {}),
         known_countries={"CH"}, max_approved_chf=500.0, flagged_merchant_ids=set(flagged), frozen=False,
     )  # fmt: skip
 
@@ -171,6 +173,12 @@ def test_a3_counts_approvals_and_pending_step_ups_but_not_declines():
     assert not signal(run(v=view([prior(outcome="decline")])), "A3").triggered
 
 
+@pytest.mark.parametrize(("approved", "fires"), [(True, True), (False, False)])
+def test_a3_counts_an_answered_step_up_only_if_the_customer_approved_it(approved, fires):
+    answered = prior(outcome="step_up", final=True, approved=approved)
+    assert signal(run(v=view([answered])), "A3").triggered is fires
+
+
 def test_a3_names_the_earlier_order():
     a3 = signal(run(v=view([prior(auth="LIVE-7")])), "A3")
     assert a3.related == ("LIVE-7", "duplicate_of") and a3.outcome_if_triggered == "ask"
@@ -198,6 +206,14 @@ def test_a4_window_is_ten_minutes_inclusive(minutes, fires):
 def test_a4_boundary_follows_the_limit_wording():
     assert not _split(5, 60.0, 60.0).triggered  # 120 at or below 120: fits
     assert _split(5, 60.0, 60.0, limit_rule(120, "<")).triggered  # "under 120": 120 does not
+
+
+def test_a4_counts_an_answered_step_up_only_if_the_customer_approved_it():
+    f = facts(amount=65.0, items=[line(item_id="IT2", price=65.0)])
+    at = T0 - timedelta(minutes=5)
+    for approved in (True, False):
+        v = view([prior(at=at, amount=70.0, outcome="step_up", final=True, approved=approved)])
+        assert signal(run(f, policy([limit_rule(120)]), v), "A4").triggered is approved
 
 
 def test_a4_needs_a_stated_per_order_limit():
@@ -289,3 +305,10 @@ def test_registered_protections_is_the_interface_function():
     from oneguard.engine.interfaces import load_implementations
 
     assert load_implementations()["protections"] is P.protections
+
+
+def test_registered_protections_runs_a7_on_the_ledgers_known_merchant_names():
+    f = facts(merchant="ME59", name="PixelHarbour")
+    assert signal(P.protections(f, policy(), view(names={"ME1": "PixelHarbor"})), "A7").triggered
+    a7 = signal(P.protections(f, policy(), view()), "A7")
+    assert not a7.triggered and "not run" not in a7.detail, "no known names: checked, nothing close"

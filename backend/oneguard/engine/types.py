@@ -10,7 +10,7 @@ simulated purchase time is ``Facts.timestamp`` (M6).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 from typing import Literal, Protocol, runtime_checkable
 
@@ -203,6 +203,8 @@ class PriorDecision(_Model):
     """An earlier decision in this run, as the ledger remembers it (A3, A4, A5, M4, M5).
 
     ``final`` is True for approvals and declines, and for step-ups once answered.
+    ``approved`` is True for a final approval, including a step-up the customer
+    approved; pending, declined and expired step-ups are False (A3, A4).
     ``reserved`` is True while a step-up is pending (M5).
     """
 
@@ -210,6 +212,7 @@ class PriorDecision(_Model):
     timestamp: AwareDatetime
     outcome: Outcome
     final: bool
+    approved: bool
     merchant_id: str
     item_ids: list[str]
     billing_amount_chf: float
@@ -217,16 +220,20 @@ class PriorDecision(_Model):
 
 
 class LedgerView(_Model):
-    """The ledger's state as of one purchase (C2, C9, M4, M5, M7, A1, A3, A4, W1, W3, W4).
+    """The ledger's state as of one purchase (C2, C9, M4, M5, M7, A1, A3, A4, A7, W1, W3, W4).
 
     Built by ``Ledger.view`` from the ``decisions`` table (this run) and HistoryIndex
     (history). ``period_spent_chf`` counts final approvals only; pending step-ups are
     in ``period_reserved_chf``. Known sets are history ∪ this run's final approvals:
     ``known_merchant_ids`` is customer level (Q7), ``known_merchant_ids_on_card`` card
-    level. ``merchant_approvals_on_card`` / ``merchant_approvals_other_cards`` count
+    level. ``known_merchant_names`` maps every id in ``known_merchant_ids`` that the
+    catalogue names to that name (A7); an id without a catalogue name is left out.
+    ``merchant_approvals_on_card`` / ``merchant_approvals_other_cards`` count
     approved purchases per ``merchant_id`` for ``Decision.merchant_meta``.
     ``max_approved_chf`` is ``None`` when the customer has no approved purchase (W4).
     ``flagged_merchant_ids`` carries A1 info evidence to later purchases.
+    ``confirmed_keys`` are remembered customer confirmations, ``rule|merchant|item``,
+    only for restrictions no data can check.
     """
 
     period_spent_chf: float
@@ -235,6 +242,7 @@ class LedgerView(_Model):
     priors: list[PriorDecision]
     known_merchant_ids: set[str]
     known_merchant_ids_on_card: set[str]
+    known_merchant_names: dict[str, str] = Field(default_factory=dict)
     merchant_approvals_on_card: dict[str, int] = Field(default_factory=dict)
     merchant_approvals_other_cards: dict[str, int] = Field(default_factory=dict)
     known_device_ids: set[str]
@@ -242,6 +250,7 @@ class LedgerView(_Model):
     max_approved_chf: float | None
     flagged_merchant_ids: set[str]
     frozen: bool
+    confirmed_keys: set[str] = Field(default_factory=set)
 
 
 class RuleResult(_Model):
@@ -402,6 +411,13 @@ class HistoryIndex(Protocol):
 
     def merchant_names_normalised(self) -> Mapping[str, str]:
         """merchant_id → normalised merchant name for every catalogue shop (A7)."""
+        ...
+
+    def merchant_names(self, merchant_ids: Iterable[str]) -> dict[str, str]:
+        """merchant_id → catalogue name for each of ``merchant_ids`` in ``merchants`` (A7).
+
+        Ids the catalogue does not know are left out, never given an invented name.
+        """
         ...
 
     def agent_history(self, customer_id: str) -> tuple[int, int]:

@@ -75,6 +75,27 @@ class LedgerEntry(BaseModel):
     resolved_by: Literal["customer", "timeout"] | None = None
 
 
+def is_final_approval(outcome: str, final: bool, uncertain_outcome: str | None) -> bool:
+    """An approval, or a step-up the customer approved (``PriorDecision.approved``, A3, A4).
+
+    Pending, declined and expired step-ups are not.
+    """
+    return outcome == "approve" or (final and uncertain_outcome == "approved")
+
+
+def confirmation_key(rule_id: str, merchant_id: str, item_id: str) -> str:
+    """One remembered answer: this rule, at this shop, for this item (``confirmed_keys``)."""
+    return f"{rule_id}|{merchant_id}|{item_id}"
+
+
+def known_merchant_names(history: HistoryIndex | None, merchant_ids: set[str]) -> dict[str, str]:
+    """Catalogue names of the known merchants (``LedgerView.known_merchant_names``, A7).
+
+    Ids the catalogue does not name are left out, never given an invented name.
+    """
+    return history.merchant_names(merchant_ids) if history is not None else {}
+
+
 class Ledger(ABC):
     """Stateful memory of one deployment's decisions. Implementations take a store session."""
 
@@ -199,6 +220,7 @@ class InMemoryLedger(Ledger):
             if e.card_id != card_id:
                 other_cards[e.merchant_id] = other_cards.get(e.merchant_id, 0) + 1
 
+        known = set(on_card) | set(other_cards)
         maxima = [e.billing_amount_chf for e in approved]
         hist_max = self.history.max_approved(customer_id) if self.history else None
         if hist_max is not None:
@@ -218,12 +240,14 @@ class InMemoryLedger(Ledger):
                     item_ids=e.item_ids,
                     billing_amount_chf=e.billing_amount_chf,
                     reserved=e.reserved_chf > 0,
+                    approved=is_final_approval(e.outcome, e.final, e.uncertain_outcome),
                 )
                 for e in sorted(run, key=lambda e: e.ts_sim)
                 if e.ts_sim >= at - PRIOR_WINDOW
             ],
-            known_merchant_ids=set(on_card) | set(other_cards),
+            known_merchant_ids=known,
             known_merchant_ids_on_card=set(on_card),
+            known_merchant_names=known_merchant_names(self.history, known),
             merchant_approvals_on_card=on_card,
             merchant_approvals_other_cards=other_cards,
             known_device_ids=set(self.history.known_devices(customer_id)) if self.history else set(),
@@ -231,6 +255,13 @@ class InMemoryLedger(Ledger):
             max_approved_chf=max(maxima) if maxima else None,
             flagged_merchant_ids=set(self.flags.get(run_id, set())),
             frozen=False,
+            confirmed_keys={
+                confirmation_key(rule_id, e.merchant_id, item_id)
+                for e in run
+                if e.outcome == "step_up" and e.uncertain_outcome == "approved" and e.resolved_by == "customer"
+                for rule_id in e.deciding_ids
+                for item_id in e.item_ids
+            },
         )
 
     def reserve(self, authorization_id: str, amount_chf: float) -> None:

@@ -57,7 +57,12 @@ def _row(r: AuthorizationHistory) -> HistoryRow:
 
 
 class StoreHistoryIndex:
-    """In-memory implementation of ``engine.types.HistoryIndex``."""
+    """In-memory implementation of ``engine.types.HistoryIndex``.
+
+    ``merchant_names`` is merchant_id → catalogue name (``merchants.merchant_name``);
+    the normalised names for A7 are derived from it with ``normalise_merchant_name``,
+    the same function that fills ``merchants.name_normalised``.
+    """
 
     def __init__(
         self,
@@ -66,7 +71,10 @@ class StoreHistoryIndex:
         item_prices: Mapping[str, tuple[float, float, float]] | None = None,
     ) -> None:
         self._rows = sorted(rows, key=lambda r: (r.timestamp, r.authorization_id))
-        self._names = MappingProxyType(dict(merchant_names or {}))
+        self._names = dict(merchant_names or {})
+        self._names_normalised = MappingProxyType(
+            {m: normalise_merchant_name(name) for m, name in self._names.items()}
+        )
         self._prices = dict(item_prices or {})
         self._end = self._rows[-1].timestamp if self._rows else None
 
@@ -111,7 +119,7 @@ class StoreHistoryIndex:
     def load(cls, session: Session) -> StoreHistoryIndex:
         """Read history, merchant names and item prices from the store."""
         history = session.scalars(select(AuthorizationHistory)).all()
-        names = session.execute(select(Merchant.merchant_id, Merchant.name_normalised)).all()
+        names = session.execute(select(Merchant.merchant_id, Merchant.merchant_name)).all()
         items = session.scalars(select(Item)).all()
         return cls(
             rows=[_row(r) for r in history],
@@ -154,7 +162,10 @@ class StoreHistoryIndex:
         return [r for r in self._rows_by_card.get(card_id, []) if start < r.timestamp <= end]
 
     def merchant_names_normalised(self) -> Mapping[str, str]:
-        return self._names
+        return self._names_normalised
+
+    def merchant_names(self, merchant_ids: Iterable[str]) -> dict[str, str]:
+        return {m: self._names[m] for m in merchant_ids if m in self._names}
 
     def agent_history(self, customer_id: str) -> tuple[int, int]:
         return self._agent.get(customer_id, (0, 0))
