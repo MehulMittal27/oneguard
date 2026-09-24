@@ -81,7 +81,8 @@ class ItemFacts(_Model):
     """One cart line (C3, C4, C5, C6, C10, A3, A6, W6; M1, M2).
 
     ``item_name`` and ``item_details`` are untrusted shop text: facts come from them
-    only through the three FactValues. The catalogue range comes from ``items`` and is
+    only through the FactValues. ``size_eu`` is decimal (43.5 is a real size and is not
+    43); ``size_letter`` is XS-XXXL for clothing (C6). The catalogue range comes from ``items`` and is
     ``None`` when the ``item_id`` is not in the catalogue.
     """
 
@@ -94,7 +95,10 @@ class ItemFacts(_Model):
     currency: Currency
     unit_price_chf: float
     item_details: str
-    size_eu: FactValue[int]
+    size_eu: FactValue[float]
+    size_letter: FactValue[str] = Field(
+        default_factory=lambda: FactValue[str](known=False, source="regex", detail="not extracted")
+    )
     return_window_days: FactValue[int]
     recurring: FactValue[bool]
     unit_price_min_chf: float | None = None
@@ -150,7 +154,9 @@ class Rule(_Model):
     """One typed customer rule behind a RuleCheck (C1–C12, §10 T1–T4).
 
     ``field`` / ``operator`` / ``value`` / ``currency`` / ``scope`` / ``period_days``
-    use Viseca's rule format and the vocabulary of docs/api-contract.md §3.3. ``id``,
+    use Viseca's rule format and the vocabulary of docs/api-contract.md §3.3. ``on_fail``
+    is ``ask`` when the customer asked to be asked rather than declined ("same price as
+    last time, ask me if anything changed"): a broken rule is then unknown (C11). ``id``,
     ``text``, ``source``, ``kind`` and ``uncertainty`` are what the UI sees as a
     RuleCheck. ``value`` is never a boolean, null, object or list of numbers.
     """
@@ -166,6 +172,7 @@ class Rule(_Model):
     source: Literal["exact", "inferred"]
     kind: RuleKind | None = None
     uncertainty: str | None = None
+    on_fail: Literal["decline", "ask"] = "decline"
 
 
 class Policy(_Model):
