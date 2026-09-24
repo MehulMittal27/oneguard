@@ -3,6 +3,14 @@
 ``ONEGUARD_DATABASE_URL`` selects the database: unset → ``sqlite:///./oneguard.sqlite``;
 Supabase → the session-mode pooler URL (port 5432). ``postgres://`` and
 ``postgresql://`` URLs are pinned to the psycopg (v3) driver.
+
+Postgres connections (docs/database.md §5): at most ``POSTGRES_POOL_SIZE`` per process
+(no overflow), pre-pinged, TLS required unless the URL names an ``sslmode``, and
+``statement_timeout`` set with ``SET`` on every new connection, because the Supabase
+pooler (Supavisor) ignores the libpq ``options`` startup parameter.
+
+The URL carries the database password: never log or print it; render it with
+``url.render_as_string(hide_password=True)`` if it must appear anywhere.
 """
 
 from __future__ import annotations
@@ -23,13 +31,17 @@ POSTGRES_POOL_SIZE = 5
 POSTGRES_STATEMENT_TIMEOUT_MS = 5000
 
 
-def database_url() -> str:
-    """The configured URL, normalised to an explicit driver."""
-    url = os.environ.get(DATABASE_URL_ENV, "").strip() or DEFAULT_DATABASE_URL
+def normalise_url(url: str) -> str:
+    """``url`` with ``postgres://`` and ``postgresql://`` pinned to psycopg (v3)."""
     for prefix in ("postgres://", "postgresql://"):
         if url.startswith(prefix):
             return "postgresql+psycopg://" + url[len(prefix) :]
     return url
+
+
+def database_url() -> str:
+    """The configured URL, normalised to an explicit driver."""
+    return normalise_url(os.environ.get(DATABASE_URL_ENV, "").strip() or DEFAULT_DATABASE_URL)
 
 
 def _enable_sqlite_foreign_keys(dbapi_connection: Any, _record: Any) -> None:
@@ -38,23 +50,36 @@ def _enable_sqlite_foreign_keys(dbapi_connection: Any, _record: Any) -> None:
     cursor.close()
 
 
+def _set_postgres_statement_timeout(dbapi_connection: Any, _record: Any) -> None:
+    # Session-level and outside any transaction, so a pool reset (rollback) keeps it.
+    autocommit = dbapi_connection.autocommit
+    dbapi_connection.autocommit = True
+    try:
+        dbapi_connection.execute(f"SET statement_timeout = {POSTGRES_STATEMENT_TIMEOUT_MS}")
+    finally:
+        dbapi_connection.autocommit = autocommit
+
+
 def make_engine(url: str | None = None) -> Engine:
     """A new engine for ``url`` (default: ``database_url()``)."""
-    url = url or database_url()
-    backend = make_url(url).get_backend_name()
+    parsed = make_url(normalise_url(url or database_url()))
+    backend = parsed.get_backend_name()
     if backend == "sqlite":
         engine = create_engine(
-            url, pool_pre_ping=True, connect_args={"check_same_thread": False}
+            parsed, pool_pre_ping=True, connect_args={"check_same_thread": False}
         )
         event.listen(engine, "connect", _enable_sqlite_foreign_keys)
         return engine
     if backend == "postgresql":
-        return create_engine(
-            url,
+        engine = create_engine(
+            parsed,
             pool_pre_ping=True,
             pool_size=POSTGRES_POOL_SIZE,
-            connect_args={"options": f"-c statement_timeout={POSTGRES_STATEMENT_TIMEOUT_MS}"},
+            max_overflow=0,
+            connect_args={} if "sslmode" in parsed.query else {"sslmode": "require"},
         )
+        event.listen(engine, "connect", _set_postgres_statement_timeout)
+        return engine
     raise ValueError(f"unsupported database {backend!r}; use sqlite or postgresql+psycopg")
 
 
