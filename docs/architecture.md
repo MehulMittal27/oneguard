@@ -73,6 +73,8 @@ oneguard/
   schema-checked, stored in `events_raw`, decided by `pipeline.decide_event` within
   `ONEGUARD_ENGINE_BUDGET_MS` and posted before `deadline_at`. A step-up's deadline is the
   accepted time + the human window; an expiry task posts the timeout `/resolve` (rules Q2).
+  After a restart the worker re-arms that expiry only for pending step-ups of live runs
+  (`runs.kind = live`); a replay step-up was never posted to Viseca and gets none.
   All ledger and pipeline calls run on one dedicated thread. `VisecaWorker.status()` is the
   `/healthz` worker block: `state`, `ok`, `last_poll_at`, `events_cursor`,
   `human_window_s`, `pending_step_ups`, `history_reseeded`, `fx_rates_match`,

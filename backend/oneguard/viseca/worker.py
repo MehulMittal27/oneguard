@@ -831,25 +831,38 @@ class VisecaWorker:
             return StoreHistoryIndex.load(s)
 
     async def _recover_pending(self) -> None:
+        """Re-arm the expiry of every pending step-up from a live run.
+
+        Only ``runs.kind = live``: a replay step-up was never posted to Viseca, so a timeout
+        ``/resolve`` for it would only be refused (404); a run with no row is a replay, as
+        in the ledger.
+        """
         rows = await asyncio.to_thread(self._load_events)
-        for live_id, source_id, event in rows:
+        for live_id, source_id, event, kind in rows:
             self._events[live_id] = event
             self.source_ids[live_id] = source_id
             related = event.get("authorization", {}).get("related_authorization_id")
             if related:
                 self.related_ids[live_id] = related
+            if kind != "live":
+                continue
             entry = await self._engine(self.ledger.get, live_id)
             if entry is not None and entry.outcome == "step_up" and not entry.final:
                 deadline = entry.deadline_at or self._now()
                 log.info("recovered pending step-up %s, closes at %s", live_id, deadline)
                 self._schedule_expiry(live_id, deadline)
 
-    def _load_events(self) -> list[tuple[str, str, dict[str, Any]]]:
+    def _load_events(self) -> list[tuple[str, str, dict[str, Any], str | None]]:
         with session(self._db_engine) as s:
             rows = s.execute(
-                select(EventRaw.live_authorization_id, EventRaw.source_authorization_id, EventRaw.event)
+                select(
+                    EventRaw.live_authorization_id,
+                    EventRaw.source_authorization_id,
+                    EventRaw.event,
+                    Run.kind,
+                ).outerjoin(Run, Run.run_id == EventRaw.run_id)
             ).all()
-        return [(r[0], r[1], r[2]) for r in rows]
+        return [(r[0], r[1], r[2], r[3]) for r in rows]
 
     # The loop ----------------------------------------------------------------------------
 

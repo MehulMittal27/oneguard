@@ -320,6 +320,57 @@ def test_an_unanswered_step_up_is_declined_at_the_window(db: Engine, history: St
     asyncio.run(scenario())
 
 
+def test_a_restart_rearms_expiry_only_for_live_step_ups(
+    db: Engine, history: StoreHistoryIndex, ledger_kind: str
+) -> None:
+    """A replay step-up was never posted to Viseca: after a restart it gets no expiry (so no
+    timeout ``/resolve``, which Viseca would refuse); the live one does."""
+
+    async def scenario() -> None:
+        async with harness(db, fast(), history=history) as (fake, client, first):
+            await first.start()
+            _, run_id = await start_run(client, first, "SCEN0000")
+            (auth,) = fake.runs[run_id].auths
+            await wait_until(lambda: auth.status == "pending")
+            (live,) = await first.ledger_entries([auth.live_id])
+            assert live.outcome == "step_up" and not live.final
+            await first.stop()
+
+            # the same purchase, pending in a replay run (runs.kind = replay)
+            replay_id, replay_run = "replay-" + auth.live_id, "run_replay"
+            with session(db) as s:
+                live_run = s.get(Run, live.run_id)
+                live_event = s.get(EventRaw, auth.live_id)
+                assert live_run is not None and live_run.kind == "live" and live_event is not None
+                s.add(Run(run_id=replay_run, viseca_run_id=None, kind="replay",
+                          scenario_id=live_run.scenario_id, mandate_id=live_run.mandate_id,
+                          card_id=live_run.card_id, state="running", delivered=1, decided=1,
+                          pending_human=1, total=1, started_at=live_run.started_at))  # fmt: skip
+                s.add(EventRaw(live_authorization_id=replay_id, run_id=replay_run,
+                               source_authorization_id=live_event.source_authorization_id,
+                               received_at=live_event.received_at, deadline_at=live_event.deadline_at,
+                               event=live_event.event))  # fmt: skip
+            ledger = first.ledger if ledger_kind == "memory" else worker_module.default_ledger(db, history)
+            ledger.record(live.model_copy(update={"live_authorization_id": replay_id, "run_id": replay_run}))
+            pending = [ledger.get(i) for i in (auth.live_id, replay_id)]
+            assert all(e is not None and e.outcome == "step_up" and not e.final for e in pending)
+
+            second = VisecaWorker(
+                fake_client(fake, db), db=db, history=history, ledger=ledger,
+                **ALL_STUBS, poll_wait_s=0.2,
+            )  # fmt: skip
+            try:
+                await second.start()
+                assert set(second._expiry) == {auth.live_id}
+                assert second.status().pending_step_ups == 1
+            finally:
+                await second.stop()
+                await second.client.aclose()
+            assert not auth.resolutions
+
+    asyncio.run(scenario())
+
+
 def test_the_worker_keeps_polling_while_step_ups_pend(db: Engine, history: StoreHistoryIndex) -> None:
     async def scenario() -> None:
         seen: list[api.Decision] = []
