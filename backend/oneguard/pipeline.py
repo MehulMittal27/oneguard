@@ -1,0 +1,309 @@
+"""One event in, one explained decision out (docs/rules.md §4, §4a; api-contract §3.4).
+
+``decide_event`` calls the lane functions in this order:
+
+1. redelivery of a stored live ``authorization_id`` → the stored result, nothing counted (M7)
+2. ``build_facts``
+3. ``Ledger.view``; ``facts.merchant_known`` / ``merchant_known_on_card`` from it (Q7, C9)
+4. ``evaluate_rules``
+5. ``resolve_unknowns`` only if a rule is unknown and a provider is configured (tier 2),
+   then ``evaluate_rules`` again on the new facts
+6. ``protections``, ``warning_signs``, ``soft_signals`` (only when signals are enabled)
+7. ``decide``, then ``explain``
+8. ``Ledger.record`` (and ``flag_merchant`` when A1 triggered)
+9. mapped to the API ``Decision``
+
+Functions are resolved by name through ``engine/stubs.py`` (``ONEGUARD_STUBS``). Tier 2
+and soft signals are optional: when they fail or run out of the internal budget
+(``ONEGUARD_ENGINE_BUDGET_MS``, D3) the decision is made without them, which can only
+be more cautious (P8). Tier 3 runs after posting and is not called here.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import time
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from oneguard import __version__
+from oneguard.api import models as api
+from oneguard.engine import stubs
+from oneguard.engine.ledger_base import Ledger, LedgerEntry
+from oneguard.engine.types import (
+    EngineDecision,
+    Explanation,
+    Facts,
+    HistoryIndex,
+    LedgerView,
+    Policy,
+    RuleResult,
+    Signal,
+)
+from oneguard.llm.provider import Provider, provider_available
+
+log = logging.getLogger(__name__)
+
+BUDGET_ENV = "ONEGUARD_ENGINE_BUDGET_MS"
+DEFAULT_BUDGET_MS = 2000
+TIER2_MAX_S = 1.5
+SOFT_SIGNALS_MAX_S = 0.5
+HUMAN_WINDOW_S = 120
+
+_API_DECISION = {"approve": "approved", "decline": "stopped", "step_up": "uncertain"}
+_SESSION_NOTES = {
+    "normal": "Nothing unusual about how this purchase was made.",
+    "elevated": "Something about how this purchase was made was unusual, so it needs your OK.",
+    "frozen": "Several warning signs at once; the next purchase needs your OK before it goes through.",
+}
+
+
+def budget_ms_from_env() -> int:
+    raw = os.environ.get(BUDGET_ENV, "").strip()
+    return int(raw) if raw else DEFAULT_BUDGET_MS
+
+
+@dataclass
+class PipelineContext:
+    """Everything ``decide_event`` needs besides the event.
+
+    ``policy`` is our confirmed mandate for the card; ``ledger`` and ``history`` are the
+    run's state. ``human_window_s`` comes from Viseca ``/v1/bootstrap`` (api-contract
+    §3.5); the worker may overwrite ``deadline_at`` with the accepted time. ``now`` is
+    the real clock (deadlines only, never windows).
+    """
+
+    policy: Policy
+    ledger: Ledger
+    history: HistoryIndex
+    run_id: str
+    provider: Provider | None = None
+    signals_enabled: bool = False
+    budget_ms: int = field(default_factory=budget_ms_from_env)
+    human_window_s: int = HUMAN_WINDOW_S
+    implementations: Mapping[str, Callable[..., Any]] | None = None
+    stubbed: frozenset[str] | None = None
+    now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+
+    @property
+    def functions(self) -> Mapping[str, Callable[..., Any]]:
+        return self.implementations if self.implementations is not None else stubs.ACTIVE
+
+    @property
+    def engine_version(self) -> str:
+        stubbed = self.stubbed if self.stubbed is not None else (
+            frozenset() if self.implementations is not None else stubs.STUBBED
+        )
+        version = f"oneguard/{__version__} signals={'on' if self.signals_enabled else 'off'}"
+        if stubbed:
+            names = "all" if stubbed >= set(stubs.STUBS) else ",".join(sorted(stubbed))
+            version += f" stubs={names}"
+        return version
+
+
+def _period_days(policy: Policy) -> int | None:
+    days = [r.period_days for r in policy.rules if r.scope == "period" and r.period_days]
+    return min(days) if days else None
+
+
+def _optional_stage(name: str, fn: Callable[[], Any], fallback: Any) -> Any:
+    try:
+        return fn()
+    except Exception:  # an optional tier must never break the decision (D3, P8)
+        log.exception("%s failed; deciding without it", name)
+        return fallback
+
+
+def decide_event(
+    event: dict, ctx: PipelineContext
+) -> tuple[EngineDecision, Explanation, api.Decision]:
+    """Decide one ``authorization.request`` event (already schema-validated)."""
+    started = time.perf_counter()
+    fn = ctx.functions
+    auth = event["authorization"]
+    customer_id = event["mandate"]["customer_id"]
+    card_id = auth["card_id"]
+
+    stored = ctx.ledger.get(auth["authorization_id"])
+    if stored is not None:
+        view = ctx.ledger.view(
+            run_id=stored.run_id,
+            customer_id=customer_id,
+            card_id=card_id,
+            at=stored.ts_sim,
+            period_days=_period_days(ctx.policy),
+        )
+        engine, explanation = _from_entry(stored)
+        return engine, explanation, to_api_decision(event, stored, view)
+
+    def remaining_s() -> float:
+        return max(0.0, ctx.budget_ms / 1000 - (time.perf_counter() - started))
+
+    facts: Facts = fn["build_facts"](event, ctx.history)
+    view: LedgerView = ctx.ledger.view(
+        run_id=ctx.run_id,
+        customer_id=customer_id,
+        card_id=card_id,
+        at=facts.timestamp,
+        period_days=_period_days(ctx.policy),
+    )
+    facts = facts.model_copy(
+        update={
+            "merchant_known": facts.merchant_id in view.known_merchant_ids,
+            "merchant_known_on_card": facts.merchant_id in view.known_merchant_ids_on_card,
+        }
+    )
+    rules: list[RuleResult] = fn["evaluate_rules"](facts, ctx.policy)
+
+    if any(r.outcome == "unknown" for r in rules) and provider_available(ctx.provider):
+        budget = min(TIER2_MAX_S, remaining_s())
+        resolved = _optional_stage(
+            "resolve_unknowns",
+            lambda: fn["resolve_unknowns"](facts, rules, ctx.provider, budget),
+            facts,
+        )
+        if resolved is not facts:
+            facts = resolved
+            rules = fn["evaluate_rules"](facts, ctx.policy)
+
+    protections: list[Signal] = fn["protections"](facts, ctx.policy, view)
+    warnings: list[Signal] = fn["warning_signs"](facts, view)
+    soft: list[Signal] = []
+    if ctx.signals_enabled:
+        budget = min(SOFT_SIGNALS_MAX_S, remaining_s())
+        soft = _optional_stage("soft_signals", lambda: fn["soft_signals"](facts, budget), [])
+
+    engine: EngineDecision = fn["decide"](rules, protections, warnings, soft, ctx.policy, view)
+    explanation: Explanation = fn["explain"](
+        engine, facts, ctx.policy, rules, [*protections, *warnings, *soft]
+    )
+    latency_ms = round((time.perf_counter() - started) * 1000, 3)
+
+    decided_at = ctx.now()
+    pending = engine.outcome == "step_up"
+    entry = LedgerEntry(
+        live_authorization_id=facts.authorization_id,
+        run_id=ctx.run_id,
+        mandate_id=ctx.policy.mandate_id,
+        card_id=card_id,
+        customer_id=customer_id,
+        ts_sim=facts.timestamp,
+        outcome=engine.outcome,
+        final=not pending,
+        uncertain_outcome="pending" if pending else None,
+        merchant_id=facts.merchant_id,
+        item_ids=[item.item_id for item in facts.items],
+        billing_amount_chf=facts.billing_amount_chf,
+        related_live_id=engine.related[0] if engine.related else None,
+        relation=engine.related[1] if engine.related else None,
+        session_trust=engine.session_trust,
+        step=engine.step,
+        deciding_ids=engine.deciding_ids,
+        reason_codes=engine.reason_codes,
+        evidence=explanation.evidence,
+        message=explanation.message,
+        counterfactual=explanation.counterfactual,
+        explanation_source=explanation.source,
+        injection_flag=explanation.injection_flag,
+        engine_version=ctx.engine_version,
+        latency_ms=latency_ms,
+        signals_enabled=ctx.signals_enabled,
+        decided_at=decided_at,
+        deadline_at=decided_at + timedelta(seconds=ctx.human_window_s) if pending else None,
+    )
+    stored = ctx.ledger.record(entry)
+    for signal in protections:
+        if signal.id == "A1" and signal.triggered:
+            ctx.ledger.flag_merchant(ctx.run_id, facts.merchant_id, signal.detail, decided_at)
+
+    # The stored entry is the truth: under a concurrent redelivery it is the first one.
+    engine, explanation = _from_entry(stored)
+    return engine, explanation, to_api_decision(event, stored, view)
+
+
+def _from_entry(entry: LedgerEntry) -> tuple[EngineDecision, Explanation]:
+    related = (entry.related_live_id, entry.relation) if entry.related_live_id and entry.relation else None
+    engine = EngineDecision(
+        outcome=entry.outcome,
+        reason_codes=entry.reason_codes,
+        step=entry.step,
+        deciding_ids=entry.deciding_ids,
+        related=related,
+        session_trust=entry.session_trust,
+    )
+    explanation = Explanation(
+        message=entry.message,
+        counterfactual=entry.counterfactual,
+        evidence=entry.evidence,
+        injection_flag=entry.injection_flag,
+        source=entry.explanation_source,
+    )
+    return engine, explanation
+
+
+def _uncertainty_note(entry: LedgerEntry) -> str:
+    for row in entry.evidence:
+        if row.outcome == "uncertain":
+            return row.detail
+    return entry.message
+
+
+def to_api_decision(event: dict, entry: LedgerEntry, view: LedgerView) -> api.Decision:
+    """The contract's ``Decision`` for a stored entry and the event it decided."""
+    auth = event["authorization"]
+    merchant = auth["merchant"]
+    step_up = entry.outcome == "step_up"
+    return api.Decision(
+        authorization_id=entry.live_authorization_id,
+        customer_id=entry.customer_id,
+        card_id=entry.card_id,
+        decision=_API_DECISION[entry.outcome],
+        uncertain_outcome=entry.uncertain_outcome if step_up else None,
+        status="pending_human" if entry.uncertain_outcome == "pending" else "final",
+        reason_codes=entry.reason_codes,
+        message=entry.message,
+        uncertainty=api.Uncertainty(note=_uncertainty_note(entry)) if step_up else None,
+        occurred_at=entry.ts_sim,
+        merchant=api.DecisionMerchant(
+            merchant_id=merchant["merchant_id"], name=merchant["merchant_name"]
+        ),
+        amount=auth["amount"],
+        currency=auth["currency"],
+        billing_amount_chf=auth["billing_amount_chf"],
+        items=[
+            api.DecisionItem(
+                item_name=line["item_name"],
+                quantity=line["quantity"],
+                unit_price=line["unit_price"],
+                currency=line["currency"],
+                item_details=line["item_details"],
+            )
+            for line in auth["items"]
+        ],
+        injection_flag=api.InjectionFlag.model_validate(entry.injection_flag)
+        if entry.injection_flag
+        else None,
+        evidence=[api.Evidence.model_validate(row.model_dump()) for row in entry.evidence],
+        order_returnable=auth["order_returnable"],
+        delivery_by=auth["delivery_by"],
+        deadline_at=entry.deadline_at if entry.uncertain_outcome == "pending" else None,
+        counterfactual=entry.counterfactual,
+        related=api.Related(authorization_id=entry.related_live_id, relation=entry.relation)
+        if entry.related_live_id and entry.relation
+        else None,
+        session=api.Session(trust=entry.session_trust, note=_SESSION_NOTES[entry.session_trust]),
+        merchant_meta=api.MerchantMeta(
+            category=merchant["merchant_category"],
+            country=merchant["merchant_country"],
+            familiar=entry.merchant_id in view.known_merchant_ids,
+            prior_approvals_on_card=view.merchant_approvals_on_card.get(entry.merchant_id, 0),
+            prior_approvals_other_cards=view.merchant_approvals_other_cards.get(entry.merchant_id, 0),
+        ),
+        engine_version=entry.engine_version,
+        latency_ms=entry.latency_ms,
+        explanation_source=entry.explanation_source,
+        resolved_by=entry.resolved_by,
+    )

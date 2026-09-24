@@ -213,7 +213,8 @@ expire — that is a broken state, not a degraded one.
   format. **The UI only ever sees `text`; `checks` sent back in C2 are treated as accepted
   ids.** Unknown id → 422. Edited text is ignored.
 - C2 re-lints the accepted subset. If the result has no per-purchase amount cap, or drops a
-  check whose `source` is `exact`, C2 returns `409 { error: 'lint_failed', reason, missing: [...] }`.
+  check whose `source` is `exact`, C2 returns 409 with the §3.8 envelope
+  `{ error: { code: 'lint_failed', message: <reason>, detail: { missing: [...] } } }`.
 - On success the backend does the Viseca dance: `POST /v1/mandates` (original instruction,
   `hard_rules`, `uncertainty_policy`, `guidance` = check texts, `open_questions`) then
   `POST /v1/mandates/{draft_id}/confirm`. The returned `TM…` id is stored; our `mandate_id`
@@ -334,6 +335,9 @@ Existing: `within_limits`, `rule_satisfied`, `per_order_limit_exceeded`,
 Added: `split_order_suspected`, `requote_accepted`, `already_fulfilled`,
 `recurring_charge_added`, `wrong_size`, `session_recovered`, `on_other_card`,
 `foreign_currency_converted` (info), `ledger_mismatch` (info), `period_reserved_pending`.
+
+Development only: `stub`, emitted only while `ONEGUARD_STUBS` stubs `decide`
+(`backend/oneguard/engine/stubs.py`); never in a live run.
 
 Any new code is added here before it is emitted. The UI maps codes to labels with a
 neutral fallback for unknown codes.

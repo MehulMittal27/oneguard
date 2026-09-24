@@ -14,6 +14,8 @@ dependencies = [
     "jsonschema",
     "pyyaml",
     "pandas",
+    "sqlalchemy>=2",
+    "psycopg[binary]",
 ]
 
 [project.optional-dependencies]

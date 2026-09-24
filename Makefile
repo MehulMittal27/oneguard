@@ -12,6 +12,15 @@ lint:
 	cd backend && . .venv/bin/activate && ruff check .
 	cd frontend && npm run lint
 
+check:
+	cd backend && . .venv/bin/activate && ruff check . && pytest -q
+
+seed:
+	cd backend && . .venv/bin/activate && python -m oneguard.store.seed
+
+reset-db:
+	cd backend && . .venv/bin/activate && python -m oneguard.store.seed --reset
+
 replay:
 	cd backend && . .venv/bin/activate && python -m oneguard.replay.runner --scenario $(SCEN)
 
@@ -35,4 +44,4 @@ demo-offline:
 demo-live:
 	cd backend && . .venv/bin/activate && python -m oneguard.viseca.demo --scenario $(SCEN)
 
-.PHONY: setup test lint replay replay-all dev build-frontend serve demo-offline demo-live
+.PHONY: setup test lint check seed reset-db replay replay-all dev build-frontend serve demo-offline demo-live
