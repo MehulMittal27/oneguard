@@ -157,5 +157,6 @@ def test_runner_decides_a_scenario_through_the_real_pipeline(capsys):
     for source_id, outcome, message, counterfactual in rows:
         assert message.startswith(("Approved CHF", "Declined CHF", "Waiting for you CHF")), source_id
         assert "[instructions removed]" not in message + counterfactual, source_id
-        if outcome == "decline":
-            assert counterfactual.strip(" |") and message.endswith(f"{counterfactual.strip(' |')[1:]}"), source_id
+        if outcome == "decline":  # the counterfactual is its own column, never inside the message
+            assert counterfactual.strip(" |").startswith("Would approve"), source_id
+            assert "Would approve" not in message, source_id

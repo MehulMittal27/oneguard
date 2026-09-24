@@ -30,7 +30,8 @@ from oneguard.engine.types import (
 )
 
 PRIOR_WINDOW = timedelta(hours=24)
-"""How far back ``LedgerView.priors`` reaches (A3 duplicate window)."""
+"""How far back ``LedgerView.priors`` reaches (A3 duplicate window). Declines are kept
+from the whole run, so a re-quote days later names the declined order (A5)."""
 
 
 class LedgerEntry(BaseModel):
@@ -299,7 +300,7 @@ class InMemoryLedger(Ledger):
                     approved=is_final_approval(e.outcome, e.final, e.uncertain_outcome),
                 )
                 for e in sorted(run, key=lambda e: e.ts_sim)
-                if e.ts_sim >= at - PRIOR_WINDOW
+                if e.ts_sim >= at - PRIOR_WINDOW or e.outcome == "decline"
             ],
             known_merchant_ids=known,
             known_merchant_ids_on_card=set(on_card),

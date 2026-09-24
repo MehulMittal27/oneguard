@@ -158,7 +158,7 @@ class StoreLedger(LedgerBase):
                     approved=is_final_approval(d.outcome, d.final, d.uncertain_outcome),
                 )
                 for d in run
-                if d.ts_sim >= at - PRIOR_WINDOW
+                if d.ts_sim >= at - PRIOR_WINDOW or d.outcome == "decline"  # declines: A5 re-quotes
             ],
             known_merchant_ids=known,
             known_merchant_ids_on_card=set(on_card),
