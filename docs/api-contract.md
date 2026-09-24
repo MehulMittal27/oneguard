@@ -154,7 +154,9 @@ Decision {
   engine_version?: string,                    // NEW
   latency_ms?: number,                        // NEW: engine wall time for this decision
   explanation_source?: 'template' | 'model', // NEW: who wrote `message` (rules.md §4a, tier 3)
-  resolved_by?: 'customer' | 'timeout'        // NEW: resolved step-ups only (§3.5)
+  resolved_by?: 'customer' | 'timeout',       // NEW: resolved step-ups only (§3.5)
+  confirmable?: { rule_id: string, phrase: string } | null   // NEW: step-up decided by one `unverifiable` rule
+                                              // (§3.3); phrase = its value. Approving can be remembered for the shop
 }
 
 Evidence  { rule: string,                     // which check or signal
@@ -282,9 +284,12 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 - The worker never blocks on a pending step-up; polling continues.
 - C8 after the window → 409. A GET of C6 after the window marks the decision
   `uncertain_outcome: 'expired'`, `status: 'final'` server-side (so a reload agrees). On
-  expiry the backend posts `/resolve` `decline`, message "No answer within 120 s; nothing
-  was approved", `resolved_by: timeout` (rules.md Q2). Not spent. A customer answer through
-  C8 sets `resolved_by: 'customer'`.
+  expiry the backend first reads the platform's state (`GET /v1/authorizations?run_id=`):
+  Viseca expires step-ups itself at the same moment, and if it already has, that result is
+  recorded and nothing is posted. Still pending → `/resolve` `decline`, message "No answer
+  within 120 s; nothing was approved", `resolved_by: timeout` (rules.md Q2); on a 409 the
+  state is read again and recorded. Never a second `/resolve` for the same id. Not spent. A
+  customer answer through C8 sets `resolved_by: 'customer'`.
 - A step-up renders the **complete** purchase (all lines, delivery fee, currency, recurring
   flag, flagged text).
 
@@ -307,6 +312,8 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
   `evidence` rows with `source: 'model'` and may raise `approve → uncertain`. It can never
   lower `stopped` or override a policy check. `engine_version` records whether the model
   was on, so a replay with it off is comparable.
+- `ONEGUARD_SOFT_SIGNALS`: `off` = no soft signal; `keywords` = the A1 pattern list;
+  `laya` = triggered if keywords OR Laya fire (Laya can only add, never clear a keyword hit).
 - Tier-2 fact extraction and tier-3 explanation use the same provider interface as the
   compiler (OpenAI first, model-agnostic).
 
@@ -380,6 +387,7 @@ neutral fallback for unknown codes.
 9. Policy screen renders DryRunResult.examples and dry_run.agent_history as one line
 10. PolicyDraft.compiler == 'fallback' shown as a banner; Decision.explanation_source shown as a subtle tag
 11. Optional: `Mandate.usage.confirmations` as a "Things you've confirmed" list on the policy screen (names rendered as plain text)
+12. Optional: `Decision.confirmable` - on a step-up, "Approve, and treat <shop> as <phrase> from now on"; absent or null means the ordinary approve button
 
 No endpoint changes. No screen removals. Tighten UI stays dormant.
 

@@ -174,7 +174,7 @@ def decide_event(
             period_days=period_days_of(ctx.policy),
         )
         engine, explanation = _from_entry(stored)
-        return engine, explanation, to_api_decision(event, stored, view)
+        return engine, explanation, to_api_decision(event, stored, view, ctx.policy)
 
     def remaining_s() -> float:
         return max(0.0, ctx.budget_ms / 1000 - (time.perf_counter() - started))
@@ -280,7 +280,7 @@ def _record(
 
     # The stored entry is the truth: under a concurrent redelivery it is the first one.
     engine, explanation = _from_entry(stored)
-    return engine, explanation, to_api_decision(event, stored, view)
+    return engine, explanation, to_api_decision(event, stored, view, ctx.policy)
 
 
 def _from_entry(entry: LedgerEntry) -> tuple[EngineDecision, Explanation]:
@@ -310,7 +310,22 @@ def _uncertainty_note(entry: LedgerEntry) -> str:
     return entry.message
 
 
-def to_api_decision(event: dict, entry: LedgerEntry, view: LedgerView) -> api.Decision:
+def confirmable(entry: LedgerEntry, policy: Policy) -> api.Confirmable | None:
+    """The one rule no data can check that stepped this purchase up, if that is all that did.
+
+    Only a rule with field ``unverifiable`` qualifies (api-contract.md §3.3); with any
+    other deciding rule or signal beside it, a remembered yes would not settle the next ask.
+    """
+    if entry.outcome != "step_up" or len(entry.deciding_ids) != 1:
+        return None
+    rule = next((r for r in policy.rules if r.id == entry.deciding_ids[0]), None)
+    if rule is None or rule.field != "unverifiable":
+        return None
+    phrase = rule.value if isinstance(rule.value, str) else rule.text
+    return api.Confirmable(rule_id=rule.id, phrase=phrase)
+
+
+def to_api_decision(event: dict, entry: LedgerEntry, view: LedgerView, policy: Policy) -> api.Decision:
     """The contract's ``Decision`` for a stored entry and the event it decided."""
     auth = event["authorization"]
     merchant = auth["merchant"]
@@ -365,4 +380,5 @@ def to_api_decision(event: dict, entry: LedgerEntry, view: LedgerView) -> api.De
         latency_ms=entry.latency_ms,
         explanation_source=entry.explanation_source,
         resolved_by=entry.resolved_by,
+        confirmable=confirmable(entry, policy),
     )

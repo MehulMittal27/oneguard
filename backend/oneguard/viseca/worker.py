@@ -3,10 +3,11 @@
 Runs as an asyncio task inside the API process (docs/architecture.md Runtime). One
 loop, never blocked by a human:
 
-- ``start``: ``GET /v1/bootstrap`` (human window, decision deadline) and
-  ``GET /v1/reference-data``. If the served history-file SHA-256 differs from the one
-  the seed checked (``data/metadata.json``), ``authorization_history`` is re-seeded from
-  ``/v1/reference-data/authorization-history.csv`` and that is logged loudly.
+- ``start``: ``GET /v1/bootstrap`` (``limits``: human window, decision deadline, long-poll
+  cap) and ``GET /v1/reference-data``. The sandbox serves no history-file hash, so the
+  file is downloaded from ``/v1/reference-data/authorization-history.csv`` and hashed; if
+  it differs from the one the seed checked (``data/metadata.json``),
+  ``authorization_history`` is re-seeded from it and that is logged loudly.
 - loop: long-poll ``/v1/decision-requests/next?wait=25``. 204 → read the progress of
   every tracked run and the event feed, poll again. 200 → validate ``data`` against the
   event schema, remember the live → source id map (and the live related id), store the
@@ -16,11 +17,20 @@ loop, never blocked by a human:
   ``deadline_at`` gets a pending ``step_up`` (``unevaluable``) posted in its place, which
   then waits on the customer like any other step-up (rules.md D3).
 - redelivery of a known live id posts the stored decision again and counts nothing (M7).
-- a ``step_up`` accepted by Viseca gets ``deadline_at`` = accepted time + the bootstrap
-  human window and an expiry task. The loop never waits for it. Unanswered at the
-  deadline → ``POST /resolve`` ``decline`` with the timeout message, ``resolved_by:
-  timeout``, and the ledger marks it expired and releases the reservation (rules.md Q2,
-  api-contract §3.5).
+  A step-up we posted comes back on every poll with envelope ``status:
+  "pending_step_up"`` until it is resolved or expires: nothing is posted for it (the
+  platform would answer 409 ``step_up_resolution_required``) and the loop pauses
+  ``waiting_step_up_pause_s`` so it does not spin.
+- a ``step_up`` accepted by Viseca gets ``deadline_at`` = the reply's
+  ``step_up_expires_at`` (accepted time + the bootstrap human window) and an expiry task.
+  The loop never waits for it. Unanswered at the deadline → ``POST /resolve`` ``decline``
+  with the timeout message, ``resolved_by: timeout``, and the ledger marks it expired and
+  releases the reservation (rules.md Q2, api-contract §3.5). The platform expires it
+  itself at the same moment, so the expiry reads the platform's state first
+  (``GET /v1/authorizations?run_id=``): already final there → record that, post nothing;
+  still pending → ``/resolve``, and on a 409 read again and record what it says.
+- at most one ``/resolve`` is ever sent per live id (customer or timeout), across
+  redelivery, retries and a rescheduled expiry.
 - a customer answer (C8) goes through ``resolve_by_customer``; it and the expiry are
   serialised, so exactly one of them closes a step-up.
 - ``revoke``: our policy flips to revoked at once, then ``DELETE /v1/mandates/{id}``;
@@ -32,8 +42,10 @@ loop, never blocked by a human:
 ``status()`` is what ``/healthz`` reports: state, last poll, events cursor, runs.
 
 All ledger and pipeline calls run on one dedicated thread, so a SQL ledger session is
-never used from two threads at once. Store writes (``events_raw``, ``runs``) use their
-own short sessions.
+never used from two threads at once. Each of them (a decision, a resolution, a read) runs
+in its own short ledger session (``ScopedStoreLedger``), closed afterwards; the worker
+never holds a pooled connection for its lifetime. Store writes (``events_raw``, ``runs``)
+use their own short sessions.
 """
 
 from __future__ import annotations
@@ -46,6 +58,7 @@ import threading
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
@@ -90,6 +103,13 @@ T = TypeVar("T")
 
 POLL_WAIT_S = 25.0
 DEFAULT_HUMAN_WINDOW_S = 120.0
+WAITING_STEP_UP_PAUSE_S = 0.5
+"""Pause after the platform serves a step-up that still waits for its answer (it does so on
+every poll, without the long-poll wait)."""
+STEP_UP_WAITING = "pending_step_up"
+"""Envelope ``status`` of a step-up we posted that awaits ``/resolve``."""
+STOP_DRAIN_S = 5.0
+"""How long ``stop`` waits for the engine thread to finish its current unit of work."""
 POST_MARGIN_S = 0.5
 """Time kept free before ``deadline_at`` to POST the step-up when the engine overruns its budget."""
 POST_RETRY_DELAYS_S = (0.2, 0.5, 1.0)
@@ -128,6 +148,8 @@ _FEED_FINAL = {
     "canceled": "declined",
 }
 _ACCEPTED_KEYS = ("accepted_at", "decided_at", "recorded_at", "created_at", "updated_at")
+"""Fallback when a step-up reply lacks ``step_up_expires_at``: its accepted time."""
+_TOTAL_KEYS = ("generated_event_count", "total", "total_events", "event_count", "events_total")
 
 
 def timeout_message(window_s: float) -> str:
@@ -187,8 +209,18 @@ def seconds_setting(
     return default
 
 
+def positive_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return float(value)
+
+
 def find_history_metadata(reference: Any) -> dict[str, Any] | None:
-    """The served history-file metadata: a dict with a SHA-256 that names the history file."""
+    """Served history-file metadata carrying a SHA-256, if any.
+
+    The live sandbox's ``history`` block (``path``, ``rows``, ``format``) has none; this
+    stays tolerant in case one is added.
+    """
     queue: deque[tuple[str, Any]] = deque([("", reference)])
     while queue:
         key, node = queue.popleft()
@@ -293,9 +325,82 @@ def policy_from_snapshot(mandate: Mapping[str, Any]) -> Policy:
     )
 
 
+class ScopedStoreLedger:
+    """P2's ``StoreLedger`` on short sessions: one per unit of work, closed afterwards.
+
+    ``scope()`` opens a session and binds a ``StoreLedger`` to it for every call made
+    inside it on that thread; a call outside any scope gets a session of its own. The
+    worker runs each decision, resolution and read in one scope on its engine thread, so a
+    pooled connection (5 per process on Postgres) is held only while that work runs.
+    """
+
+    def __init__(self, db: Engine, history: HistoryIndex | None = None) -> None:
+        self.db = db
+        self.history = history
+        self._local = threading.local()
+        self._lock = threading.Lock()
+        self._open: set[Session] = set()
+
+    @contextmanager
+    def scope(self) -> Iterator[StoreLedger]:
+        current: StoreLedger | None = getattr(self._local, "ledger", None)
+        if current is not None:
+            yield current
+            return
+        db_session = Session(self.db, expire_on_commit=False)
+        with self._lock:
+            self._open.add(db_session)
+        self._local.ledger = StoreLedger(db_session, history=self.history)
+        try:
+            yield self._local.ledger
+        finally:
+            self._local.ledger = None
+            with self._lock:
+                self._open.discard(db_session)
+            db_session.close()
+
+    @property
+    def open_sessions(self) -> int:
+        with self._lock:
+            return len(self._open)
+
+    def close(self) -> None:
+        """Close any session still open: a unit of work cut short when the worker stops."""
+        with self._lock:
+            sessions, self._open = list(self._open), set()
+        for db_session in sessions:
+            db_session.close()
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_") or getattr(StoreLedger, name, None) is None:
+            raise AttributeError(name)
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            with self.scope() as ledger:
+                return getattr(ledger, name)(*args, **kwargs)
+
+        return call
+
+
 def default_ledger(db: Engine, history: HistoryIndex) -> Ledger:
-    """P2's store-backed ledger (``engine/ledger.py``) on a session of its own."""
-    return StoreLedger(Session(db, expire_on_commit=False), history=history)
+    """P2's store-backed ledger (``engine/ledger.py``) on short sessions."""
+    return cast(Ledger, ScopedStoreLedger(db, history=history))
+
+
+def platform_result(item: Mapping[str, Any]) -> tuple[Literal["approve", "decline"], Literal["customer", "timeout"]] | None:
+    """The final answer ``GET /v1/authorizations`` shows for a step-up, or None while it waits.
+
+    ``approved`` is the customer's approval; ``declined`` is the customer's decline when
+    ``decision_source`` says ``customer``, else the platform's timeout.
+    """
+    status = str(item.get("status") or "").lower()
+    decision = item.get("decision")
+    source = item.get("decision_source") or (decision.get("decision_source") if isinstance(decision, dict) else None)
+    if status == "approved":
+        return "approve", "customer"
+    if status in ("declined", "expired", "cancelled", "canceled"):
+        return "decline", "customer" if source == "customer" else "timeout"
+    return None
 
 
 class OverrunClaims:
@@ -445,6 +550,7 @@ class VisecaWorker:
         signals_enabled: bool = False,
         budget_ms: int | None = None,
         poll_wait_s: float = POLL_WAIT_S,
+        waiting_step_up_pause_s: float = WAITING_STEP_UP_PAUSE_S,
         implementations: Mapping[str, Callable[..., Any]] | None = None,
         stubbed: frozenset[str] | None = None,
         data_dir: Path = seed_module.DATA_DIR,
@@ -458,6 +564,7 @@ class VisecaWorker:
         self._signals_enabled = signals_enabled
         self._budget_ms = budget_ms if budget_ms is not None else budget_ms_from_env()
         self._poll_wait_s = poll_wait_s
+        self._waiting_step_up_pause_s = waiting_step_up_pause_s
         self._implementations = implementations
         self._stubbed = stubbed
         self._data_dir = data_dir
@@ -468,6 +575,8 @@ class VisecaWorker:
         self.bootstrap: dict[str, Any] | None = None
         self.reference_data: dict[str, Any] | None = None
         self.history_reseeded = False
+        self.served_history_sha256: str | None = None
+        """SHA-256 of the history file Viseca serves, once checked at start."""
 
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="oneguard-engine")
         self._task: asyncio.Task[None] | None = None
@@ -486,6 +595,8 @@ class VisecaWorker:
         self._run_write_lock = threading.Lock()
         """``_save_run`` runs on several threads; ``merge`` is not an atomic upsert."""
         self._resolution_lock = asyncio.Lock()
+        self._resolve_sent: set[str] = set()
+        """Live ids a ``/resolve`` was sent for: never a second one."""
         self._feed_mismatches: list[EvidenceRow] = []
         self._feed_seen: set[tuple[str, str]] = set()
         self._listeners: list[DecisionListener] = []
@@ -592,7 +703,11 @@ class VisecaWorker:
         self._task = asyncio.create_task(self._loop(), name="viseca-worker")
 
     async def stop(self) -> None:
-        """Stop polling and cancel expiry timers (pending step-ups are recovered on start)."""
+        """Stop polling and cancel expiry timers (pending step-ups are recovered on start).
+
+        Waits up to ``STOP_DRAIN_S`` for the engine thread's current work, then closes any
+        ledger session still open, so no pooled connection outlives the worker.
+        """
         tasks = [t for t in [self._task, *self._expiry.values()] if t is not None]
         for task in tasks:
             task.cancel()
@@ -600,6 +715,15 @@ class VisecaWorker:
         self._task = None
         self._expiry.clear()
         self._state = "stopped"
+        try:
+            await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(self._pool, lambda: None), STOP_DRAIN_S
+            )
+        except TimeoutError:
+            log.warning("the engine thread is still busy after %s s; closing its ledger session", STOP_DRAIN_S)
+        close = getattr(self._ledger, "close", None)
+        if callable(close):
+            close()
         await self.client.drain()
 
     async def revoke(self, viseca_mandate_id: str) -> None:
@@ -627,7 +751,8 @@ class VisecaWorker:
         """C8: post the customer's answer to Viseca, then record it (``resolved_by: customer``).
 
         Raises KeyError (unknown), NotAwaitingAnswer, WindowClosed, or VisecaError (the
-        ledger is then unchanged).
+        ledger is then unchanged; no second ``/resolve`` is sent for it, and the expiry
+        records what the platform shows).
         """
         async with self._resolution_lock:
             entry = await self._engine(self.ledger.get, authorization_id)
@@ -637,6 +762,8 @@ class VisecaWorker:
                 raise NotAwaitingAnswer(f"{authorization_id} is not awaiting an answer")
             if entry.deadline_at is not None and self._now() >= entry.deadline_at:
                 raise WindowClosed(f"the window for {authorization_id} closed at {entry.deadline_at}")
+            if not self._claim_resolve(authorization_id):
+                raise NotAwaitingAnswer(f"an answer for {authorization_id} was already sent")
             await self.client.resolve(
                 authorization_id,
                 decision,
@@ -653,26 +780,64 @@ class VisecaWorker:
         return resolved
 
     async def expire(self, authorization_id: str) -> bool:
-        """Close an unanswered step-up (rules.md Q2). False if it was already closed."""
+        """Close an unanswered step-up (rules.md Q2). False if it was already closed.
+
+        The platform expires step-ups itself at the same moment, so its state is read
+        first. Already final there → that result is recorded and nothing is posted. Still
+        pending (or unreadable) → ``/resolve`` ``decline`` with the timeout message; on a
+        409 the state is read again and recorded. Whatever the platform cannot tell us is
+        recorded as the timeout decline. At most one ``/resolve`` per live id.
+        """
         async with self._resolution_lock:
             entry = await self._engine(self.ledger.get, authorization_id)
             if entry is None or entry.outcome != "step_up" or entry.final:
                 return False
-            resolved = await self._engine(
-                self.ledger.resolve, authorization_id, "decline", "timeout", self._now()
-            )
-            try:
-                await self.client.resolve(
-                    authorization_id,
-                    "decline",
-                    timeout_message(self.human_window_s),
-                    [_resolved_by_row("timeout")],
-                )
-            except VisecaError as exc:
-                self._note_error(f"timeout resolve of {authorization_id} failed: {exc}")
-        log.info("step-up %s expired unanswered; declined, reservation released", authorization_id)
+            result = await self._platform_result(authorization_id)
+            if result is None and self._claim_resolve(authorization_id):
+                try:
+                    await self.client.resolve(
+                        authorization_id,
+                        "decline",
+                        timeout_message(self.human_window_s),
+                        [_resolved_by_row("timeout")],
+                    )
+                    result = ("decline", "timeout")
+                except VisecaError as exc:
+                    if exc.status == 409:
+                        log.info("Viseca closed step-up %s first (%s)", authorization_id, exc.code)
+                        result = await self._platform_result(authorization_id)
+                    else:
+                        self._note_error(f"timeout resolve of {authorization_id} failed: {exc}")
+            # still pending after an answer that was already sent: the platform's own
+            # expiry will decline it, so the timeout decline is recorded
+            decision, by = result or ("decline", "timeout")
+            resolved = await self._engine(self.ledger.resolve, authorization_id, decision, by, self._now())
+        log.info("step-up %s closed at its window: %s (%s)", authorization_id, resolved.uncertain_outcome, by)
         await self._after_resolution(authorization_id, resolved)
         return True
+
+    def _claim_resolve(self, live_id: str) -> bool:
+        """True the first time only: the one ``/resolve`` for ``live_id`` may be sent."""
+        if live_id in self._resolve_sent:
+            return False
+        self._resolve_sent.add(live_id)
+        return True
+
+    async def _platform_result(
+        self, live_id: str
+    ) -> tuple[Literal["approve", "decline"], Literal["customer", "timeout"]] | None:
+        """The platform's final answer for a step-up, or None while it waits or is unreadable."""
+        run = self._run_of.get(live_id)
+        params = {"run_id": run.viseca_run_id} if run is not None and run.viseca_run_id else {}
+        try:
+            items = await self.client.list_authorizations(**params)
+        except VisecaError as exc:
+            log.warning("platform state of %s unavailable: %s", live_id, exc)
+            return None
+        item = next(
+            (i for i in items if isinstance(i, dict) and i.get("authorization_id") == live_id), None
+        ) if isinstance(items, list) else None  # fmt: skip
+        return platform_result(item) if item is not None else None
 
     # Start-up ----------------------------------------------------------------------------
 
@@ -682,16 +847,25 @@ class VisecaWorker:
         except VisecaError as exc:
             self._note_error(f"bootstrap failed, using default timeouts: {exc}")
             return
-        self.human_window_s = seconds_setting(
-            self.bootstrap, ("human",), ("window", "timeout", "seconds"), DEFAULT_HUMAN_WINDOW_S
-        ) or DEFAULT_HUMAN_WINDOW_S
-        self.decision_deadline_s = seconds_setting(
-            self.bootstrap, ("decision",), ("deadline", "timeout"), None
+        limits = self.bootstrap.get("limits") if isinstance(self.bootstrap, dict) else None
+        limits = limits if isinstance(limits, dict) else {}
+        self.human_window_s = (
+            positive_number(limits.get("step_up_timeout_seconds"))
+            or seconds_setting(self.bootstrap, ("step_up",), ("window", "timeout"), None)
+            or seconds_setting(self.bootstrap, ("human",), ("window", "timeout", "seconds"), None)
+            or DEFAULT_HUMAN_WINDOW_S
         )
+        self.decision_deadline_s = positive_number(
+            limits.get("decision_timeout_seconds")
+        ) or seconds_setting(self.bootstrap, ("decision",), ("deadline", "timeout"), None)
+        long_poll = positive_number(limits.get("long_poll_max_seconds"))
+        if long_poll is not None and self._poll_wait_s > long_poll:
+            self._poll_wait_s = long_poll
         log.info(
-            "Viseca bootstrap: human window %s s, decision deadline %s s",
+            "Viseca bootstrap: human window %s s, decision deadline %s s, long poll %s s",
             self.human_window_s,
             self.decision_deadline_s,
+            self._poll_wait_s,
         )
 
     async def _check_reference_data(self) -> None:
@@ -701,34 +875,36 @@ class VisecaWorker:
             self._note_error(f"reference data unavailable, keeping the seeded history: {exc}")
             return
         meta = find_history_metadata(self.reference_data)
+        served = str(meta.get("sha256", "")).strip().lower() if meta else ""
         expected = seed_module.pack_file_sha256(HISTORY_FILE, self._data_dir)
-        if meta is None:
-            log.warning("Viseca reference data names no history-file hash; keeping the seeded history")
-            return
-        served = str(meta.get("sha256", "")).strip().lower()
-        if not served or served == expected:
+        if served and served == expected:
+            self.served_history_sha256 = served
             log.info("Viseca history file matches the seeded pack (sha256 %s)", expected)
             return
-        banner = "!" * 72
-        log.warning(
-            "%s\nVISECA SERVES A DIFFERENT HISTORY FILE: sha256 %s, seeded pack has %s.\n"
-            "Re-seeding authorization_history from /v1/reference-data/authorization-history.csv\n%s",
-            banner,
-            served,
-            expected,
-            banner,
-        )
         try:
             text = await self.client.authorization_history_csv()
         except VisecaError as exc:
             self._note_error(f"history download failed, keeping the seeded history: {exc}")
             return
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        if digest != served:
+        if served and digest != served:
             self._note_error(
                 f"downloaded history sha256 {digest} does not match the served {served}; not re-seeding"
             )
             return
+        self.served_history_sha256 = digest
+        if digest == expected:
+            log.info("Viseca history file matches the seeded pack (downloaded, sha256 %s)", expected)
+            return
+        banner = "!" * 72
+        log.warning(
+            "%s\nVISECA SERVES A DIFFERENT HISTORY FILE: sha256 %s, seeded pack has %s.\n"
+            "Re-seeding authorization_history from /v1/reference-data/authorization-history.csv\n%s",
+            banner,
+            digest,
+            expected,
+            banner,
+        )
         try:
             rows = await asyncio.to_thread(self._reseed_history, text)
         except Exception as exc:
@@ -740,7 +916,7 @@ class VisecaWorker:
             "%s\nRE-SEEDED authorization_history: %d rows from Viseca (sha256 %s)\n%s",
             banner,
             rows,
-            served,
+            digest,
             banner,
         )
 
@@ -815,10 +991,11 @@ class VisecaWorker:
         await self._sync_events()
 
     def _apply_progress(self, run: RunState, progress: Any) -> None:
-        total = first_value(progress, "total", "total_events", "event_count", "events_total")
-        if isinstance(total, int) and not isinstance(total, bool):
+        total = run_total(progress)
+        if total is not None:
             run.total = max(run.total, total)
-        state = str(first_value(progress, "status", "state") or "").lower()
+        state = progress.get("status") if isinstance(progress, dict) else None
+        state = str(state or first_value(progress, "status", "state") or "").lower()
         if state in _DONE_STATES:
             run.platform_done = True
         elif state in _ERROR_STATES:
@@ -860,6 +1037,9 @@ class VisecaWorker:
             self.related_ids[live_id] = auth["related_authorization_id"]
 
         stored = await self._engine(self.ledger.get, live_id)
+        if stored is not None and stored.outcome == "step_up" and envelope.get("status") == STEP_UP_WAITING:
+            await self._step_up_still_waiting(stored)
+            return
         if stored is not None:
             run.redeliveries += 1
             log.info("redelivery of %s: posting the stored %s, counting nothing", live_id, stored.outcome)
@@ -932,7 +1112,17 @@ class VisecaWorker:
     # Deciding ----------------------------------------------------------------------------
 
     async def _engine(self, fn: Callable[..., T], *args: Any) -> T:
-        return await asyncio.get_running_loop().run_in_executor(self._pool, partial(fn, *args))
+        """Run ``fn`` on the engine thread inside one short ledger session."""
+        return await asyncio.get_running_loop().run_in_executor(
+            self._pool, partial(self._in_scope, fn, *args)
+        )
+
+    def _in_scope(self, fn: Callable[..., T], *args: Any) -> T:
+        scope = getattr(self._ledger, "scope", None)
+        if scope is None:
+            return fn(*args)
+        with scope():
+            return fn(*args)
 
     async def _reconcile_context(self, run: RunState, data: dict[str, Any]) -> list[EvidenceRow]:
         theirs = data["context"]["approved_spend_in_period_chf"]
@@ -983,7 +1173,7 @@ class VisecaWorker:
         assert run.ctx is not None
         live_id = data["authorization"]["authorization_id"]
         future = asyncio.get_running_loop().run_in_executor(
-            self._pool, partial(decide_event, data, run.ctx, extra)
+            self._pool, partial(self._in_scope, decide_event, data, run.ctx, extra)
         )
         waits = [self._budget_ms / 1000]
         waits.append((deadline_at - self._now()).total_seconds() - POST_MARGIN_S - waits[0])
@@ -1089,7 +1279,7 @@ class VisecaWorker:
         stored, view = await self._engine(
             self._settle_overrun, live_id, period_days_of(run.ctx.policy)
         )
-        decision = to_api_decision(data, stored, view)
+        decision = to_api_decision(data, stored, view, run.ctx.policy)
         if stored.outcome == "step_up" and not stored.final:
             await self._await_answer(run, decision, reply)
         else:
@@ -1262,12 +1452,13 @@ class VisecaWorker:
         run.pending.add(live_id)
         deadline = decision.deadline_at
         if reply is not None:
-            accepted = next(
-                (t for t in (_parse_time(first_value(reply, k)) for k in _ACCEPTED_KEYS) if t), None
-            ) or self._now()
-            deadline = await self._set_deadline(
-                live_id, accepted + timedelta(seconds=self.human_window_s), deadline
-            )
+            expires = _parse_time(reply.get("step_up_expires_at"))
+            if expires is None:
+                accepted = next(
+                    (t for t in (_parse_time(first_value(reply, k)) for k in _ACCEPTED_KEYS) if t), None
+                ) or self._now()
+                expires = accepted + timedelta(seconds=self.human_window_s)
+            deadline = await self._set_deadline(live_id, expires, deadline)
             decision = decision.model_copy(update={"deadline_at": deadline})
         self._schedule_expiry(live_id, deadline or self._now())
         self._notify(decision)
@@ -1288,7 +1479,7 @@ class VisecaWorker:
         """Answer a redelivery with the decision already made; nothing is counted again."""
         live_id = stored.live_authorization_id
         try:
-            reply = await self._post(
+            await self._post(
                 live_id,
                 stored.outcome,
                 stored.reason_codes,
@@ -1300,22 +1491,21 @@ class VisecaWorker:
         except VisecaError as exc:
             self._note_error(f"re-post of {live_id} not accepted: {exc}")
             return
-        if stored.outcome != "step_up":
-            return
-        if not stored.final:
-            if live_id not in self._expiry:
-                self._schedule_expiry(live_id, stored.deadline_at or self._now())
-            return
-        if reply is None:
-            return
-        # Viseca had lost the step-up and takes it again: replay the answer already given.
-        answer = "approve" if stored.uncertain_outcome == "approved" else "decline"
-        by = stored.resolved_by or "timeout"
-        message = timeout_message(self.human_window_s) if by == "timeout" else CUSTOMER_MESSAGES[answer]
-        try:
-            await self.client.resolve(live_id, answer, message, [_resolved_by_row(by)])
-        except VisecaError as exc:
-            self._note_error(f"re-resolve of {live_id} not accepted: {exc}")
+        if stored.outcome == "step_up" and not stored.final and live_id not in self._expiry:
+            self._schedule_expiry(live_id, stored.deadline_at or self._now())
+
+    async def _step_up_still_waiting(self, stored: LedgerEntry) -> None:
+        """The platform served a step-up we posted that still waits for ``/resolve``.
+
+        Nothing is posted or counted. Pending with us: make sure its expiry is scheduled.
+        Already closed with us, the envelope is older than our answer (its ``/resolve`` is
+        sent or on its way), so nothing is resent. Then pause, because the platform serves
+        a waiting step-up on every poll without waiting.
+        """
+        live_id = stored.live_authorization_id
+        if not stored.final and live_id not in self._expiry:
+            self._schedule_expiry(live_id, stored.deadline_at or self._now())
+        await asyncio.sleep(self._waiting_step_up_pause_s)
 
     # Step-up expiry ----------------------------------------------------------------------
 
@@ -1359,7 +1549,7 @@ class VisecaWorker:
                 period_days=period_days_of(run.ctx.policy),
             )
         )
-        self._notify(to_api_decision(event, entry, view))
+        self._notify(to_api_decision(event, entry, view, run.ctx.policy))
 
     # Event feed --------------------------------------------------------------------------
 
@@ -1369,13 +1559,11 @@ class VisecaWorker:
         except VisecaError as exc:
             log.warning("event feed unavailable: %s", exc)
             return
-        if isinstance(reply, list):
-            items, next_cursor = reply, None
-        elif isinstance(reply, dict):
-            items = next((v for k in ("events", "data", "items") if isinstance(v := reply.get(k), list)), [])
-            next_cursor = reply.get("next_cursor")
-        else:
-            items, next_cursor = [], None
+        items = reply.get("events") if isinstance(reply, dict) else None
+        if not isinstance(items, list):
+            log.warning("event feed reply has no events list; cursor stays at %s", self._cursor)
+            return
+        next_cursor = reply.get("next_cursor")
         async with self._resolution_lock:
             for item in items:
                 if isinstance(item, dict):
@@ -1384,8 +1572,8 @@ class VisecaWorker:
             self._cursor = next_cursor
 
     async def _check_feed_item(self, item: dict[str, Any]) -> None:
-        live_id = first_value(item, "authorization_id")
-        status = item.get("status") or item.get("decision")
+        live_id = item.get("authorization_id")
+        status = item.get("status")
         platform = _FEED_FINAL.get(str(status).lower()) if status else None
         if not isinstance(live_id, str) or platform is None:
             return
@@ -1494,6 +1682,16 @@ def _late_result(live_id: str, future: Future[Any] | asyncio.Future[Any]) -> Non
         log.warning("engine failed on %s after the overrun decision: %r", live_id, exc)
         return
     log.info("engine finished %s after the overrun decision; that decision stands", live_id)
+
+
+def run_total(progress: Any) -> int | None:
+    """The run's event count: ``generated_event_count`` on the live sandbox."""
+    for key in _TOTAL_KEYS:
+        value = progress.get(key) if isinstance(progress, dict) else None
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    value = first_value(progress, *_TOTAL_KEYS)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _resolved_by_row(by: Literal["customer", "timeout"]) -> dict[str, Any]:
