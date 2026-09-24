@@ -114,8 +114,15 @@ export function Activity({
         <p className="text-[15px] text-ink-muted">Every purchase your agent has proposed.</p>
       </div>
 
+      {/*
+        Full-bleed scroller: the negative margin lets a chip run to the screen
+        edge while `px-8` keeps the first and last one aligned with the rest of
+        the page. `min-w-0` is what actually makes it scroll — without it the row
+        is a flex item at its automatic minimum size, so it grows to fit its
+        chips and pushes them off-screen instead of overflowing inside itself.
+      */}
       <div
-        className="scrollbar-none -mx-8 flex gap-2 overflow-x-auto px-8"
+        className="scrollbar-none -mx-8 flex min-w-0 max-w-full gap-2 overflow-x-auto px-8"
         role="tablist"
         aria-label="Filter by decision"
       >
