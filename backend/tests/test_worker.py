@@ -33,6 +33,7 @@ from oneguard.engine.types import Policy
 from oneguard.store import seed as seed_module
 from oneguard.store.db import make_engine, session
 from oneguard.store.history import StoreHistoryIndex
+from oneguard.store.lease import WorkerLease
 from oneguard.store.schema import (
     AuthorizationHistory,
     Card,
@@ -944,3 +945,242 @@ def test_start_syncs_a_served_superset_of_the_reference_tables_once(
     assert [t.table for t in worker.served_tables if t.changed] == []
     assert worker.history is history  # nothing changed: nothing reloaded
     assert "reference table customers          served  21, store  21 ->  21 rows (0 added, 0 updated), unchanged" in caplog.text
+
+
+# One polling worker per store (the worker lease), and the runs row ------------------------
+
+
+class SharedLease:
+    """The worker lease of one test's workers: at most one owner, like the advisory lock."""
+
+    def __init__(self) -> None:
+        self.owner: str | None = None
+
+    def of(self, name: str) -> WorkerLease:
+        shared = self
+
+        class Lease:
+            def acquire(self) -> bool:
+                if shared.owner in (None, name):
+                    shared.owner = name
+                    return True
+                return False
+
+            def held(self) -> bool:
+                return shared.owner == name
+
+            def release(self) -> None:
+                if shared.owner == name:
+                    shared.owner = None
+
+        return Lease()
+
+
+LEASE_OPTIONS = {
+    **ALL_STUBS,
+    "poll_wait_s": 0.2,
+    "waiting_step_up_pause_s": 0.05,
+    "standby_retry_s": 0.05,
+    "lease_check_s": 0.05,
+}
+
+
+def run_row(db: Engine, viseca_run_id: str) -> Run:
+    row = maybe_run_row(db, viseca_run_id)
+    assert row is not None
+    return row
+
+
+def maybe_run_row(db: Engine, viseca_run_id: str) -> Run | None:
+    with session(db) as s:
+        return s.scalar(select(Run).where(Run.viseca_run_id == viseca_run_id))
+
+
+def row_state(db: Engine, viseca_run_id: str) -> str | None:
+    row = maybe_run_row(db, viseca_run_id)
+    return row.state if row is not None else None
+
+
+def store_only(ledger_kind: str) -> None:
+    if ledger_kind == "memory":
+        pytest.skip("a second worker finds the first one's decisions only in the store ledger")
+
+
+def test_only_the_lease_holder_polls_and_the_standby_takes_over(
+    db: Engine, history: StoreHistoryIndex, ledger_kind: str
+) -> None:
+    """Two workers on one store: the second stands by (no poll, no decision) until the first
+    stops, then takes over; every request is decided once, nothing is posted twice."""
+    store_only(ledger_kind)
+
+    async def scenario() -> None:
+        fake = FakeViseca(fast(human_window_s=3.0))
+        lease = SharedLease()
+        first_client, second_client = fake_client(fake, db), fake_client(fake, db)
+        first = VisecaWorker(first_client, db=db, history=history, lease=lease.of("first"), **LEASE_OPTIONS)
+        second = VisecaWorker(second_client, db=db, history=history, lease=lease.of("second"), **LEASE_OPTIONS)
+        try:
+            await first.start()
+            await second.start()
+            assert first.status().state == "polling"
+            standby = second.status()
+            assert (standby.state, standby.ok, standby.last_poll_at) == ("standby", False, None)
+
+            _, run_id = await start_run(first_client, first, "SCEN0001")
+            # the fake queues the next request at each decision: all ten wait for an answer
+            await wait_until(lambda: first.run_status(run_id).decided == 10)
+            assert second.status().last_poll_at is None and second.run_status(run_id) is None
+
+            await first.stop()  # its step-ups are closed by the worker that takes over
+            assert lease.owner is None
+            await wait_until(lambda: second.status().state == "polling")
+            auths = fake.runs[run_id].auths
+            await wait_until(lambda: all(a.status in ("approved", "declined") for a in auths), timeout=30)
+            await wait_until(lambda: row_state(db, run_id) == "done")
+        finally:
+            await first.stop()
+            await second.stop()
+            await first_client.aclose()
+            await second_client.aclose()
+        assert not any(a.auto_declined for a in auths)
+        for auth in auths:
+            assert [d for d in auth.decisions if not d.get("rejected")] == auth.decisions[:1]
+            assert not any(d.get("rejected") for d in auth.decisions)
+            assert len(auth.resolutions) <= 1
+
+    asyncio.run(scenario())
+
+
+def test_a_worker_that_loses_the_lease_stands_by_and_polls_again_once_it_is_free(
+    db: Engine, history: StoreHistoryIndex
+) -> None:
+    async def scenario() -> None:
+        lease = SharedLease()
+        options = {**LEASE_OPTIONS, "lease": lease.of("worker")}
+        async with harness(db, fast(human_window_s=30.0), history=history, **options) as (fake, client, worker):
+            await worker.start()
+            _, run_id = await start_run(client, worker, "SCEN0000")
+            await wait_until(lambda: worker.status().pending_step_ups == 1)
+
+            lease.owner = "someone else"  # the lock's connection dropped; another took it
+            await wait_until(lambda: worker.status().state == "standby")
+            assert worker.status().pending_step_ups == 0  # its step-ups are the holder's now
+            polls = fake.polls
+            await asyncio.sleep(0.3)
+            assert fake.polls == polls
+
+            lease.owner = None
+            await wait_until(lambda: worker.status().state == "polling")
+            await wait_until(lambda: worker.status().pending_step_ups == 1)  # recovered
+            assert fake.polls > polls
+            assert len(fake.runs[run_id].auths[0].decisions) == 1
+
+    asyncio.run(scenario())
+
+
+def test_the_runs_row_counts_what_the_store_holds_across_a_restart(
+    db: Engine, history: StoreHistoryIndex, ledger_kind: str
+) -> None:
+    """Counters come from events_raw and the ledger, and started_at keeps its first write, so
+    a worker restarted mid-run neither resets nor undercounts the row."""
+    store_only(ledger_kind)
+
+    async def scenario() -> None:
+        fake = FakeViseca(fast(human_window_s=2.0))
+        client = fake_client(fake, db)
+        first = VisecaWorker(client, db=db, history=history, **LEASE_OPTIONS)
+        try:
+            await first.start()
+            _, run_id = await start_run(client, first, "SCEN0001")
+            # stop between decisions: the fake queues the next request at each decision, so
+            # all ten wait for an answer; the restarted worker closes them
+            await wait_until(lambda: first.run_status(run_id).decided == 10)
+            await first.stop()
+            before = run_row(db, run_id)
+
+            second = VisecaWorker(client, db=db, history=history, **LEASE_OPTIONS)
+            try:
+                await second.start()
+                await wait_until(lambda: row_state(db, run_id) == "done", timeout=30)
+                seen_here = len(second._runs[run_id].live_ids)
+                status = second.run_status(run_id)
+            finally:
+                await second.stop()
+        finally:
+            await first.stop()
+            await client.aclose()
+        after = run_row(db, run_id)
+        with session(db) as s:
+            events = s.scalar(select(func.count()).select_from(EventRaw).where(EventRaw.run_id == after.run_id))
+        assert events == 10 and seen_here == 0  # the restarted worker received none itself
+        assert (after.delivered, after.decided, after.pending_human, after.total) == (10, 10, 0, 10)
+        assert after.started_at == before.started_at
+        assert (status.delivered, status.decided, status.pending_human) == (10, 10, 0)
+
+    asyncio.run(scenario())
+
+
+def test_start_closes_stored_runs_the_platform_already_finished(
+    db: Engine, history: StoreHistoryIndex, ledger_kind: str
+) -> None:
+    """A row left 'running' (its worker stopped before the platform completed the run) is
+    closed at the next start from GET /v1/scenario-runs/{id}; a run the platform no longer
+    knows is closed as an error."""
+
+    async def scenario() -> None:
+        async with harness(db, fast(human_window_s=0.3), history=history, **LEASE_OPTIONS) as (fake, client, first):
+            await first.start()
+            _, run_id = await start_run(client, first, "SCEN0000")
+            await wait_until(lambda: row_state(db, run_id) == "done")
+            await first.stop()
+        with session(db) as s:
+            row = s.scalar(select(Run).where(Run.viseca_run_id == run_id))
+            row.state, row.finished_at = "running", None
+            s.add(
+                Run(
+                    run_id="live-run_gone", viseca_run_id="run_gone", kind="live", scenario_id="SCEN0000",
+                    mandate_id="TMgone", card_id="CA0001", state="running", started_at=row.started_at,
+                )
+            )  # fmt: skip
+        client = fake_client(fake, db)  # the same platform, a new process
+        second = VisecaWorker(client, db=db, history=history, **LEASE_OPTIONS)
+        try:
+            await second.start()
+        finally:
+            await second.stop()
+            await client.aclose()
+        closed = run_row(db, run_id)
+        assert (closed.state, closed.delivered) == ("done", 1)
+        assert closed.decided == (1 if ledger_kind == "store" else 0)  # a new process's memory ledger is empty
+        assert closed.finished_at is not None
+        gone = run_row(db, "run_gone")
+        assert (gone.state, gone.last_error) == ("error", "Viseca no longer knows this run")
+        assert gone.mandate_id == "TMgone" and gone.card_id == "CA0001"
+
+    asyncio.run(scenario())
+
+
+def test_the_feed_closes_a_completed_run_while_step_ups_keep_every_poll_busy(
+    db: Engine, history: StoreHistoryIndex
+) -> None:
+    """Progress is read on a 204, which never comes while a step-up waits (the platform
+    serves it on every poll); the feed, read at least every ``feed_sync_s``, closes the run
+    that completed meanwhile."""
+
+    async def scenario() -> None:
+        options = {**LEASE_OPTIONS, "feed_sync_s": 0.2}
+        async with harness(db, fast(human_window_s=30.0), history=history, **options) as (fake, client, worker):
+            await worker.start()
+            _, waiting = await start_run(client, worker, "SCEN0000")
+            await wait_until(lambda: worker.status().pending_step_ups == 1)
+            _, short = await start_run(client, worker, "SCEN0000")
+            await wait_until(lambda: worker.status().pending_step_ups == 2)
+            (auth,) = fake.runs[short].auths
+            await worker.resolve_by_customer(auth.live_id, "decline")
+            polls = fake.polls
+            await wait_until(lambda: row_state(db, short) == "done", timeout=5)
+            assert fake.polls > polls and fake.runs[waiting].auths[0].status == "pending"
+            assert worker.run_status(short).state == "done"
+            assert row_state(db, waiting) == "running"
+
+    asyncio.run(scenario())
