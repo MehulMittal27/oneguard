@@ -350,9 +350,9 @@ def test_the_first_boot_reads_the_event_feed_from_0_and_stores_the_cursor(
             assert worker.events_cursor == 0 and stored_cursor(db) is None
             _, run_id = await start_run(client, worker, "SCEN0001")
             await wait_until(lambda: all(a.decisions for a in fake.runs[run_id].auths))
-            await wait_until(lambda: stored_cursor(db) == len(fake.feed) >= 10)
+            # The worker stores the cursor, then takes it in memory: wait for both, not the store alone.
+            await wait_until(lambda: worker.events_cursor == stored_cursor(db) == len(fake.feed) >= 10)
             assert feed[0][0] == 0
-            assert worker.events_cursor == stored_cursor(db)
 
     asyncio.run(scenario())
 
