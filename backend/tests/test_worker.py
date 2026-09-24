@@ -1,8 +1,8 @@
 """The Viseca worker against the in-process fake sandbox (tests/fake_viseca.py).
 
 Unless a test says otherwise every engine function is stubbed, so every purchase is a
-``step_up``. Deadlines and the human window are shortened to keep the suite fast; the
-logic is the live one. Every test that uses ``db`` runs twice: on P2's ``StoreLedger``
+``step_up``. The human window is shortened to keep the suite fast (``fast``); the logic
+is the live one. Every test that uses ``db`` runs twice: on P2's ``StoreLedger``
 (the worker's own ``default_ledger``) and on the ``InMemoryLedger`` reference.
 """
 
@@ -158,8 +158,11 @@ def timeout_resolution(auth: Any) -> dict[str, Any]:
 
 
 def fast(**overrides: Any) -> FakeConfig:
+    """The human window shortened; the decision deadline the platform's own 8 s, because a
+    test that asserts no auto-decline must not depend on how loaded the machine is. Tests
+    about the deadline set a shorter one."""
     defaults = {
-        "decision_deadline_s": 3.0,
+        "decision_deadline_s": 8.0,
         "human_window_s": 60.0,
         "max_wait_s": 0.2,
         "platform_expiry_offset_s": 5.0,
@@ -909,7 +912,7 @@ def test_start_reseeds_history_when_viseca_serves_a_different_file(
     # no hash is served: the file was downloaded and matched the pack
     assert worker.served_history_sha256 == seed_module.pack_file_sha256("authorization_history.csv")
     # timeouts are read from bootstrap ``limits``
-    assert (worker.human_window_s, worker.decision_deadline_s) == (60.0, 3.0)
+    assert (worker.human_window_s, worker.decision_deadline_s) == (60.0, 8.0)
     with session(db) as s:
         assert s.scalar(select(func.count()).select_from(AuthorizationHistory)) == 4701
 
@@ -1035,7 +1038,7 @@ def test_only_the_lease_holder_polls_and_the_standby_takes_over(
             assert second.status().last_poll_at is None and second.run_status(run_id) is None
 
             await first.stop()  # its step-ups are closed by the worker that takes over
-            assert lease.owner is None
+            assert lease.owner != "first"  # given up; the standby may hold it already
             await wait_until(lambda: second.status().state == "polling")
             auths = fake.runs[run_id].auths
             await wait_until(lambda: all(a.status in ("approved", "declined") for a in auths), timeout=30)
@@ -1123,6 +1126,36 @@ def test_the_runs_row_counts_what_the_store_holds_across_a_restart(
     asyncio.run(scenario())
 
 
+def test_a_stop_during_the_feed_read_after_a_decision_still_stores_the_decision(
+    db: Engine, history: StoreHistoryIndex
+) -> None:
+    """The loop writes the run's row after the feed read that follows a decision; a stop
+    while that read is in flight still leaves the row counting it (D7 after a restart)."""
+
+    async def scenario() -> None:
+        async with harness(db, fast(), history=history) as (fake, client, worker):
+            reading = asyncio.Event()
+            read = client.events
+
+            async def events(since: int | str = 0) -> dict[str, Any]:
+                if any(a.decisions for a in fake.all_auths()):
+                    reading.set()
+                    await asyncio.Event().wait()  # the read never returns; stop() cancels it
+                return await read(since=since)
+
+            client.events = events  # type: ignore[method-assign]
+            await worker.start()
+            _, run_id = await start_run(client, worker, "SCEN0000")
+            await asyncio.wait_for(reading.wait(), timeout=20)
+            assert worker.run_status(run_id).decided == 1
+            assert run_row(db, run_id).decided == 0  # the row is behind until the read returns
+            await worker.stop()
+            row = run_row(db, run_id)
+            assert (row.delivered, row.decided, row.pending_human) == (1, 1, 1)
+
+    asyncio.run(scenario())
+
+
 def test_start_closes_stored_runs_the_platform_already_finished(
     db: Engine, history: StoreHistoryIndex, ledger_kind: str
 ) -> None:
@@ -1182,7 +1215,9 @@ def test_the_feed_closes_a_completed_run_while_step_ups_keep_every_poll_busy(
             await worker.resolve_by_customer(auth.live_id, "decline")
             polls = fake.polls
             await wait_until(lambda: row_state(db, short) == "done", timeout=5)
-            assert fake.polls > polls and fake.runs[waiting].auths[0].status == "pending"
+            # the feed read that closed it may follow the poll already in flight: wait for the next
+            await wait_until(lambda: fake.polls > polls)
+            assert fake.runs[waiting].auths[0].status == "pending"
             assert worker.run_status(short).state == "done"
             assert row_state(db, waiting) == "running"
 
