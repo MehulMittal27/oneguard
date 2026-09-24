@@ -45,7 +45,7 @@ Runtime tables (ours):
 | `events_raw` | P1 worker / replay | `live_authorization_id` PK, `run_id`, `source_authorization_id`, `received_at`, `deadline_at`, `event` JSON (the full validated event) — this is what makes any decision reproducible. The ledger also reads the device and shop country of a run's final approvals from here (known devices and countries, W1, W3) |
 | `decisions` (the ledger) | P2 `ledger.py` only | `live_authorization_id` PK, `run_id`, `mandate_id`, `card_id`, `customer_id`, `ts_sim`, `outcome`, `final` bool, `uncertain_outcome` nullable, `reserved_chf`, `spent_chf`, `merchant_id`, `item_ids` JSON, `billing_amount_chf`, `related_live_id`, `relation`, `session_trust`, `step`, `deciding_ids` JSON (rebuild the EngineDecision on redelivery), `reason_codes` JSON, `evidence` JSON, `message`, `counterfactual`, `explanation_source`, `injection_flag` JSON, `engine_version`, `latency_ms`, `signals_enabled` bool, `decided_at`, `deadline_at` nullable (real clock, pending step-ups; stable across polls), `resolved_at`, `resolved_by` (customer/timeout) |
 | `merchant_flags` | P2 ledger (from A1 signals) | `run_id`, `merchant_id`, `flagged_at`, `reason` — info evidence for later purchases at that shop |
-| `worker_state` | P1 worker | `key` PK, `value` JSON, `updated_at`. Row `events_cursor`: the `next_cursor` of the last `GET /v1/events` page the worker processed, written after the page is checked against the ledger; on start the worker resumes from it and reads the feed from 0 only when no row exists (first boot). A new table, so `init_db` creates it on an existing Supabase database without a reset. After a `POST /v1/team/reset` delete the row so the new feed is read from 0. Row `served_scenarios`: the scenario ids the platform served at the worker's last start (bootstrap `scenarios`, else reference data); C12 `live` and D8 `served` read it |
+| `worker_state` | P1 worker | `key` PK, `value` JSON, `updated_at`. Row `events_cursor`: the `next_cursor` of the last `GET /v1/events` page the worker processed, written after the page is checked against the ledger; on start the worker resumes from it and reads the feed from 0 only when no row exists (first boot). A new table, so `init_db` creates it on an existing Supabase database without a reset. After a `POST /v1/team/reset` delete the row so the new feed is read from 0. Row `served_scenarios`: the scenario ids the platform served at the worker's last reference sync (bootstrap `scenarios`, else reference data); C12 `live` and D8 `served` read it |
 | `scenario_profiles` | P1 worker | `scenario_id` PK, `profile_id` nullable, `customer_id`, `card_id`, `source` (bootstrap/run/authorization), `seen_at`. Which customer and card a served scenario runs on: the served catalogue names no card, the platform does in the bootstrap `profile`, a run's `fixture_profiles` and every authorization. The worker upserts each sighting (the newest wins; a row is written only when the binding changes; the customer is the card's holder in the store). Read by C12, D3 and D8 only (api-contract.md §1.2). A new table, so `init_db` creates it on an existing Supabase database without a reset |
 | `viseca_calls` | P1 client | append-only log of every request/response summary (no key, no bodies over 4 KB); used by `/healthz` and for debugging the deadline |
 
@@ -97,7 +97,10 @@ reads it to build `Decision` responses and `Mandate.usage`. Nobody else writes i
   inserts and updates, so it works the same on SQLite and Postgres. A served-only scenario
   gets empty `control_question` / `control_theme` / `short_rationale`, which the served
   catalogue lacks. `make seed` still replaces the tables with `data/`; the next start
-  syncs the served rows again.
+  syncs the served rows again. The same sync runs while the worker polls, in the lease
+  holder only: on a new bootstrap `pack_version`, on other `/v1/reference-data` row counts
+  (checked every 5 min) and when an event names an id the store lacks (architecture.md
+  Runtime).
 - `make reset-db` — drop + create + seed (never runs during a live run; guarded by
   `ONEGUARD_ENV != prod`).
 

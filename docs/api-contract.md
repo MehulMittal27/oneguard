@@ -79,8 +79,10 @@ running (unless the platform's `GET /v1/scenario-runs/{id}` says it is over), or
 the platform (`GET /v1/authorizations` status `awaiting_decision` or `pending_step_up`), whoever started it; the
 message and detail name that run. `force: true` skips both checks and starts the run anyway. D1/D2 use the same engine and ledger as D3; only the event source differs (CSV vs Viseca long-poll).
 D3 accepts any scenario in the store's `scenario_catalogue`, which the worker syncs from Viseca's
-`/v1/reference-data` at start (docs/judging-pack.md): 404 for an unknown scenario or card, 422 when the scenario's card
-is known and is another. D2 replays only scenarios the local pack has purchases for (404 otherwise).
+`/v1/reference-data` at start and again when the served pack changes (docs/judging-pack.md, architecture.md Runtime):
+404 for an unknown scenario or card, 422 when the scenario's card is known and is another. D3 and D8 first have the
+worker re-read `/v1/bootstrap` (human window, decision deadline, long-poll wait); a new `pack_version` syncs the
+reference data before D8 lists the catalogue, so `make demo-live` compiles the instruction the platform serves now. D2 replays only scenarios the local pack has purchases for (404 otherwise).
 
 **Scenario bindings.** The served catalogue names no card. The platform names one in the `/v1/bootstrap` `profile`
 (one scenario), in every run's `fixture_profiles` and in every authorization; the worker stores each sighting

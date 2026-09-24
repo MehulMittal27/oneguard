@@ -69,15 +69,31 @@ oneguard/
   it takes over when the holder stops. The sandbox serves each request to whoever polls
   first, so two workers would decide the same team's requests twice (docs/decisions.md).
 - Worker (`oneguard/viseca/worker.py`, `VisecaWorker`): on start reads `/v1/bootstrap`
-  (`limits`: human window, decision deadline, long-poll cap) and `/v1/reference-data`. Every
+  (`limits`: human window, decision deadline, long-poll cap; `pack_version`) and, in the
+  lease holder, runs the reference sync: `/v1/reference-data`. Every
   reference table served under `tables` (a superset of `data/` during judging) is upserted
   into the store in one transaction when its rows differ from the stored ones (count plus
   content hash), never deleting a row, with per-table counts logged (`seed.sync_served`);
-  the history index is reloaded if anything changed. No
+  the history index is reloaded in place if anything changed (`ReloadableHistory`: the
+  ledger, every run and the API hold the same object). No
   history-file hash is served, so it downloads
   `/v1/reference-data/authorization-history.csv`, and if its SHA-256 differs from
-  `data/metadata.json` it re-seeds `authorization_history` and logs it loudly. Every request is
-  schema-checked, stored in `events_raw`, decided by `pipeline.decide_event` within
+  `data/metadata.json` it re-seeds `authorization_history` and logs it loudly. The sync runs
+  again while polling (lease holder only; concurrent triggers join the one in flight; a
+  failure is logged and never blocks a decision): when a bootstrap re-read shows a new
+  `pack_version`, when `/v1/reference-data` (read every 5 min) shows another pack version,
+  row counts or history file than the last sync, and when an event names a merchant, item,
+  customer or card the store does not know. That event waits at most 1 s for the sync (less
+  near its deadline), then is decided with what the store has: no catalogue price range,
+  merchant category and country from the event, no history (never familiar), plus an
+  `info` evidence row `reference_data` naming the ids; an id a finished sync did not bring
+  starts no further sync. Every run start (D3 before it creates the run, D8 before it lists
+  the catalogue `make demo-live` compiles from, and the first sight of any other run)
+  re-reads `/v1/bootstrap` unless it was read in the last 30 s; a changed human window,
+  decision deadline or long-poll wait is logged and used from then on. Every request is
+  schema-checked (properties the schema does not list are logged and passed on unread; a
+  missing required field, a wrong type or an unknown enum value declines with an
+  `event_schema` row naming it), stored in `events_raw`, decided by `pipeline.decide_event` within
   `ONEGUARD_ENGINE_BUDGET_MS` and posted before `deadline_at`. A step-up's deadline is the
   reply's `step_up_expires_at` (accepted time + the human window). Until then the platform
   serves the step-up again on every poll (`status: "pending_step_up"`); the worker posts

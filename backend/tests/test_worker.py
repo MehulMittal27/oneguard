@@ -721,7 +721,9 @@ def test_a_request_failing_the_event_schema_is_declined(db: Engine, history: Sto
             await wait_until(lambda: bool(auth.decisions))
             posted = auth.decisions[0]
             assert posted["decision"] == "decline" and posted["reason_codes"] == ["unevaluable"]
-            assert posted["evidence"][0]["rule"] == "event_schema"
+            assert posted["evidence"] == [
+                {"rule": "event_schema", "outcome": "fail", "detail": "authorization.merchant is missing", "source": "policy"}
+            ]
             assert await worker.ledger_entries([auth.live_id]) == []
             assert "schema" in (worker.status().last_error or "")
 
@@ -933,7 +935,7 @@ def test_start_syncs_a_served_superset_of_the_reference_tables_once(
     assert "reference table customers          served  21, store  20 ->  21 rows (1 added, 0 updated)" in caplog.text
     assert "reference tables not served, kept as stored: scenario_authorities" in caplog.text
     # the in-memory history index was reloaded with the served merchant
-    assert worker.history is not history
+    assert worker.history.current is not history
     assert worker.history.merchant_names(["ME9001"]) == {"ME9001": "Served Corner Shop"}
     with session(db) as s:
         assert s.get(Card, "CA9001") is not None
@@ -943,7 +945,7 @@ def test_start_syncs_a_served_superset_of_the_reference_tables_once(
     caplog.clear()
     worker = asyncio.run(scenario(history=history))
     assert [t.table for t in worker.served_tables if t.changed] == []
-    assert worker.history is history  # nothing changed: nothing reloaded
+    assert worker.history.current is history  # nothing changed: nothing reloaded
     assert "reference table customers          served  21, store  21 ->  21 rows (0 added, 0 updated), unchanged" in caplog.text
 
 
@@ -1072,7 +1074,7 @@ def test_a_worker_that_loses_the_lease_stands_by_and_polls_again_once_it_is_free
             lease.owner = None
             await wait_until(lambda: worker.status().state == "polling")
             await wait_until(lambda: worker.status().pending_step_ups == 1)  # recovered
-            assert fake.polls > polls
+            await wait_until(lambda: fake.polls > polls)  # "polling" is set just before the first poll
             assert len(fake.runs[run_id].auths[0].decisions) == 1
 
     asyncio.run(scenario())

@@ -174,6 +174,9 @@ async def replay_restart(body: api.ReplayRestartRequest, request: Request) -> JS
 async def create_run(body: api.CreateRunRequest, request: Request) -> JSONResponse:
     """D3: a Viseca run under the card's active policy, followed by the worker.
 
+    The worker re-reads ``/v1/bootstrap`` before the run is created (human window, decision
+    deadline, long-poll wait; a new pack version syncs the reference data first).
+
     Refused with 409 ``runs_disabled`` before anything else while ``ONEGUARD_ALLOW_RUNS=false``,
     and, unless ``force``, with 409 ``run_active`` while the worker still follows an
     unfinished run (one run at a time: the customer answers one run's step-ups) or the
@@ -194,6 +197,7 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
         raise ApiError(409, "validation", "The card needs an active policy confirmed at Viseca first.")
     if s.worker is None or s.client is None:
         raise ApiError(503, "upstream_unavailable", "The payment platform is not connected.")
+    await s.worker.refresh_bootstrap("run start")
     started = await s.viseca(s.client.create_run(body.scenario_id, row.viseca_mandate_id), "new run")
     run_id = str(started["run_id"])
     total = first_value(started, "generated_event_count", "total", "total_events", "event_count")
@@ -386,8 +390,12 @@ async def get_run(run_id: str, request: Request) -> JSONResponse:
 async def list_scenarios(request: Request) -> JSONResponse:
     """D8: every scenario in the store's catalogue, whether the platform serves it now, the
     customer and card it runs on when known (``Services.bindings``) and a run of it still in
-    progress (``active_runs``). Reads only."""
+    progress (``active_runs``). ``make demo-live`` compiles the instruction listed here, so
+    the worker re-reads ``/v1/bootstrap`` first: a new pack version syncs the catalogue
+    before it is read. Changes nothing else."""
     s = services(request)
+    if s.worker is not None:
+        await s.worker.refresh_bootstrap("scenario list")
     catalogue = await s.db(queries.scenario_catalogue, s.db_engine)
     served = await s.db(queries.served_scenarios, s.db_engine)
     active = await active_runs(s)
