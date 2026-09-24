@@ -225,12 +225,12 @@ async def create_draft(card_id: str, body: api.PolicyDraftRequest, request: Requ
         open_questions = list(compiled.open_questions)
         dry_run = compiled.dry_run
         compiler = compiled.compiler
-    if not rules:
+    checks = policies.policy_checks(rules, flags)
+    if not checks:
         open_questions = [policies.NO_CHECKS_QUESTION, *(q for q in open_questions if q != policies.NO_CAP_QUESTION)]
     elif policies.per_order_cap(rules) is None and policies.NO_CAP_QUESTION not in open_questions:
         open_questions.append(policies.NO_CAP_QUESTION)
 
-    checks = [policies.rule_check(r) for r in rules]
     draft = api.PolicyDraft(
         draft_id=f"pd_{secrets.token_hex(8)}",
         card_id=card_id,
@@ -319,17 +319,22 @@ async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: R
             )
         draft_rules, flags = policies.load_rules(row.rules, row.checks)
         by_id = {r.id: r for r in draft_rules}
+        shown = policies.flag_checks(flags)
         chosen = [c.id for c in body.checks]
-        unknown = [i for i in chosen if i not in by_id]
+        unknown = [i for i in chosen if i not in by_id and i not in {c.id for c in shown}]
         if unknown:
             raise ApiError(422, "validation", "Some checks are not part of this draft.", {"unknown": unknown})
         accepted = [r for r in draft_rules if r.id in set(chosen)]
         missing, reasons = s.functions["lint_accepted"](draft_rules, [r.id for r in accepted])
+        # A flag check has no typed rule for lint to see; it is exact, so it may not be dropped either.
+        dropped = [c for c in shown if c.id not in set(chosen)]
+        missing = [*missing, *(c.id for c in dropped)]
+        reasons = [*reasons, *(f'you stated "{c.text}" and it was left out' for c in dropped)]
         if missing:
             raise ApiError(409, "lint_failed", "Not confirmed: " + "; ".join(reasons) + ".", {"missing": missing})
         flags = policies.accepted_flags(flags, draft_rules, accepted)
         uncertainty = body.uncertainty_policy
-        checks = [policies.rule_check(r) for r in accepted]
+        checks = policies.policy_checks(accepted, flags)
 
         viseca_draft_id = viseca_mandate_id = None
         if s.client is not None:
@@ -401,6 +406,8 @@ async def tighten_policy(card_id: str, body: api.TightenRequest, request: Reques
         added: list[Rule] = []
         unknown: list[str] = []
         for check in body.add_checks:
+            if check.id in policies.FLAG_CHECK_IDS and check.id in {c["id"] for c in row.checks}:
+                continue  # a flag check already in force: nothing to add
             if check.id not in proposed and check.id not in in_force:
                 unknown.append(check.id)
                 continue
@@ -434,7 +441,7 @@ async def tighten_policy(card_id: str, body: api.TightenRequest, request: Reques
             s.db_engine,
             row.mandate_id,
             rules=policies.store_rules(new_rules, flags),
-            checks=[policies.rule_check(r).model_dump(mode="json") for r in new_rules],
+            checks=[c.model_dump(mode="json") for c in policies.policy_checks(new_rules, flags)],
             uncertainty_policy=uncertainty,
         )
         s.bind_mandate(updated)

@@ -264,6 +264,12 @@ expire — that is a broken state, not a degraded one.
   (`field`, `operator`, `value`, `currency?`, `scope?`, `period_days?`) in Viseca's rule
   format. **The UI only ever sees `text`; `checks` sent back in C2 are treated as accepted
   ids.** Unknown id → 422. Edited text is ignored.
+- Two checks have no typed rule behind them; they show Policy flags so the customer sees
+  them before confirming: `requested_item` ("Only the item you asked for: <item>", C5) and
+  `nothing_extra` ("Nothing added that you didn't ask for", C10), both `source: 'exact'`,
+  `kind: 'item'`, after the rule checks. The engine reads the flags, never these checks.
+  C2 accepts their ids and, like any exact check, refuses a draft that drops one
+  (`missing` names the id); C4 treats one already in force as nothing to add.
 - C2 refuses a draft with no checks before anything else: 409 `lint_failed`, message
   "Not confirmed: no restriction could be read.", `detail: { missing: ['per_order_limit'] }`.
   Nothing is sent to Viseca and no mandate is stored.
