@@ -187,8 +187,10 @@ export function Home({
                 <span className="block truncate text-[15px] font-semibold text-ink">
                   {mostUrgent.merchant.name}
                 </span>
+                {/* The engine's own reason, not the uncertainty note that used
+                    to stand in for it (CLAUDE.md rule 10). */}
                 <span className="block truncate text-[13px] text-ink-muted">
-                  {mostUrgent.uncertainty?.note ?? mostUrgent.message}
+                  {mostUrgent.message}
                 </span>
               </span>
               <span className="shrink-0 text-[15px] font-semibold text-ink tabular-nums">

@@ -27,20 +27,6 @@ const BANNER_STYLE: Record<
 
 // Only 3 real categories (D-041) — the icon stays help-circle for every
 // uncertain sub-status (never a new category); only the background/text
-/**
- * Contract §6 item 10's provenance tag. Both labels open the same way because
- * both are true. `model` means a tier-3 pass rewrote the *wording* only — no
- * model sits in the decision path (`../../../CLAUDE.md` non-negotiable 1) — so
- * the tag names what was refined rather than leaving a bare "refined" to read
- * as the decision. Unknown values fall back to the half that is always true.
- */
-const EXPLANATION_SOURCE: Record<string, string> = {
-  template: 'Explained by OneGuard',
-  model: 'Explained by OneGuard · wording refined',
-}
-
-const EXPLANATION_SOURCE_FALLBACK = 'Explained by OneGuard'
-
 // color and the headline change with it.
 const UNCERTAIN_BANNER: Record<UncertainOutcome, { headline: string; bg: string; fg: string }> = {
   pending: { headline: 'Waiting for you', bg: 'bg-asked-tint', fg: 'text-asked' },
@@ -48,6 +34,20 @@ const UNCERTAIN_BANNER: Record<UncertainOutcome, { headline: string; bg: string;
   approved: { headline: 'Approved by you', bg: 'bg-approved-tint', fg: 'text-approved' },
   declined: { headline: 'Blocked by you', bg: 'bg-stopped-tint', fg: 'text-stopped' },
 }
+
+/**
+ * Contract §6 item 10's provenance tag, rendered beside the message it
+ * describes — which is what makes the short form unambiguous: "Refined"
+ * qualifies that sentence, never the decision. No model sits in the decision
+ * path (`../../../CLAUDE.md` non-negotiable 1). Unknown values fall back to the
+ * label that is true either way.
+ */
+const EXPLANATION_SOURCE: Record<string, string> = {
+  template: 'Explained by OneGuard',
+  model: 'Refined',
+}
+
+const EXPLANATION_SOURCE_FALLBACK = 'Explained by OneGuard'
 
 const EVIDENCE_STYLE: Record<
   EvidenceItem['outcome'],
@@ -218,14 +218,27 @@ export function DecisionDetail({
         <p className="mt-1 text-[13px] text-ink-muted">
           {formatShortDate(decision.occurred_at)} · {formatTime(decision.occurred_at)}
         </p>
-        {decision.counterfactual && (
-          <p className="mt-3 text-[14px] font-medium text-ink-soft">{decision.counterfactual}</p>
-        )}
-        {decision.explanation_source && (
-          <p className="mt-3 text-[11px] text-ink-muted">
-            {EXPLANATION_SOURCE[decision.explanation_source] ?? EXPLANATION_SOURCE_FALLBACK}
-          </p>
-        )}
+        {/*
+          The reason, first thing under the banner: CLAUDE.md rule 10 — a
+          decision with no visible reason is a bug. D-040 had removed the
+          restated reason text, which left the message unrendered on the one
+          screen whose whole job is explaining. The provenance tag sits beside it
+          rather than floating alone, so "Refined" plainly qualifies this
+          sentence and not the decision.
+        */}
+        <div className="mt-4 border-t border-hairline pt-4">
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-[15px] leading-[1.45] font-medium text-ink">{decision.message}</p>
+            {decision.explanation_source && (
+              <span className="mt-0.5 shrink-0 rounded-pill bg-surface-sunken px-2 py-0.5 text-[11px] text-ink-muted">
+                {EXPLANATION_SOURCE[decision.explanation_source] ?? EXPLANATION_SOURCE_FALLBACK}
+              </span>
+            )}
+          </div>
+          {decision.counterfactual && (
+            <p className="mt-2 text-[14px] font-medium text-ink-soft">{decision.counterfactual}</p>
+          )}
+        </div>
 
         <div className="mt-4 flex gap-6 border-t border-hairline pt-4 text-[13px]">
           <div>
