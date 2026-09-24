@@ -53,8 +53,8 @@
           }
         ],
         "agent_history": {
-          "attempts": 14,
-          "approved": 14
+          "attempts": 29,
+          "approved": 29
         },
         "insight": "Most of your recent grocery orders run well over CHF 20 — this cap fits a single small item, not a weekly shop."
       },
@@ -128,8 +128,8 @@
           }
         ],
         "agent_history": {
-          "attempts": 14,
-          "approved": 14
+          "attempts": 29,
+          "approved": 29
         },
         "insight": "Almost all your recent grocery orders already fit under CHF 120 — this limit shouldn't cause much friction."
       },
@@ -209,8 +209,8 @@
           }
         ],
         "agent_history": {
-          "attempts": 11,
-          "approved": 11
+          "attempts": 22,
+          "approved": 20
         },
         "insight": "Most of your recent sporting-goods orders were under CHF 200, from a mix of specialist and general retailers."
       },
@@ -290,8 +290,8 @@
           }
         ],
         "agent_history": {
-          "attempts": 14,
-          "approved": 14
+          "attempts": 21,
+          "approved": 21
         },
         "insight": "Your recent clothing orders comfortably fit CHF 250 — the rest of this card's activity is outside clothing and won't be touched."
       },
@@ -364,8 +364,8 @@
           }
         ],
         "agent_history": {
-          "attempts": 6,
-          "approved": 6
+          "attempts": 10,
+          "approved": 9
         },
         "insight": "Your recent electronics purchases fit under CHF 400 — the strongest signal here is unfamiliar or lookalike sellers, not price."
       },
