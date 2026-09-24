@@ -3,7 +3,9 @@
 A customer with no approved purchase in history and none in this run has no usual device,
 country or amount: W1, W3 and W4 are "no baseline yet" info, never an ask. From the first
 final approval in the run, that purchase's device and country are known (read from the
-stored event, as the worker and the offline replay store it) and its amount is the largest.
+stored event, as the worker and the offline replay store it; the ``InMemoryLedger`` reference
+keeps them from ``Ledger.note_event``) and its amount is the largest. Declines and pending
+step-ups teach nothing. Every test runs on both ledgers, so the reference models the cloud.
 """
 from __future__ import annotations
 
@@ -14,20 +16,24 @@ from sqlalchemy.orm import Session
 
 from oneguard.engine.facts import build_facts
 from oneguard.engine.ledger import StoreLedger
+from oneguard.engine.ledger_base import InMemoryLedger, Ledger
 from oneguard.engine.types import Policy
 from oneguard.engine.warnings import warning_signs
 from oneguard.pipeline import PipelineContext, decide_event
 from oneguard.store.db import init_db, make_engine
 from oneguard.store.schema import EventRaw
-from tests.test_c9_no_history import C1, CARD, MANDATE, NEW, NOW, event, history
+from tests.test_c9_no_history import C1, CARD, MANDATE, NEW, NOW, U1, event, history
 
 LIMIT_ONLY = Policy(mandate_id=MANDATE, status="active", instruction="Groceries up to CHF 50.",
                     uncertainty_policy="ask", rules=[C1])
 BASELINE_IDS = ("W1", "W3", "W4")
 
 
-@pytest.fixture
-def ledger(tmp_path: Path):
+@pytest.fixture(params=["memory", "store"])
+def ledger(request: pytest.FixtureRequest, tmp_path: Path):
+    if request.param == "memory":
+        yield InMemoryLedger(history=history())
+        return
     engine = make_engine(f"sqlite:///{tmp_path / 'baseline.sqlite'}")
     init_db(engine)
     with Session(engine, expire_on_commit=False) as s:
@@ -35,14 +41,15 @@ def ledger(tmp_path: Path):
     engine.dispose()
 
 
-def decide(ledger: StoreLedger, ev: dict):
+def decide(ledger: Ledger, ev: dict, policy: Policy = LIMIT_ONLY):
     """Store the event first, as the worker and the offline replay do, then decide it."""
-    auth = ev["authorization"]
-    ledger.session.add(EventRaw(live_authorization_id=auth["authorization_id"], run_id="run-new",
-                                source_authorization_id=auth["source_authorization_id"],
-                                received_at=NOW, deadline_at=NOW, event=ev))
-    ledger.session.commit()
-    ctx = PipelineContext(policy=LIMIT_ONLY, ledger=ledger, history=history(), run_id="run-new", now=lambda: NOW)
+    if isinstance(ledger, StoreLedger):
+        auth = ev["authorization"]
+        ledger.session.add(EventRaw(live_authorization_id=auth["authorization_id"], run_id="run-new",
+                                    source_authorization_id=auth["source_authorization_id"],
+                                    received_at=NOW, deadline_at=NOW, event=ev))
+        ledger.session.commit()
+    ctx = PipelineContext(policy=policy, ledger=ledger, history=history(), run_id="run-new", now=lambda: NOW)
     return decide_event(ev, ctx)
 
 
@@ -52,7 +59,7 @@ def with_device(ev: dict, device: str, country: str = "CH") -> dict:
     return ev
 
 
-def signs(ledger: StoreLedger, ev: dict) -> dict:
+def signs(ledger: Ledger, ev: dict) -> dict:
     facts = build_facts(ev, history())
     view = ledger.view(run_id="run-new", customer_id=NEW, card_id=CARD, at=facts.timestamp, period_days=None)
     return {s.id: s for s in warning_signs(facts, view, LIMIT_ONLY)}
@@ -113,3 +120,26 @@ def test_a_declined_or_pending_purchase_starts_no_baseline(ledger):
     assert engine.outcome == "decline"
     got = signs(ledger, with_device(event(minutes=60), "DVC-OTHER"))
     assert got["W1"].outcome_if_triggered == "info"
+
+
+def test_after_the_first_approval_a_new_country_asks(ledger):
+    decide(ledger, with_device(event(), "DVC-NEW", "CH"))
+    again = with_device(event(item="IT_B", minutes=60), "DVC-NEW", "DE")
+    got = signs(ledger, again)
+    assert not got["W1"].triggered
+    assert (got["W3"].triggered, got["W3"].outcome_if_triggered) == (True, "ask")
+    assert not got["W3"].detail.startswith("No baseline yet")
+
+
+def test_a_pending_step_up_teaches_nothing_until_approved(ledger):
+    asks = Policy(mandate_id=MANDATE, status="active", instruction="Groceries up to CHF 50.",
+                  uncertainty_policy="ask", rules=[C1, U1])
+    first = with_device(event(), "DVC-NEW")
+    engine, _, _ = decide(ledger, first, asks)
+    assert engine.outcome == "step_up"
+    assert signs(ledger, with_device(event(minutes=60), "DVC-OTHER"))["W1"].outcome_if_triggered == "info"
+
+    ledger.resolve(first["authorization"]["authorization_id"], "approve", "customer", NOW)
+    w1 = signs(ledger, with_device(event(minutes=60), "DVC-OTHER"))["W1"]
+    assert (w1.triggered, w1.outcome_if_triggered) == (True, "ask")
+    assert not signs(ledger, with_device(event(minutes=60), "DVC-NEW"))["W1"].triggered

@@ -134,6 +134,17 @@ def test_the_strictest_line_still_decides_the_order_window():
     assert (resolved.return_window_days.value, resolved.return_window_days.source) == (7, "regex")
 
 
+def test_tier_2_cannot_produce_a_recurring_fact():
+    """The schema has no recurring field, so no answer can set it (CLAUDE.md rule 2)."""
+    assert "recurring" not in SCHEMA["properties"]["lines"]["items"]["properties"]
+    facts = _facts("Laufschuh Größe 43, monatlich abgerechnet")
+    assert facts.items[0].recurring.known is False
+    provider = Answers(_line(size_eu=43))
+    resolved = resolve_unknowns(facts, evaluate_rules(facts, SHOES), provider, 1.5)
+    assert "recurring" not in provider.calls[0][0]
+    assert resolved.items[0].recurring == facts.items[0].recurring
+
+
 def test_amounts_merchant_categories_and_terms_are_never_touched():
     facts = _facts()
     resolved = resolve_unknowns(facts, evaluate_rules(facts, SHOES), Answers(_line(size_eu=43, days=30)), 1.5)
