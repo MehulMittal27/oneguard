@@ -124,19 +124,28 @@ export function OrderCapLeashMeter({
       </p>
       <p className="mt-1 text-[13px] text-ink-muted">per order — no rolling total on this card</p>
 
-      <div className="relative mt-6 h-[14px] rounded-meter bg-surface-active">
-        <div
-          className="absolute inset-y-0 w-[4px] rounded-meter bg-leash-limit"
-          style={{ left: `${capPosition}%` }}
-        />
-        {decisions.map((d) => (
-          <span
-            key={d.authorization_id}
-            className={`absolute top-1/2 size-[10px] -translate-x-1/2 -translate-y-1/2 border-2 border-surface ${DOT_STYLE[d.decision]}`}
-            style={{ left: `${Math.min(1.08, d.billing_amount_chf / scaleMax) * 100}%` }}
-            title={`${formatChf(d.billing_amount_chf)} — ${d.decision}`}
+      {/*
+        The dots are centred on their position, so the track keeps half a dot of
+        room at each end — otherwise the first and last are cut off by the card.
+        Position clamps at 100%: it used to run to 108%, which put an order above
+        the scale outside the card entirely. The scale already ends at 1.5x the
+        cap, so the far right reads as "off the end" without leaving the card.
+      */}
+      <div className="mx-[5px] mt-6">
+        <div className="relative h-[14px] rounded-meter bg-surface-active">
+          <div
+            className="absolute inset-y-0 w-[4px] rounded-meter bg-leash-limit"
+            style={{ left: `${capPosition}%` }}
           />
-        ))}
+          {decisions.map((d) => (
+            <span
+              key={d.authorization_id}
+              className={`absolute top-1/2 size-[10px] -translate-x-1/2 -translate-y-1/2 border-2 border-surface ${DOT_STYLE[d.decision]}`}
+              style={{ left: `${Math.min(1, d.billing_amount_chf / scaleMax) * 100}%` }}
+              title={`${formatChf(d.billing_amount_chf)} — ${d.decision}`}
+            />
+          ))}
+        </div>
       </div>
 
       <div className="mt-2 flex justify-between text-[13px] text-ink-soft">
