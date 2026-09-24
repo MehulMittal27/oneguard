@@ -60,7 +60,8 @@ export function NewPolicyCheck({
         <>
           {error && (
             <p className="text-[13px] text-destructive">
-              Couldn&apos;t confirm this policy — nothing was saved. Try again.
+              Couldn&apos;t confirm this policy. Nothing was approved while we were offline. Nothing
+              was saved. Try again.
             </p>
           )}
           <button

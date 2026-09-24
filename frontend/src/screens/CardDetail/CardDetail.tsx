@@ -3,6 +3,7 @@ import { revokePolicy } from '../../api/policy'
 import { DecisionMark } from '../../components/DecisionMark'
 import { BackChevronIcon, CheckIcon, HelpCircleIcon } from '../../components/icons/lucide'
 import { OrderCapLeashMeter, PeriodLeashMeter } from '../../components/LeashMeter'
+import { NetworkState } from '../../components/NetworkState'
 import { RevokeSheet } from '../../components/RevokeSheet'
 import { formatShortDate } from '../../lib/datetime'
 import { limitsFromMandate, spendFromMandate } from '../../lib/spend'
@@ -24,8 +25,13 @@ export function CardDetail({
   onAddPolicy: (cardId: string) => void
   onGoHome: () => void
 }) {
-  const { policiesByCard, status: policiesStatus, revokePolicyForCard } = usePolicy()
-  const { decisions } = useDecisions()
+  const {
+    policiesByCard,
+    status: policiesStatus,
+    retry: retryPolicies,
+    revokePolicyForCard,
+  } = usePolicy()
+  const { decisions, status: decisionsStatus, retry: retryDecisions } = useDecisions()
   const [revoking, setRevoking] = useState(false)
   const [viewingId, setViewingId] = useState<string | null>(null)
 
@@ -44,11 +50,14 @@ export function CardDetail({
           <BackChevronIcon size={20} strokeWidth={2} />
           Accounts
         </button>
+        {/* A failed C3 is not "no policy": say it failed, never imply the card is unguarded. */}
         {policiesStatus === 'loading' ? (
           <div aria-live="polite" aria-busy="true">
             <div className="h-40 animate-pulse rounded-card bg-surface-sunken" />
             <span className="sr-only">Loading policy</span>
           </div>
+        ) : policiesStatus === 'error' ? (
+          <NetworkState kind="error" label="this card's policy" onRetry={retryPolicies} />
         ) : (
           <p className="text-[15px] text-ink-muted">No policy found for card {cardId}.</p>
         )}
@@ -237,8 +246,14 @@ export function CardDetail({
 
       <div>
         <p className="mb-3 font-display text-[20px] font-bold text-ink">Card activity</p>
-        {cardDecisions.length === 0 ? (
-          <p className="text-[15px] text-ink-muted">Nothing on this card yet.</p>
+        {decisionsStatus === 'loading' ? (
+          <NetworkState kind="loading" label="card activity" />
+        ) : decisionsStatus === 'error' ? (
+          <NetworkState kind="error" label="card activity" onRetry={retryDecisions} />
+        ) : cardDecisions.length === 0 ? (
+          <NetworkState kind="empty" label="card activity">
+            Nothing on this card yet.
+          </NetworkState>
         ) : (
           <div className="flex flex-col gap-1">
             {cardDecisions.map((decision) => (

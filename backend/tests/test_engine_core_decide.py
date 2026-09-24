@@ -450,7 +450,7 @@ def _oracle_signals(ids: list[str], policy: Policy, related) -> list[Signal]:
 
 
 def _scenario_branches():
-    from tests.test_oracle import branches
+    from oneguard.replay.oracle import branches
 
     return [(sid, b) for sid in sorted(ORACLE["scenarios"]) for b in branches(sid)]
 
@@ -465,7 +465,7 @@ def test_data_pack_outcomes(pack_and_history, maker, scenario_id, branch):
     from oneguard.engine.policy import evaluate_rules as real_evaluate
     from oneguard.pipeline import PipelineContext, decide_event, period_days_of
     from oneguard.replay.events import build_events
-    from tests.test_oracle import _branch_answer, expected_outcome
+    from oneguard.replay.oracle import _branch_answer, expected_outcome
 
     pack, history = pack_and_history
     fixture = yaml.safe_load((POLICIES / f"{scenario_id}.yaml").read_text(encoding="utf-8"))
