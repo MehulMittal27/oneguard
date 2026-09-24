@@ -88,7 +88,7 @@ def test_step_up_on_an_unknown_rule_says_what_is_uncertain():
 
 
 def test_step_up_on_warning_signs_lists_them():
-    signs = [sig("W1"), sig("W2", detail="3 other purchase attempt(s) in the 10 minutes before this one.")]
+    signs = [sig("W1"), sig("W2", detail="3 other purchase attempts in the 10 minutes before this one.")]
     e = explain(decision("step_up", ["W1", "W2"]), facts(), policy(), [rule()], signs)
     assert "device you have not used before" in e.message and "3 other purchase" in e.message
 
@@ -245,3 +245,111 @@ def test_contradictory_sizes_are_named():
 def test_contradiction_template_without_a_marked_fact():
     e = explain(decision("step_up", codes=["shop_terms_contradictory"]), facts(), policy(), [rule()], [])
     assert e.message == "Waiting for you CHF 100.00: The shop's description contradicts itself."
+
+
+# --- who is invited to decide, and what a decline ends with (P1 review of #14) ----------
+
+
+def test_only_a_step_up_invites_the_customer_to_decide():
+    f, p, signals = _injected_everywhere()
+    step_up = explain(decision("step_up", ["A1"]), f, p, [rule()], signals)
+    assert step_up.message.endswith("they were ignored, so you decide.")
+    c5 = rule("C5", "fail", "Cart contains a monitor, not the road-running shoes you asked for",
+              counterfactual="Would approve with the road-running shoes")  # fmt: skip
+    for ids in (["C5", "A1"], ["A1", "C5"]):
+        declined = explain(decision("decline", ids), f, p, [c5], signals)
+        assert "you decide" not in declined.message, ids
+        assert declined.message.endswith("; would approve with the road-running shoes."), ids
+
+
+def _au0041():
+    """AU0041's shape: over the per-order limit and an unrequested protection plan (C1, C10),
+    A6 on the plan's line (decline), W4 weak evidence."""
+    c1 = rule("C1", "fail", "Order total: CHF 459.00. You asked for order total at or below CHF 400.00",
+              counterfactual="Would approve with total at or below CHF 400.00")  # fmt: skip
+    c10 = rule("C10", "fail", "Cart includes Extended protection plan, which you didn't ask for",
+               counterfactual="Would approve without Extended protection plan")  # fmt: skip
+    a6 = sig("A6", strength="protection", outcome="decline",
+             detail="Recurring charge you did not ask for: line 2 (CHF 79.00). The shop cannot bill repeatedly.")
+    w4 = sig("W4", strength="weak", detail="CHF 459.00 is more than your largest approved purchase (CHF 391.50).")
+    return [rule("C9"), c1, c10], [a6, w4]
+
+
+def test_a_decline_counterfactual_joins_every_failing_rule():
+    rules, signals = _au0041()
+    e = explain(decision("decline", ["C1", "C10"], ["per_order_limit_exceeded", "unrequested_item"]),
+                facts(amount=459.0), policy(), rules, signals)  # fmt: skip
+    cf = "Would approve with total at or below CHF 400.00 and without Extended protection plan"
+    assert e.counterfactual == f"{cf}."
+    assert e.message.startswith("Declined CHF 459.00: Order total: CHF 459.00; you asked for")
+    assert e.message.endswith(f"; {cf[0].lower()}{cf[1:]}.")
+    assert "also recurring charge you did not ask for: line 2 (CHF 79.00)" in e.message
+    assert "largest approved" not in e.message, "one weak sign alone is evidence, not a reason"
+
+
+def test_a_decline_counterfactual_is_never_from_an_evidence_only_signal():
+    c9 = rule("C9", "fail", "You haven't bought from this shop before",
+              counterfactual="Would approve at a shop you've bought from before")  # fmt: skip
+    signals = [sig("W1"), sig("A5", strength="protection", outcome="info", detail="Re-quote.")]
+    e = explain(decision("decline", ["C9"]), facts(), policy(), [c9], signals)
+    assert e.counterfactual == "Would approve at a shop you've bought from before."
+    ids_only = explain(decision("decline", ["W1"]), facts(), policy(), [rule()], [sig("W1")])
+    assert ids_only.counterfactual is None
+
+
+def test_a_decline_by_a_protection_alone_uses_its_counterfactual():
+    a7 = sig("A7", strength="protection", outcome="decline",
+             detail="This shop's name is 1 letter away from PixelHarbor, a shop you know, but it is a different shop.")
+    e = explain(decision("decline", ["A7"], ["lookalike_merchant"]), facts(), policy(), [rule()], [a7, sig("W1")])
+    assert e.counterfactual == "Would approve at the shop you know."
+    assert e.message.endswith("; would approve at the shop you know.")
+
+
+# --- the deciding reason leads ------------------------------------------------------------
+
+
+def test_a_duplicate_leads_with_the_repeat_not_a_warning_sign():
+    a3 = sig("A3", strength="protection", detail="Same shop and items as LIVE-1 25 min earlier (CHF 289.00 then, CHF 289.00 now).",
+             related=("LIVE-1", "duplicate_of"))  # fmt: skip
+    quiet = [sig(w, triggered=False, strength=s) for w, s in (("W1", "strong"), ("W3", "weak"), ("W4", "weak"))]
+    e = explain(decision("step_up", ["A3"], ["duplicate_suspected"]), facts(amount=289.0), policy(), [rule()], [a3, *quiet])
+    assert e.message == ("Waiting for you CHF 289.00: Same shop and items as LIVE-1 25 min earlier "
+                         "(CHF 289.00 then, CHF 289.00 now).")  # fmt: skip
+    w4 = sig("W4", strength="weak", detail="CHF 289.00 is more than your largest approved purchase (CHF 100.00).")
+    e = explain(decision("step_up", ["A3"], ["duplicate_suspected"]), facts(amount=289.0), policy(), [rule()], [w4, a3])
+    assert e.message.startswith("Waiting for you CHF 289.00: Same shop and items as LIVE-1")
+    assert "largest approved" not in e.message
+
+
+def test_supporting_signs_follow_the_deciding_rule():
+    c9 = rule("C9", "fail", "You haven't bought from this shop before", counterfactual="Would approve at a shop you know")
+    signs = [sig("W1"), sig("W2", detail="3 other purchase attempts in the 10 minutes before this one.")]
+    e = explain(decision("decline", ["C9"]), facts(), policy(), [c9], signs)
+    assert e.message == ("Declined CHF 100.00: You haven't bought from this shop before; also made from a device you "
+                         "have not used before and 3 other purchase attempts in the 10 minutes before this one; "
+                         "would approve at a shop you know.")  # fmt: skip
+
+
+def test_a_session_watch_step_up_never_leads_with_a_sign_that_did_not_decide():
+    w4 = sig("W4", strength="weak", detail="CHF 95.00 is more than your largest approved purchase (CHF 90.00).")
+    e = explain(decision("step_up", ["session_watch"], ["session_watch"]), facts(amount=95.0), policy(), [rule()], [w4])
+    assert e.message == f"Waiting for you CHF 95.00: {REASON_TEMPLATES['session_watch']}."
+
+
+# --- names, not codes; the engine's own words are never "removed" -------------------------
+
+
+def test_country_codes_are_never_lowercased_in_the_message():
+    signs = [sig("W3", strength="weak", detail="First purchase from a shop in Switzerland."),
+             sig("W5", strength="weak", detail="Made at night (04:xx Zurich time).")]  # fmt: skip
+    e = explain(decision("step_up", ["W3", "W5"], ["unusual_activity"]), facts(), policy(), [rule()], signs)
+    assert "in Switzerland" in e.message and "Zurich" in e.message and " ch" not in e.message
+
+
+def test_the_engines_own_wording_survives_an_injected_order():
+    f, p, signals = _injected_everywhere()
+    c1 = rule("C1", "fail", "Order total: CHF 520.00. You asked for order total at or below CHF 400.00",
+              counterfactual="Would approve with order total at or below CHF 400.00")  # fmt: skip
+    e = explain(decision("decline", ["C1"]), f, p, [c1], signals)
+    assert e.counterfactual == "Would approve with order total at or below CHF 400.00."
+    assert REMOVED not in e.message + e.counterfactual

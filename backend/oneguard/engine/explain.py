@@ -28,6 +28,7 @@ from oneguard.engine.protections import (
     AGENT_DIRECTED_PATTERNS,
     FLAGGED_SHOP_DETAIL,
     INSTRUCTIONS_IGNORED,
+    shop_texts,
 )
 from oneguard.engine.types import (
     EngineDecision,
@@ -74,6 +75,9 @@ REASON_TEMPLATES: dict[str, str] = {
     "ledger_mismatch": "the platform's spending total differs from ours",
     "period_reserved_pending": "an order still waiting for your answer would take you over your period limit",
     "shop_terms_contradictory": "the shop's description contradicts itself",
+    "rule_not_met": "it breaks a rule you set",
+    "unusual_activity": "more than one thing about how it was made is unusual",
+    "session_watch": "after the recent burst of unusual attempts on this card, we check with you until you approve a purchase",
     "stub": "the decision engine is not connected yet",
 }
 
@@ -143,6 +147,17 @@ def contradiction(facts: Facts) -> str | None:
     return None
 
 
+def injected_spans(facts: Facts) -> list[str]:
+    """Every piece of the shop's own text that reads as an instruction to the agent,
+    longest first. Only these are removed: the engine's own wording ("Would approve with
+    order total …") is never mistaken for an injection."""
+    spans = set(facts.agent_directed_text)
+    for _, text in shop_texts(facts):
+        for pattern in AGENT_DIRECTED_PATTERNS:
+            spans.update(m.group(0).lstrip(" \t\n.;:!") for m in pattern.finditer(text or ""))
+    return sorted(filter(None, spans), key=len, reverse=True)
+
+
 def clean(text: str | None, facts: Facts) -> str:
     """Shop-derived text with every instruction to the agent removed (E5), and internal
     markers (M5 reservation, raw contradiction lists) turned into plain words."""
@@ -150,10 +165,8 @@ def clean(text: str | None, facts: Facts) -> str:
         return ""
     text = text.replace(f"; {RESERVATION_ONLY}", "").replace(RESERVATION_ONLY, "")
     text = _CONTRADICTION.sub(_contradiction_phrase, text)
-    for span in facts.agent_directed_text:
+    for span in injected_spans(facts):
         text = re.sub(re.escape(span), REMOVED, text, flags=re.IGNORECASE)
-    for pattern in AGENT_DIRECTED_PATTERNS:
-        text = pattern.sub(REMOVED, text)
     return text.strip()
 
 
@@ -228,12 +241,16 @@ def _template(decision: EngineDecision) -> str:
 def _deciding(
     decision: EngineDecision, rules: list[RuleResult], signals: list[Signal]
 ) -> list[RuleResult | Signal]:
-    """The rule results and triggered signals behind the decision, most important first."""
+    """The rule results and triggered signals behind the decision, in decide's order.
+
+    When the decision names its deciding ids, only those decide: an id with no result of
+    its own (``session_watch``) leaves the reason to the reason-code template, never to a
+    signal that did not decide. Without ids (stubs), the failing or unknown rules decide.
+    """
     by_id: dict[str, RuleResult | Signal] = {r.rule_id: r for r in rules}
     by_id.update({s.id: s for s in signals if s.triggered})
-    named = [by_id[i] for i in decision.deciding_ids if i in by_id]
-    if named:
-        return named
+    if decision.deciding_ids:
+        return [by_id[i] for i in decision.deciding_ids if i in by_id]
     if decision.outcome == "decline":
         found: list[RuleResult | Signal] = [r for r in rules if r.outcome == "fail"]
         return found or [s for s in signals if s.triggered and s.outcome_if_triggered == "decline"]
@@ -243,13 +260,61 @@ def _deciding(
     return []
 
 
+def _supporting(
+    decision: EngineDecision, deciding: list[RuleResult | Signal], signals: list[Signal]
+) -> list[Signal]:
+    """Triggered signals that did not decide but would have asked on their own (a
+    protection, a strong sign, two weak signs): named after the deciding reason."""
+    if decision.outcome == "approve":
+        return []
+    named = {d.id for d in deciding if isinstance(d, Signal)}
+    weak = [s for s in signals if s.triggered and s.strength == "weak"]
+    return [
+        s for s in signals
+        if s.triggered and s.id not in named and s.id not in _INJECTION_IDS
+        and s.outcome_if_triggered != "info" and (s.strength != "weak" or len(weak) >= 2)
+    ]  # fmt: skip
+
+
+_INJECTION_IDS = ("A1", "S_agent_directed")
+
+
 def _injection_found(signals: list[Signal]) -> bool:
-    return any(s.triggered and s.id in ("A1", "S_agent_directed") for s in signals)
+    return any(s.triggered and s.id in _INJECTION_IDS for s in signals)
+
+
+def _lower_first(text: str) -> str:
+    """Mid-sentence casing: "Made from …" → "made from …"; "CHF 520.00 …" stays."""
+    return text[0].lower() + text[1:] if re.match(r"[A-Z][a-z]", text) else text
+
+
+def _capitalised(phrase: str) -> str:
+    return phrase[0].upper() + phrase[1:]
+
+
+def _reason(item: RuleResult | Signal, decision: EngineDecision, facts: Facts) -> str:
+    """One deciding (or supporting) rule or signal, in its own words."""
+    if isinstance(item, RuleResult):
+        if CONTRADICTORY in item.detail:  # "The shop's description contradicts itself about …"
+            m = _CONTRADICTION.search(item.detail)
+            phrase = _contradiction_phrase(m) if m else contradiction(facts)
+            return _capitalised(phrase or REASON_TEMPLATES["shop_terms_contradictory"])
+        return _clause(clean(item.detail, facts))
+    if item.id in _INJECTION_IDS:
+        ignored = INSTRUCTIONS_IGNORED.rstrip(".")
+        return f"{ignored}, so you decide" if decision.outcome == "step_up" else ignored
+    return _clause(_first_sentence(clean(item.detail, facts)))
 
 
 def _message(
-    decision: EngineDecision, facts: Facts, deciding: list[RuleResult | Signal], signals: list[Signal]
+    decision: EngineDecision,
+    facts: Facts,
+    deciding: list[RuleResult | Signal],
+    signals: list[Signal],
+    counterfactual: str | None,
 ) -> str:
+    """Lead with the deciding reason, then the supporting signals, then (decline only)
+    what would make it a yes. Only a step-up invites the customer to decide."""
     amount = f"CHF {facts.billing_amount_chf:.2f}"
     lead = LEADS[decision.outcome]
     if decision.outcome == "approve":
@@ -257,41 +322,65 @@ def _message(
         requote = next((s for s in signals if s.triggered and s.id == "A5"), None)
         if requote and requote.related:
             body = f"{body}; it is a new quote after the declined {requote.related[0]}"
-    elif "shop_terms_contradictory" in decision.reason_codes or (
-        deciding and isinstance(deciding[0], RuleResult) and CONTRADICTORY in deciding[0].detail
-    ):
-        phrase = contradiction(facts) or REASON_TEMPLATES["shop_terms_contradictory"]
-        body = phrase[0].upper() + phrase[1:]  # "The shop's description contradicts itself about …"
-    elif deciding:
-        first = deciding[0]
-        if isinstance(first, Signal) and first.id in ("A1", "S_agent_directed"):
-            body = INSTRUCTIONS_IGNORED.rstrip(".") + ", so you decide"
-        elif isinstance(first, Signal) and first.strength in ("strong", "weak"):
-            signs = [d for d in deciding if isinstance(d, Signal) and d.strength in ("strong", "weak")]
-            body = "; ".join(_clause(_first_sentence(clean(s.detail, facts))).lower() for s in signs)
-        elif isinstance(first, Signal):
-            body = _clause(_first_sentence(clean(first.detail, facts))) or _template(decision)
-        else:
-            body = _clause(clean(first.detail, facts)) or _template(decision)
-    else:
-        body = _template(decision)
-    also_injected = _injection_found(signals) and not (
-        deciding and isinstance(deciding[0], Signal) and deciding[0].id in ("A1", "S_agent_directed")
-    )
-    if also_injected and decision.outcome != "approve":
-        body = f"{body}; the shop's text also contained instructions aimed at the agent, which were ignored"
+        return _sentence(f"{lead} {amount}: {_clause(body)}")
+
+    reasons = [r for r in (_reason(d, decision, facts) for d in deciding) if r]
+    if not reasons and "shop_terms_contradictory" in decision.reason_codes:
+        reasons = [_capitalised(contradiction(facts) or REASON_TEMPLATES["shop_terms_contradictory"])]
+    reasons = reasons or [_template(decision)]
+    if deciding and isinstance(deciding[0], Signal) and deciding[0].strength in ("strong", "weak"):
+        reasons[0] = _lower_first(reasons[0])  # "Waiting for you CHF 165.00: made from a device …"
+    supporting = [_lower_first(r) for s in _supporting(decision, deciding, signals) if (r := _reason(s, decision, facts))]
+    if supporting:
+        reasons.append(f"also {_and(supporting)}")
+    if _injection_found(signals) and not any(isinstance(d, Signal) and d.id in _INJECTION_IDS for d in deciding):
+        reasons.append("the shop's text also contained instructions aimed at the agent, which were ignored")
+    if decision.outcome == "decline" and counterfactual:
+        reasons.append(_clause(counterfactual))
+    body = "; ".join([reasons[0], *(_lower_first(r) for r in reasons[1:])])
     return _sentence(f"{lead} {amount}: {_clause(body)}")
 
 
-def _counterfactual(
-    decision: EngineDecision, facts: Facts, deciding: list[RuleResult | Signal]
-) -> str | None:
-    if decision.outcome == "approve" or not deciding:
+_WOULD = re.compile(r"^would\s+(\w+)\s+", re.IGNORECASE)
+
+
+def _joined(counterfactuals: list[str]) -> str | None:
+    """"Would approve with A" + "Would approve without B" → "Would approve with A and without B"."""
+    texts = list(dict.fromkeys(_clause(t) for t in counterfactuals if t and t.strip()))
+    if not texts:
         return None
-    first = deciding[0]
-    if isinstance(first, RuleResult):
-        return _sentence(clean(first.counterfactual, facts)) or None
-    return SIGNAL_COUNTERFACTUALS.get(first.id)
+    verb = m[1].lower() if (m := _WOULD.match(texts[0])) else None
+    tails = []
+    for text in texts[1:]:
+        same = (n := _WOULD.match(text)) is not None and n[1].lower() == verb
+        tails.append(text[n.end():] if same and n else _lower_first(text))
+    return _sentence(_and([texts[0], *tails]))
+
+
+def _counterfactual(
+    decision: EngineDecision,
+    facts: Facts,
+    rules: list[RuleResult],
+    signals: list[Signal],
+    deciding: list[RuleResult | Signal],
+) -> str | None:
+    """E3. A decline: every failing rule's own counterfactual, joined with "and"; with no
+    failing rule, the declining protections'. Never an evidence-only signal. A step-up:
+    the deciding rule's or signal's."""
+    if decision.outcome == "decline":
+        failing = [clean(r.counterfactual, facts) for r in rules if r.outcome == "fail" and r.counterfactual]
+        if failing:
+            return _joined(failing)
+        return _joined([
+            SIGNAL_COUNTERFACTUALS.get(s.id, "") for s in signals
+            if s.triggered and s.strength == "protection" and s.outcome_if_triggered == "decline"
+        ])  # fmt: skip
+    if decision.outcome == "step_up" and deciding:
+        first = deciding[0]
+        if isinstance(first, RuleResult):
+            return _sentence(clean(first.counterfactual, facts)) or None
+        return SIGNAL_COUNTERFACTUALS.get(first.id)
+    return None
 
 
 @register("explain")
@@ -303,9 +392,10 @@ def explain(
     signals: list[Signal],
 ) -> Explanation:
     deciding = _deciding(decision, rules, signals)
+    counterfactual = _counterfactual(decision, facts, rules, signals, deciding)
     return Explanation(
-        message=_message(decision, facts, deciding, signals),
-        counterfactual=_counterfactual(decision, facts, deciding),
+        message=_message(decision, facts, deciding, signals, counterfactual),
+        counterfactual=counterfactual,
         evidence=_evidence(facts, policy, rules, signals, decision),
         injection_flag={"flagged": True, "reason": INSTRUCTIONS_IGNORED} if _injection_found(signals) else None,
         source="template",

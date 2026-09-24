@@ -68,7 +68,8 @@ def agent_directed_spans(text: str) -> list[str]:
     return [m.group(0) for p in AGENT_DIRECTED_PATTERNS if (m := p.search(text or ""))]
 
 
-def _shop_texts(facts: Facts) -> list[tuple[str, str]]:
+def shop_texts(facts: Facts) -> list[tuple[str, str]]:
+    """Every piece of text the shop wrote on this order, labelled (A1; explain.py E5)."""
     texts = [("merchant name", facts.merchant_name)]
     for line in facts.items:
         texts.append((f"line {line.line_no} name", line.item_name))
@@ -78,7 +79,7 @@ def _shop_texts(facts: Facts) -> list[tuple[str, str]]:
 
 def _a1(facts: Facts, ledger: LedgerView) -> Signal:
     where = []
-    for label, text in _shop_texts(facts):
+    for label, text in shop_texts(facts):
         spans = agent_directed_spans(text)
         if spans:
             where.append(label)
@@ -291,11 +292,13 @@ def _a7(facts: Facts, policy: Policy, known_names: Mapping[str, str] | None) -> 
     match = lookalike(facts, known_names)
     if match:
         merchant_id, distance = match
+        known = known_names[merchant_id]  # a catalogue name is shop text too: never quote an instruction
+        known = "a shop you know" if agent_directed_spans(known) else f"{known}, a shop you know"
         return Signal(
             id="A7", triggered=True, strength="protection", outcome_if_triggered=outcome,
             detail=(
-                f"This shop's name is {distance} letter(s) away from a shop you know "
-                f"({merchant_id}), but it is a different shop."
+                f"This shop's name is {distance} letter{'s' * (distance != 1)} away from {known}, "
+                "but it is a different shop."
             ),
             source="ledger",
         )  # fmt: skip
