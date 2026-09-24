@@ -953,7 +953,7 @@ def test_a_hanging_platform_answers_fast(db_url: str) -> None:
 
 @covers("bounded")
 def test_a_slow_compiler_or_database_answers_fast(db_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    def slow_compile(*_: Any) -> CompiledDraft:
+    def slow_compile(*_: Any, **__: Any) -> CompiledDraft:
         time.sleep(2)
         raise AssertionError("not reached in time")
 
@@ -1175,12 +1175,12 @@ def test_c2_relints_through_the_lint_accepted_interface(db_url: str) -> None:
         calls.append(accepted_ids)
         return lint_accepted(rules, accepted_ids)
 
-    def amount_compiler(text: str, *_: Any) -> CompiledDraft:
+    def amount_compiler(text: str, *_: Any, **__: Any) -> CompiledDraft:
         operator = text.split()[1]
         rule = Rule(id="C1", field="authorization.billing_amount_chf", operator=operator, value=59, currency="CHF",
                     scope="purchase", text=f"Total {operator} CHF 59", source="inferred", kind="amount")
         return CompiledDraft(instruction=text, rules=[rule], uncertainty_policy="ask", open_questions=[],
-                             dry_run=stubs.STUBS["dry_run"](None, None, ""), compiler="llm")
+                             dry_run=stubs.STUBS["dry_run"](None, None, "", ""), compiler="llm")
 
     async def scenario() -> None:
         engine = {**TEST_ENGINE, "compile_instruction": amount_compiler, "lint_accepted": recording_lint}

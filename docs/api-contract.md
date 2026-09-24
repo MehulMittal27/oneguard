@@ -139,6 +139,9 @@ DryRunResult { sample_size, would_violate, would_fit, would_ask, insight,
                              outcome: 'fit'|'violate'|'ask', reason }],    // NEW, ≤3 rows
                agent_history?: { attempts: number, approved: number } }   // NEW: history rows with initiator_type 'agent',
                                               // customer-level (all the customer's cards); the rest of the dry run is card-scoped
+                                              // a known-shop check (merchant.known_shop / familiar_on_card, or requires_known_shop
+                                              // alone) makes a purchase at a shop the card had not bought from before 'ask', never
+                                              // 'violate': the same for a form and an instruction draft
 
 PolicyDraft  { draft_id, card_id, instruction, checks: RuleCheck[],   // instruction: the C1 text verbatim, or exactly
                                               // "Built from the form" for a form draft; never the check texts
