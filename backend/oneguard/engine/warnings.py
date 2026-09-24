@@ -23,6 +23,19 @@ from oneguard.engine.types import Facts, LedgerView, Policy, Signal
 BURST_ATTEMPTS = 2
 NIGHT_START_HOUR = 0
 NIGHT_END_HOUR = 5
+# Country names the customer reads (ISO 3166-1 alpha-2); any other code is shown uppercase.
+COUNTRY_NAMES = {
+    "AT": "Austria", "BE": "Belgium", "CH": "Switzerland", "CN": "China", "DE": "Germany",
+    "DK": "Denmark", "ES": "Spain", "FR": "France", "GB": "the United Kingdom", "IE": "Ireland",
+    "IT": "Italy", "LI": "Liechtenstein", "LU": "Luxembourg", "NL": "the Netherlands",
+    "PL": "Poland", "PT": "Portugal", "SE": "Sweden", "US": "the United States",
+}  # fmt: skip
+
+
+def country_name(code: str | None) -> str:
+    """"ch" → "Switzerland"; an unlisted code uppercase; never a lowercase code."""
+    code = (code or "").strip().upper()
+    return COUNTRY_NAMES.get(code, code or "an unknown country")
 
 
 def _sign(sign_id: str, triggered: bool, strength: str, detail: str, source: str) -> Signal:
@@ -43,13 +56,13 @@ def w1_new_device(facts: Facts, ledger: LedgerView) -> Signal:
 def w2_burst(facts: Facts) -> Signal:
     count = facts.recent_attempt_count_10m
     triggered = count >= BURST_ATTEMPTS
-    detail = f"{count} other purchase attempt(s) in the 10 minutes before this one."
+    detail = f"{count} other purchase attempt{'s' * (count != 1)} in the 10 minutes before this one."
     return _sign("W2", triggered, "strong", detail, "ledger")
 
 
 def w3_new_country(facts: Facts, ledger: LedgerView) -> Signal:
-    country = facts.merchant_country
-    if country in ledger.known_countries:
+    country = country_name(facts.merchant_country)
+    if facts.merchant_country in ledger.known_countries:
         return _sign("W3", False, "weak", f"You have bought from shops in {country} before.", "history")
     return _sign("W3", True, "weak", f"First purchase from a shop in {country}.", "history")
 

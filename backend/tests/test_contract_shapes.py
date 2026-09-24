@@ -64,6 +64,11 @@ DRY_RUN = {
     "examples": [DRY_RUN_EXAMPLE],
     "agent_history": {"attempts": 10, "approved": 9},
 }
+CONFIRMATION = {
+    "rule_text": "from the official ticket seller",
+    "merchant_name": "EventForge",
+    "item_name": "Concert ticket",
+}
 USAGE = {
     "per_order_limit_chf": 120,
     "period_limit_chf": 300,
@@ -72,6 +77,7 @@ USAGE = {
     "period_window_start": "2026-08-03T09:12:00Z",
     "pending_chf": 0,
     "fulfilment": {"bought": 0, "requested": 1},
+    "confirmations": [CONFIRMATION],
     "as_of": "2026-08-10T09:12:00Z",
 }
 MANDATE = {
@@ -172,6 +178,7 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
         "compiler": "fallback",
     },
     api.Fulfilment: {"bought": 0, "requested": 1},
+    api.Confirmation: CONFIRMATION,
     api.MandateUsage: USAGE,
     api.Mandate: MANDATE,
     api.Evidence: EVIDENCE,
@@ -290,6 +297,8 @@ def test_optional_fields_are_omitted_and_nullable_fields_are_null() -> None:
     for key in ("deadline_at", "merchant_meta", "resolved_by", "latency_ms"):
         assert key not in dumped
     assert "kind" not in api.RuleCheck(id="a", text="t", source="exact", uncertainty=None).model_dump()
+    usage = {k: v for k, v in USAGE.items() if k != "confirmations"}
+    assert api.MandateUsage.model_validate(usage).model_dump(mode="json") == usage
 
 
 @pytest.mark.parametrize(

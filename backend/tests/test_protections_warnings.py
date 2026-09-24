@@ -117,3 +117,11 @@ def test_registered_warning_signs_takes_the_per_order_limit_from_the_policy():
     assert signal(W.warning_signs(f, view(), policy()), "W4").triggered
     assert not signal(W.warning_signs(f, view(), policy([limit_rule(600)])), "W4").triggered
     assert signal(W.warning_signs(f, view(), policy([limit_rule(599.99)])), "W4").triggered
+
+
+@pytest.mark.parametrize(("code", "shown"), [("DE", "Germany"), ("ch", "Switzerland"), ("gb", "the United Kingdom"),
+                                             ("zz", "ZZ")])  # fmt: skip
+def test_w3_names_the_country_never_a_lowercase_code(code, shown):
+    w3 = signal(run(facts(merchant_country=code)), "W3")
+    assert w3.detail.endswith(f"in {shown}.") or w3.detail.endswith(f"in {shown} before.")
+    assert f" {code.lower()}." not in w3.detail
