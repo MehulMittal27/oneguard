@@ -5,8 +5,9 @@ Two layers:
   totals, policy fixtures), so a typo in the oracle can never pass as an engine result.
 - The end-to-end run replays every scenario through `pipeline.decide_event` with a fresh
   ledger, once per `depends` branch, with soft signals on and off, and compares each
-  outcome. It is skipped until Gate 0 lands the pipeline and xfail until Gate 1 merges
-  the engine lanes.
+  outcome. It runs on P2's StoreLedger and on the InMemoryLedger reference; the
+  reference has no session watch, so scenarios whose expected outcomes cite it are
+  strict xfail on the reference only.
 
 Test data may name scenario and AU ids; the engine may not (test_no_scenario_refs.py).
 """
@@ -268,7 +269,12 @@ def test_policy_fixture_loads_as_the_engine_policy(scenario_id):
     assert any(rule.id == "C1" for rule in policy.rules)
 
 
-@pytest.mark.xfail(strict=False, reason="engine lanes (P2, P5) merge at Gate 1; stubs step_up everything")
+def needs_session_watch(scenario_id: str) -> bool:
+    """An expected outcome in the scenario cites the session watch (rules.md W-rule 4)."""
+    rows = ORACLE["scenarios"][scenario_id]["purchases"]
+    return any("session_watch" in option.get("rules", []) for row in rows for option in row.get("depends", [row]))
+
+
 @pytest.mark.parametrize("kind", LEDGERS)
 @pytest.mark.parametrize("signals", [False, True], ids=["signals-off", "signals-on"])
 @pytest.mark.parametrize(
@@ -276,7 +282,9 @@ def test_policy_fixture_loads_as_the_engine_policy(scenario_id):
     [(s, b) for s in sorted(ORACLE["scenarios"]) for b in branches(s)],
     ids=lambda v: v if isinstance(v, str) else (v.label if v else "no-depends"),
 )
-def test_oracle_outcomes(pack, history, monkeypatch, tmp_path, scenario_id, branch, signals, kind):
+def test_oracle_outcomes(pack, history, monkeypatch, tmp_path, request, scenario_id, branch, signals, kind):
+    if kind == "memory" and needs_session_watch(scenario_id):
+        request.applymarker(pytest.mark.xfail(strict=True, reason="InMemoryLedger has no session watch"))
     monkeypatch.setenv("ONEGUARD_SOFT_SIGNALS", "keywords" if signals else "off")
     with fresh_ledger(kind, history, tmp_path) as ledger:
         actual = _run_scenario(pack, history, scenario_id, branch, signals, ledger)
