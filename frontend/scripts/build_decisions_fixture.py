@@ -213,6 +213,8 @@ CURATION = {
             {"rule": "Earlier shop text", "outcome": "info", "detail": "This shop's text on the earlier order tried to instruct the agent. Noted; this order's own text is clean.", "source": "history"},
         ],
         "related": {"authorization_id": "AU0037", "relation": "requote_of"},
+        # Reads as rewritten prose, not a filled slot — the tier-3 case.
+        "explanation_source": "model",
     },
     "AU0036": {
         "decision": "uncertain",
@@ -245,6 +247,8 @@ CURATION = {
             {"rule": "Seller", "outcome": "pass", "detail": "PixelHarbor is a seller you've bought from before."},
         ],
         "counterfactual": "Would approve at CHF 400 or less.",
+        # Slot-filled from the numbers alone — nothing to rewrite.
+        "explanation_source": "template",
     },
     "AU0039": {
         "decision": "stopped",
@@ -257,6 +261,7 @@ CURATION = {
             {"rule": "Per-order limit", "outcome": "pass", "detail": "CHF 340.00 is within your CHF 400 limit."},
             {"rule": "Seller", "outcome": "fail", "detail": "“PixelHarbour” is a different seller from “PixelHarbor,” which you've used before."},
         ],
+        "explanation_source": "model",
     },
     "AU0040": {
         "decision": "uncertain",
@@ -281,6 +286,10 @@ CURATION = {
 
 # Optional contract additions (docs/api-contract.md §2): copied only when a
 # row curates them, so every other row keeps the older payload shape.
+#
+# `explanation_source` is curated: no tier-3 rewrite exists to observe, so the
+# three rows carrying it were chosen by how their `message` reads. The rest omit
+# it, which exercises the absent case in the UI.
 OPTIONAL_KEYS = ("counterfactual", "related", "session", "explanation_source", "resolved_by")
 
 

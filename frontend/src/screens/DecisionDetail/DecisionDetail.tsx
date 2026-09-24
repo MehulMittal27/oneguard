@@ -26,6 +26,20 @@ const BANNER_STYLE: Record<
 
 // Only 3 real categories (D-041) — the icon stays help-circle for every
 // uncertain sub-status (never a new category); only the background/text
+/**
+ * Contract §6 item 10's provenance tag. Both labels open the same way because
+ * both are true. `model` means a tier-3 pass rewrote the *wording* only — no
+ * model sits in the decision path (`../../../CLAUDE.md` non-negotiable 1) — so
+ * the tag names what was refined rather than leaving a bare "refined" to read
+ * as the decision. Unknown values fall back to the half that is always true.
+ */
+const EXPLANATION_SOURCE: Record<string, string> = {
+  template: 'Explained by OneGuard',
+  model: 'Explained by OneGuard · wording refined',
+}
+
+const EXPLANATION_SOURCE_FALLBACK = 'Explained by OneGuard'
+
 // color and the headline change with it.
 const UNCERTAIN_BANNER: Record<UncertainOutcome, { headline: string; bg: string; fg: string }> = {
   pending: { headline: 'Waiting for you', bg: 'bg-asked-tint', fg: 'text-asked' },
@@ -221,6 +235,11 @@ export function DecisionDetail({
         </p>
         {decision.counterfactual && (
           <p className="mt-3 text-[14px] font-medium text-ink-soft">{decision.counterfactual}</p>
+        )}
+        {decision.explanation_source && (
+          <p className="mt-3 text-[11px] text-ink-muted">
+            {EXPLANATION_SOURCE[decision.explanation_source] ?? EXPLANATION_SOURCE_FALLBACK}
+          </p>
         )}
 
         <div className="mt-4 flex gap-6 border-t border-hairline pt-4 text-[13px]">

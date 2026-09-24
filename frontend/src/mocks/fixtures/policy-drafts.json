@@ -36,6 +36,26 @@
         "would_violate": 10,
         "would_fit": 0,
         "would_ask": 20,
+        "examples": [
+          {
+            "occurred_at": "2026-07-30T18:59:36Z",
+            "merchant_name": "Neighbour Pantry",
+            "billing_amount_chf": 58.9,
+            "outcome": "violate",
+            "reason": "Over your CHF 20 cap"
+          },
+          {
+            "occurred_at": "2026-07-24T13:59:44Z",
+            "merchant_name": "HomeMend Market",
+            "billing_amount_chf": 117.0,
+            "outcome": "ask",
+            "reason": "home improvement, not groceries"
+          }
+        ],
+        "agent_history": {
+          "attempts": 14,
+          "approved": 14
+        },
         "insight": "Most of your recent grocery orders run well over CHF 20 — this cap fits a single small item, not a weekly shop."
       },
       "compiler": "llm",
@@ -84,6 +104,33 @@
         "would_violate": 1,
         "would_fit": 9,
         "would_ask": 20,
+        "examples": [
+          {
+            "occurred_at": "2026-07-07T16:28:09Z",
+            "merchant_name": "Alpine Basket",
+            "billing_amount_chf": 121.0,
+            "outcome": "violate",
+            "reason": "Over your CHF 120 cap"
+          },
+          {
+            "occurred_at": "2026-07-24T13:59:44Z",
+            "merchant_name": "HomeMend Market",
+            "billing_amount_chf": 117.0,
+            "outcome": "ask",
+            "reason": "home improvement, not groceries"
+          },
+          {
+            "occurred_at": "2026-07-30T18:59:36Z",
+            "merchant_name": "Neighbour Pantry",
+            "billing_amount_chf": 58.9,
+            "outcome": "fit",
+            "reason": "Within your CHF 120 cap"
+          }
+        ],
+        "agent_history": {
+          "attempts": 14,
+          "approved": 14
+        },
         "insight": "Almost all your recent grocery orders already fit under CHF 120 — this limit shouldn't cause much friction."
       },
       "compiler": "llm",
@@ -138,6 +185,33 @@
         "would_violate": 1,
         "would_fit": 6,
         "would_ask": 23,
+        "examples": [
+          {
+            "occurred_at": "2026-07-25T12:49:38Z",
+            "merchant_name": "AlpenWerk Sport",
+            "billing_amount_chf": 252.0,
+            "outcome": "violate",
+            "reason": "Over your CHF 200 cap"
+          },
+          {
+            "occurred_at": "2026-07-27T04:34:51Z",
+            "merchant_name": "StoryArc Media",
+            "billing_amount_chf": 11.38,
+            "outcome": "ask",
+            "reason": "subscriptions, not sporting goods"
+          },
+          {
+            "occurred_at": "2026-07-30T15:06:49Z",
+            "merchant_name": "TrailSpark",
+            "billing_amount_chf": 195.0,
+            "outcome": "fit",
+            "reason": "Within your CHF 200 cap"
+          }
+        ],
+        "agent_history": {
+          "attempts": 11,
+          "approved": 11
+        },
         "insight": "Most of your recent sporting-goods orders were under CHF 200, from a mix of specialist and general retailers."
       },
       "compiler": "llm",
@@ -192,6 +266,26 @@
         "would_violate": 0,
         "would_fit": 2,
         "would_ask": 28,
+        "examples": [
+          {
+            "occurred_at": "2026-07-28T18:11:51Z",
+            "merchant_name": "MealWing",
+            "billing_amount_chf": 38.0,
+            "outcome": "ask",
+            "reason": "food delivery, not clothing"
+          },
+          {
+            "occurred_at": "2026-07-18T19:42:38Z",
+            "merchant_name": "Milano Weave",
+            "billing_amount_chf": 85.35,
+            "outcome": "fit",
+            "reason": "Within your CHF 250 cap"
+          }
+        ],
+        "agent_history": {
+          "attempts": 14,
+          "approved": 14
+        },
         "insight": "Your recent clothing orders comfortably fit CHF 250 — the rest of this card's activity is outside clothing and won't be touched."
       },
       "compiler": "llm",
@@ -246,6 +340,26 @@
         "would_violate": 0,
         "would_fit": 7,
         "would_ask": 23,
+        "examples": [
+          {
+            "occurred_at": "2026-07-21T11:07:51Z",
+            "merchant_name": "LakeLine Mobility",
+            "billing_amount_chf": 45.9,
+            "outcome": "ask",
+            "reason": "transport, not electronics"
+          },
+          {
+            "occurred_at": "2026-07-16T09:20:06Z",
+            "merchant_name": "PixelHarbor",
+            "billing_amount_chf": 266.0,
+            "outcome": "fit",
+            "reason": "Within your CHF 400 cap"
+          }
+        ],
+        "agent_history": {
+          "attempts": 6,
+          "approved": 6
+        },
         "insight": "Your recent electronics purchases fit under CHF 400 — the strongest signal here is unfamiliar or lookalike sellers, not price."
       },
       "compiler": "llm",

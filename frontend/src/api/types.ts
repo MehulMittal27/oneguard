@@ -81,6 +81,9 @@ export interface DryRunResult {
     outcome: 'fit' | 'violate' | 'ask'
     reason: string
   }[]
+  // History rows with initiator_type 'agent'. See NewPolicyCheck's
+  // agentHistoryLine for the scope this is rendered under.
+  agent_history?: { attempts: number; approved: number }
 }
 
 export interface PolicyDraft {
@@ -190,4 +193,45 @@ export interface Decision {
   explanation_source?: 'template' | 'model'
   // Resolved step-ups only: a customer's answer or the window timing out.
   resolved_by?: 'customer' | 'timeout'
+}
+
+// Operator-only shapes (`../docs/api-contract.md` §1.1 D1–D6), for the `?demo=1`
+// strip. Field-for-field with the backend's `api/models.py`.
+export interface ReplayStatus {
+  scenario_id: string
+  card_id: string
+  delivered: number
+  total: number
+  running: boolean
+  next_at: string | null
+}
+
+export interface LiveRun {
+  run_id: string
+  scenario_id: string
+  card_id: string
+  mandate_id: string
+  state: 'starting' | 'running' | 'done' | 'error'
+  delivered: number
+  decided: number
+  pending_human: number
+  total: number
+  worker_ok: boolean
+  last_error: string | null
+}
+
+export interface LedgerSnapshotEntry {
+  authorization_id: string
+  occurred_at: string
+  decision: DecisionOutcome
+  counted_chf: number
+  note: string
+}
+
+export interface LedgerSnapshot {
+  card_id: string
+  mandate_id: string
+  entries: LedgerSnapshotEntry[]
+  period_spent_chf: number
+  frozen: boolean
 }

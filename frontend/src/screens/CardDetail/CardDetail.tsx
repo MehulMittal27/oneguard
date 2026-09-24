@@ -176,8 +176,14 @@ export function CardDetail({
           </button>
         ) : (
           <>
-            <p className="mt-4 text-[13px] text-ink-muted">
+            {/* The mockup's note says revoking "declines anything still waiting",
+                which this system does not do: `../docs/rules.md` Q6 declines what
+                arrives *after* a revoke, and Appendix A keeps revoke off anything
+                in flight. */}
+            <p className="mt-4 text-[13px] leading-[1.45] text-ink-muted">
               A policy can only be tightened or revoked — loosening it means writing a new one.
+              After you revoke, anything your agent proposes next is declined; a purchase already
+              waiting for your answer is unaffected until the platform confirms it.
             </p>
             <button
               type="button"

@@ -46,6 +46,10 @@ function fallbackDraft(cardId: string, instruction: string): PolicyDraft {
       "This instruction doesn't match anything we've tested yet — read the checks over carefully before confirming.",
     ],
     dry_run: EMPTY_DRY_RUN,
+    // This function is the rule-based parse the contract's 'fallback' means, so
+    // it says so. In mock mode any unrecognised instruction lands here, which is
+    // what exercises the review screen's banner.
+    compiler: 'fallback',
   }
 }
 
@@ -90,6 +94,8 @@ function formToDraft(cardId: string, form: FormInput): PolicyDraft {
     uncertainty_policy: form.uncertainty_policy,
     open_questions: [],
     dry_run: EMPTY_DRY_RUN,
+    // The customer typed the rules themselves; nothing read anything.
+    compiler: 'form',
   }
 }
 

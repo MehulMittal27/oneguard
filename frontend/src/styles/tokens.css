@@ -3,31 +3,48 @@
  * Security print is deferred (D-018, D-020); these names match DESIGN.md's token
  * names exactly so adding it later is a values-only change, per DESIGN.md's own
  * "build against Ink and signal first" guidance.
+ *
+ * 2026-09-24: the Ink and signal values below were recalibrated against real
+ * Viseca "one" app screenshots (home/analytics, a card screen, a 3-D Secure
+ * confirmation) so this UI reads as the challenge partner's app: white surfaces
+ * throughout, near-black as the one ink/primary colour for text and buttons, and
+ * one sparing blue accent. That replaces this file's earlier warm-cream ground,
+ * navy ink and purple accent. Token NAMES are unchanged, so this was a
+ * values-only swap; the two structural consequences (a white overview hero and a
+ * tab bar with no pill) live in the components, not here.
+ *
+ * This file is the source of truth for the values — nothing external is fetched
+ * or mirrored.
+ *
+ * The blue (#2f6fed family) is a visual estimate from those screenshots, not a
+ * confirmed Viseca brand hex — replace it if the real one becomes available.
  */
 :root {
   /* Color */
-  --ground: #f4f1ea;
+  --ground: #f2f5f6;
   --surface: #ffffff;
-  --surface-sunken: #efebdf;
-  --surface-active: #e7e2d6;
-  --surface-expired: #ece8de;
+  --surface-sunken: #eaf0f1;
+  --surface-active: #e1e7e8;
+  --surface-expired: #e6eced;
   /* New token, not from the original DESIGN.md artifacts (see D-022): a
-     blue-ish pill background for the active tab-bar item, split off from
-     `surface-active` so the Sandbox chip (which shares that token) doesn't
-     also turn blue. */
-  --tab-active: #e9e1f6;
-  --ink: #14213d;
-  --ink-soft: #3b4458;
-  --ink-muted: #5b6478;
-  --ink-tab: #5f6779;
-  --hairline: #e2ddd1;
-  --border-quiet: #dad4c5;
-  --border-dashed: #c9c2b1;
-  --card-icon-gray: #b7b0a0;
-  --on-ink: #f4f1ea;
-  --on-ink-soft: #d5dbea;
-  --on-ink-muted: #aeb7cc;
-  --on-ink-rule: #f4f1ea29;
+     tinted pill background for the active tab-bar item, split off from
+     `surface-active` so the Testing chip (which shares that token) doesn't
+     also pick up the tint. The recalibrated theme draws the active tab with
+     colour alone and no pill, so nothing reads this today; kept defined, and
+     retuned to the blue family, in case the pill ever comes back. */
+  --tab-active: #dce8fd;
+  --ink: #121214;
+  --ink-soft: #34424a;
+  --ink-muted: #56636b;
+  --ink-tab: #58656d;
+  --hairline: #dce3e4;
+  --border-quiet: #d2dadc;
+  --border-dashed: #c0cbcd;
+  --card-icon-gray: #abb8bb;
+  --on-ink: #ffffff;
+  --on-ink-soft: #c7cbce;
+  --on-ink-muted: #9da3a8;
+  --on-ink-rule: #ffffff29;
   --approved: #1b7a4b;
   --approved-tint: #e3f3ea;
   --approved-on-ink: #5fd39a;
@@ -44,25 +61,25 @@
   --asked-dot: #b26b00;
   --asked-on-ink: #f5b942;
   --asked-on-ink-fill: #f5b94238;
-  --leash-fill: #14213d;
-  --leash-fill-on-ink: #f4f1ea;
-  --leash-limit: #e0561b;
-  --leash-limit-on-ink: #ff7a3d;
-  --cord-accent: #7c3aed;
-  --cord-accent-on-ink: #b794f6;
+  --leash-fill: #121214;
+  --leash-fill-on-ink: #f2f5f6;
+  --leash-limit: #2f6fed;
+  --leash-limit-on-ink: #6fa8ff;
+  --cord-accent: #2f6fed;
+  --cord-accent-on-ink: #6fa8ff;
   /* Dedicated to CountdownBar — kept separate from asked-track/asked-dot
      (the "uncertain" decision-color family) so retuning the ticking-clock
      color never implies a change to the uncertain/asked semantic. */
-  --countdown-track: #eae1f6;
+  --countdown-track: #dce8fd;
   --countdown-fill: var(--cord-accent);
   --alert-badge: #b42318;
   --destructive: #b42318;
   --destructive-border: #e7c4bf;
-  --scrim: #14213d8c;
+  --scrim: #1212148c;
   /* Presentational only — the phone-frame bezel/backdrop shown around the
      app at desktop widths (D-065, `DeviceFrame`), never seen on an actual
-     phone viewport. `-backdrop` aliases `ink` on purpose, one value. */
-  --device-bezel: #0e1524;
+     phone viewport. `-backdrop` aliases `ground` on purpose, one value. */
+  --device-bezel: #0b0b0d;
   --device-backdrop: var(--ground);
 
   /* Spacing (DESIGN.md space-1..9) */
@@ -89,7 +106,11 @@
   --corner-sheet: 28px;
   --corner-pill: 999px;
 
-  /* Type faces (DESIGN.md §Typography) */
-  --typeface-display: 'Bricolage Grotesque', 'Avenir Next', system-ui, sans-serif;
+  /* Type faces (DESIGN.md §Typography). The recalibrated Ink and signal theme
+     is a single family — the design system's `display-ink` and `sans-ink` are
+     both Instrument Sans, with weight rather than a second face carrying the
+     display role. `--typeface-display` is kept as its own token so Security
+     print can still map it to a serif later. */
+  --typeface-display: 'Instrument Sans', 'Avenir Next', system-ui, sans-serif;
   --typeface-body: 'Instrument Sans', 'Avenir Next', system-ui, sans-serif;
 }

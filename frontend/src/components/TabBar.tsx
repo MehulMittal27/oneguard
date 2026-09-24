@@ -39,13 +39,16 @@ export function TabBar({
               isActive ? 'text-ink' : 'text-ink-tab'
             }`}
           >
-            <span
-              className={`flex h-[30px] w-14 items-center justify-center rounded-pill ${
-                isActive ? 'bg-tab-active' : ''
-              }`}
-            >
+            {/*
+              No pill behind the active icon: the design system's recalibration
+              against the Viseca "one" app found a plain tab bar there, so the
+              active tab is carried by icon and label colour alone (`text-ink`
+              vs `text-ink-tab` on the button). The fixed box stays — it holds
+              the row height steady and anchors the approvals badge.
+            */}
+            <span className="flex h-[30px] w-14 items-center justify-center">
               <span className="relative inline-flex">
-                <Icon size={22} strokeWidth={1.8} />
+                <Icon size={22} strokeWidth={1.8} filled={isActive} />
                 {id === 'approvals' && approvalsCount > 0 && (
                   <span
                     aria-hidden="true"
@@ -56,7 +59,16 @@ export function TabBar({
                 )}
               </span>
             </span>
-            <span className="text-[11px] font-medium">{label}</span>
+            {/*
+              Shape and weight, not colour, carry the active state now that the
+              pill is gone: the icon is drawn solid (`filled` above) and the
+              label goes semibold. Colour alone would be the one thing this
+              project's accessibility convention rules out. `aria-current`
+              covers assistive tech either way.
+            */}
+            <span className={`text-[11px] ${isActive ? 'font-semibold' : 'font-medium'}`}>
+              {label}
+            </span>
           </button>
         )
       })}
