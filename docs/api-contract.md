@@ -228,18 +228,23 @@ expire — that is a broken state, not a degraded one.
 | `authorization.billing_amount_chf` | total in CHF, delivery included (never add delivery again) |
 | `authorization.billing_amount_chf` + `scope: period`, `period_days: 7` | rolling window; sum of **final approvals** whose simulated timestamp ≥ current − 7×24h |
 | `merchant.merchant_category` | trusted catalogue category |
-| `merchant.familiar_on_card` | `"true"` if ≥1 approved purchase on this card at this `merchant_id` (history + this run's finals) |
+| `merchant.known_shop` | `"true"` if ≥1 approved purchase by this customer at this `merchant_id` on any of their cards (history + this run's finals); customer-level per rules.md Q7. `merchant.familiar_on_card` is accepted as an alias for the same check |
 | `items[].item_category` | every cart line must satisfy `in` / `not_in` |
 | `items[].size_eu` | regex-extracted from `item_details`; `unknown` if absent |
+| `items[].size_letter` | regex-extracted letter size (XS–XXXL, small/medium/large) from `item_details`; `unknown` if absent (C6, clothing) |
 | `order.return_window_days` | regex-extracted from `item_details`; `unknown` if absent; `order_returnable == "false"` ⇒ 0 |
 | `order.order_returnable` | the live string field |
 | `cart.recurring` | `"true"` if any line is `subscriptions`/`membership` or text states recurring billing |
 | `items[].unit_price_chf` | every cart line's `unit_price` converted to CHF (M1, M2); per-item limits |
 | `items[].quantity` | every cart line's `quantity` |
+| `cart.quantity` | total quantity of the requested item across all cart lines (all lines when no item is requested); "two tickets" is 1 line × 2 or 2 lines × 1 |
 | `merchant.merchant_country` | trusted catalogue country, ISO 3166 alpha-2 (e.g. `"CH"`) |
 | `authorization.delivery_by` | the live `delivery_by` date, compared as a date; `unknown` if `null` |
 | `authorization.weekday` | purchase time in Europe/Zurich, `"mon"`..`"sun"` |
 | `authorization.local_hour` | purchase time in Europe/Zurich, 0–23; time-of-day rules |
+| `unverifiable` | a stated restriction no field can check (e.g. "from the official ticket seller"); always `unknown`, so C11 applies |
+
+C2 (`scope: period`) is not evaluated with the other customer rules: it needs the run's spending memory, so decide.py evaluates it via `policy.evaluate_period_rule` with the LedgerView's spent and reserved amounts (M4, M5).
 
 Extraction from `item_details` is allowlisted regex only, produces facts, never instructions.
 
@@ -334,7 +339,8 @@ Existing: `within_limits`, `rule_satisfied`, `per_order_limit_exceeded`,
 
 Added: `split_order_suspected`, `requote_accepted`, `already_fulfilled`,
 `recurring_charge_added`, `wrong_size`, `session_recovered`, `on_other_card`,
-`foreign_currency_converted` (info), `ledger_mismatch` (info), `period_reserved_pending`.
+`foreign_currency_converted` (info), `ledger_mismatch` (info), `period_reserved_pending`,
+`shop_terms_contradictory`.
 
 Development only: `stub`, emitted only while `ONEGUARD_STUBS` stubs `decide`
 (`backend/oneguard/engine/stubs.py`); never in a live run.
