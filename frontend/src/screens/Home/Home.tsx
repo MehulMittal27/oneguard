@@ -4,10 +4,12 @@ import type { Account, Decision } from '../../api/types'
 import { AccountMenu } from '../../components/AccountMenu'
 import { CountdownBar } from '../../components/CountdownBar'
 import { DecisionMark } from '../../components/DecisionMark'
+import { EarlierRuns } from '../../components/EarlierRuns'
 import { OverviewHero } from '../../components/OverviewHero'
 import { AccountsIcon, BackChevronIcon, BellIcon, PlusIcon } from '../../components/icons/lucide'
 import { formatShortDate } from '../../lib/datetime'
 import { formatChf } from '../../lib/money'
+import { splitByRun } from '../../lib/runs'
 import { useCustomer } from '../../state/CustomerContext'
 import { useDecisions } from '../../state/DecisionsContext'
 import { usePolicy } from '../../state/PolicyContext'
@@ -92,9 +94,12 @@ export function Home({
     }),
   )
 
-  const latest = [...decisions]
-    .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))
-    .slice(0, 3)
+  // Each card's newest run; older runs fold under "Earlier runs" (lib/runs.ts),
+  // so a replayed scenario is neither listed nor counted twice.
+  const { current, earlier } = splitByRun(decisions)
+  const byNewest = (a: Decision, b: Decision) => b.occurred_at.localeCompare(a.occurred_at)
+  const latest = [...current].sort(byNewest).slice(0, 3)
+  const earlierRuns = earlier.map((run) => ({ ...run, decisions: [...run.decisions].sort(byNewest) }))
 
   // Whichever pending item runs out first, in case more than one is ever
   // waiting at once — our live customers only ever have one, but nothing
@@ -172,7 +177,7 @@ export function Home({
         )}
 
         {status === 'ready' && (
-          <OverviewHero decisions={decisions} onOpenActivity={onOpenActivity} />
+          <OverviewHero decisions={current} onOpenActivity={onOpenActivity} />
         )}
 
         {status === 'ready' && mostUrgent && (
@@ -242,6 +247,8 @@ export function Home({
             </div>
           </section>
         )}
+
+        {status === 'ready' && <EarlierRuns runs={earlierRuns} onSelect={selectDecision} />}
 
         <section className="flex flex-col gap-3">
           {/* The heading belongs to the list under it: with nothing active it
