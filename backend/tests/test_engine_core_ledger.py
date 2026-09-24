@@ -23,8 +23,13 @@ import yaml
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from oneguard.engine.ledger import StoreLedger, confirmation_key
-from oneguard.engine.ledger_base import InMemoryLedger, LedgerEntry
+from oneguard.engine.ledger import StoreLedger
+from oneguard.engine.ledger_base import (
+    InMemoryLedger,
+    LedgerEntry,
+    confirmation_key,
+    shop_confirmation_key,
+)
 from oneguard.engine.types import EvidenceRow, Policy
 from oneguard.store.db import init_db, make_engine
 from oneguard.store.schema import Decision, Run
@@ -450,8 +455,9 @@ def test_customer_ok_is_remembered_per_rule_shop_and_item(ledger):
     _ask(ledger, ("approve", "customer"), rules=("U1", "U2"))
     assert ledger._confirmed_keys(RUN, T) == {
         confirmation_key(r, "GYM", i) for r in ("U1", "U2") for i in ("I1", "I2")
-    }
+    } | {shop_confirmation_key(r, "GYM") for r in ("U1", "U2")}
     assert confirmation_key("U1", "GYM", "I1") == "U1|GYM|I1"
+    assert shop_confirmation_key("U1", "GYM") == "U1|GYM|*"
 
 
 @pytest.mark.parametrize(
@@ -470,7 +476,7 @@ def test_memory_without_a_run_row_stays_in_its_run_and_its_past(ledger):
 
 def test_view_carries_confirmations(ledger):
     _ask(ledger, ("approve", "customer"))
-    assert view(ledger).confirmed_keys == {"U1|GYM|I1", "U1|GYM|I2"}
+    assert view(ledger).confirmed_keys == {"U1|GYM|I1", "U1|GYM|I2", "U1|GYM|*"}
 
 
 # --- carrying over between sessions (live runs only) -----------------------------------
@@ -494,7 +500,7 @@ def test_live_memory_carries_to_the_next_session(ledger):
     add_run(ledger, "live-1", day=0)
     add_run(ledger, "live-2", day=1)
     _ask_in(ledger, "live-1", ("approve", "customer"))
-    assert ledger._confirmed_keys("live-2", T - timedelta(days=30)) == {"U1|GYM|I1"}
+    assert ledger._confirmed_keys("live-2", T - timedelta(days=30)) == {"U1|GYM|I1", "U1|GYM|*"}
 
 
 @pytest.mark.parametrize(
@@ -512,7 +518,7 @@ def test_which_sessions_share_memory(ledger, first, second, carried):
     add_run(ledger, "r1", first[0], mandate=first[1], day=0)
     add_run(ledger, "r2", second[0], mandate=second[1], day=1)
     _ask_in(ledger, "r1", ("approve", "customer"))
-    assert (ledger._confirmed_keys("r2", T) == {"U1|GYM|I1"}) is carried
+    assert (ledger._confirmed_keys("r2", T) == {"U1|GYM|I1", "U1|GYM|*"}) is carried
 
 
 def test_memory_never_comes_from_a_later_session(ledger):

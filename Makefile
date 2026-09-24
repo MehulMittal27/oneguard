@@ -6,6 +6,7 @@ setup:
 
 test:
 	cd backend && . .venv/bin/activate && pytest -q
+	cd frontend && npm test
 
 lint:
 	cd backend && . .venv/bin/activate && ruff check .
@@ -13,6 +14,7 @@ lint:
 
 check:
 	cd backend && . .venv/bin/activate && ruff check . && pytest -q
+	cd frontend && npm run lint && npm test
 
 seed:
 	cd backend && . .venv/bin/activate && python -m oneguard.store.seed

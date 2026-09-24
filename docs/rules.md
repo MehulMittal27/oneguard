@@ -75,7 +75,7 @@ The first step that applies decides.
 | C6 | **Item details.** Named details (size, colour, model, dimensions) match. Often only in shop text: extract, trust nothing else in it. | Decline | Uncertainty setting (not stated or self-contradictory) |
 | C7 | **Order terms.** Returns/cancellation/warranty as named. "14 days or more" → 14 passes, 7 fails. "Final sale / no returns / non-returnable" = 0 days. Cancellation reads `order_cancellable`: `"false"` fails a named cancellation term. When sources disagree, the stricter applies. | Decline | Uncertainty setting (not stated, `order_returnable = "unknown"`, or `order_cancellable = "unknown"` when cancellation is named) |
 | C8 | **Shop type.** `merchant_category` is the named type (sustainable goods ≠ specialist sports retailer, even selling the right shoe). `merchant_mcc` is secondary evidence; `merchant_category` decides. | Decline | — |
-| C9 | **Known shop.** As defined in §3. "Shop I use regularly" and "seller I have bought from before" both map here; see Q9 for a stricter reading of "regularly". | Decline | — |
+| C9 | **Known shop.** As defined in §3. "Shop I use regularly" and "seller I have bought from before" both map here; see Q9 for a stricter reading of "regularly". A customer with no purchase history yet (no approved purchase in history on any card, none in this run) makes C9 `unknown`, not a fail: "You have no purchase history yet, so I can't tell whether you've used this shop - approve once and I'll remember it." The customer's yes on that ask is remembered for the shop, whatever the items. | Decline | Uncertainty setting (no purchase history yet) |
 | C10 | **Nothing extra.** Cart contains only what was asked; add-ons (protection plans, subscriptions, accessories) fail. Explanation says what to remove. | Decline | — |
 | C11 | **Uncertainty setting.** Apply the customer's choice when any rule is `unknown`. Default `ask`. | — | — |
 | C12 | **Other restrictions** (expected in hidden scenarios): per-item limit and quantity; country or currency; time of day / weekday; delivery date. Same pass/fail/unknown logic. | Decline | Uncertainty setting |
@@ -119,6 +119,7 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 - **W-rule 2** Two or more weak signs → Ask. One weak sign alone → no effect.
 - **W-rule 3** "Pause anything that looks like someone else is driving" confirms this section is wanted; it does not lower the bar.
 - **W-rule 4** Recovery: after a burst (session watch on), the next otherwise-clean purchase asks once; the customer's approval turns the watch off; a no or a timeout keeps it on. The watch is per card and carries into later live sessions.
+- **W-rule 5** No baseline yet: with no approved purchase in history (any card) and no final approval in this run, W1, W3 and W4 do not trigger and show "no baseline yet" as info; from the first final approval in the run, that purchase's device, shop country and amount count as known (a purchase with no device id still triggers W1).
 
 ## 9. Explanations
 

@@ -31,10 +31,12 @@ npm install          # only when package.json changed
 npm run dev          # http://localhost:5173
 npm run build        # tsc -b && vite build  → dist/
 npm run lint         # eslint
+npm test             # node --test on tests/*.test.ts (Node's built-in runner, no dependency)
 ```
 
-There is no test runner and no router. `npm run build` (which type-checks first) and `npm run lint`
-are the whole gate — run both before you hand work over.
+There is no router. `npm run build` (which type-checks first), `npm run lint` and `npm test` are
+the whole gate — run all three before you hand work over. `npm test` covers pure logic in
+`src/lib/` only; there is no component test setup.
 
 ### Two modes, one set of call sites
 
@@ -84,7 +86,7 @@ our own `/api`.
 
 | Screen | What the customer does |
 | --- | --- |
-| **Sign in** | Picks a customer. Customers with a scenario behind them are shown as live; the rest open a "select other" sheet. Session-only — a reload signs you out. |
+| **Sign in** | Picks a customer. Up to four live customers (a scenario behind them) are shown, the one backing the most recent scenario first; everyone else, live or not, is in the "select other" sheet (`src/lib/signInCustomers.ts`). Session-only — a reload signs you out. |
 | **Home** | Hero summary of recent proposals, a "Needs your review" card while a step-up is pending, the three most recent decisions, and a read-only list of cards that have an active policy. Tapping a count or "See all" opens Activity pre-filtered. |
 | **Activity** | The decision feed. Underline filter tabs, rows grouped by date. Every row opens the detail screen — except a still-pending one, which routes to Approvals, because it is actionable rather than just viewable. |
 | **Approvals** | The step-up inbox. One pending purchase at a time with a live countdown, full merchant and basket detail, the evidence, a preview of what approving would do to the spend meter, and Approve / Reject. Plus an "Also waiting" strip and an expired section. |
@@ -539,7 +541,8 @@ all five scenario instructions compile and confirm in mock mode.
   code→label map with a neutral fallback for unknown codes — not per-screen strings.
 - **C4 (tighten) has no UI.** Endpoint and client function exist and are dormant.
 - **No live event stream yet** — polling every 5 s. The seam for it is `mergeDecisions`.
-- **No tests.** No runner is installed; `npm run build` and `npm run lint` are the gate.
+- **Few tests.** `npm test` runs Node's built-in runner over `tests/` for pure `src/lib/` logic; no
+  component tests. `npm run build`, `npm run lint` and `npm test` are the gate.
 - **No router and no persistence** — a reload signs the customer out.
 - **Limits are parsed out of prose** (§5) rather than sent as structured numbers. It works, and it
   is fragile.
@@ -558,6 +561,6 @@ all five scenario instructions compile and confirm in mock mode.
 4. **New screen?** Add a folder under `src/screens/` and wire the navigation state in `App.tsx`.
 5. **Styling?** Use existing tokens. A new token goes in `src/styles/tokens.css` and is mapped in
    `src/index.css` — never a hex value in a component. Icons come from the icon library.
-6. **Before handing over:** run `npm run build` and `npm run lint`, check the screen against the
+6. **Before handing over:** run `npm run build`, `npm run lint` and `npm test`, check the screen against the
    hard rules in §6 (especially untrusted text, step-up wording, and visible uncertainty), and
    confirm it still works at 390px wide.

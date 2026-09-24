@@ -117,7 +117,7 @@ def test_without_a_history_index_there_are_no_names(make_ledger: MakeLedger):
 
 @pytest.mark.parametrize(
     ("answer", "resolved_by", "keys"),
-    [(None, None, set()), ("approve", "customer", {"C5|ME2|IT1", "A6|ME2|IT1"}),
+    [(None, None, set()), ("approve", "customer", {"C5|ME2|IT1", "A6|ME2|IT1", "C5|ME2|*", "A6|ME2|*"}),
      ("decline", "customer", set()), ("decline", "timeout", set())],
 )  # fmt: skip
 def test_confirmed_keys_remember_only_step_ups_the_customer_approved(

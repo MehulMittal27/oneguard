@@ -232,8 +232,9 @@ class LedgerView(_Model):
     approved purchases per ``merchant_id`` for ``Decision.merchant_meta``.
     ``max_approved_chf`` is ``None`` when the customer has no approved purchase (W4).
     ``flagged_merchant_ids`` carries A1 info evidence to later purchases.
-    ``confirmed_keys`` are remembered customer confirmations, ``rule|merchant|item``,
-    only for restrictions no data can check.
+    ``confirmed_keys`` are remembered customer confirmations: ``rule|merchant|item``
+    (read only for restrictions no data can check) and ``rule|merchant|*`` (read only
+    for a known-shop check, C9).
     ``period_count`` counts purchases in the same window and on the same card as
     ``period_spent_chf``: final approvals plus pending step-ups (M4, M5; declines never
     count). ``period_reserved_count`` is the pending part of it, and
