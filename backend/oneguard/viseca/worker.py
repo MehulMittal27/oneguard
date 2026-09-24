@@ -64,6 +64,7 @@ import threading
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import wait as wait_futures
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -621,6 +622,9 @@ class VisecaWorker:
         """SHA-256 of the history file Viseca serves, once checked at start."""
 
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="oneguard-engine")
+        self._store_pool = ThreadPoolExecutor(thread_name_prefix="oneguard-store")
+        self._store_work: set[Future[Any]] = set()
+        """Store reads and writes off the event loop, still running (``stop`` waits for them)."""
         self._task: asyncio.Task[None] | None = None
         self._state: Literal["stopped", "starting", "polling", "degraded"] = "stopped"
         self._failures = 0
@@ -751,18 +755,19 @@ class VisecaWorker:
         await self._check_reference_data()
         refresh = self.history_reseeded or any(t.changed for t in self.served_tables)
         if self._history is None or refresh:
-            self._history = await asyncio.to_thread(self._load_history)
+            self._history = await self._store(self._load_history)
         if self._ledger is None:
             self._ledger = default_ledger(self._db_engine, self._history)
         await self._recover_pending()
-        self._cursor = await asyncio.to_thread(self._load_cursor)
+        self._cursor = await self._store(self._load_cursor)
         self._task = asyncio.create_task(self._loop(), name="viseca-worker")
 
     async def stop(self) -> None:
         """Stop polling and cancel expiry timers (pending step-ups are recovered on start).
 
-        Waits up to ``STOP_DRAIN_S`` for the engine thread's current work, then closes any
-        ledger session still open, so no pooled connection outlives the worker.
+        Waits up to ``STOP_DRAIN_S`` for the engine thread's current work and for store work
+        a cancelled task left running on its thread, then closes any ledger session still
+        open, so no pooled connection outlives the worker.
         """
         tasks = [t for t in [self._task, *self._expiry.values()] if t is not None]
         for task in tasks:
@@ -777,6 +782,10 @@ class VisecaWorker:
             )
         except TimeoutError:
             log.warning("the engine thread is still busy after %s s; closing its ledger session", STOP_DRAIN_S)
+        if self._store_work:
+            _, busy = await asyncio.to_thread(wait_futures, list(self._store_work), STOP_DRAIN_S)
+            if busy:
+                log.warning("%d store call(s) still running after %s s", len(busy), STOP_DRAIN_S)
         close = getattr(self._ledger, "close", None)
         if callable(close):
             close()
@@ -792,7 +801,7 @@ class VisecaWorker:
         for run in self._runs.values():
             if run.viseca_mandate_id == viseca_mandate_id and run.ctx is not None:
                 run.ctx.policy = run.ctx.policy.model_copy(update={"status": "revoked"})
-        await asyncio.to_thread(self._mark_mandate_revoked, viseca_mandate_id)
+        await self._store(self._mark_mandate_revoked, viseca_mandate_id)
         log.info("mandate %s revoked; later requests under it are declined", viseca_mandate_id)
         await self.client.delete_mandate(viseca_mandate_id)
 
@@ -967,7 +976,7 @@ class VisecaWorker:
             banner,
         )
         try:
-            rows = await asyncio.to_thread(self._reseed_history, text)
+            rows = await self._store(self._reseed_history, text)
         except Exception as exc:
             log.exception("re-seeding history failed")
             self._note_error(f"re-seeding history failed, keeping the seeded history: {exc}")
@@ -989,7 +998,7 @@ class VisecaWorker:
             self._note_error("reference data serves no tables; keeping the seeded reference tables")
             return
         try:
-            self.served_tables = await asyncio.to_thread(self._sync_served, tables)
+            self.served_tables = await self._store(self._sync_served, tables)
         except Exception as exc:
             log.exception("syncing the served reference tables failed")
             self._note_error(f"served reference tables not synced, keeping the stored ones: {exc}")
@@ -1025,7 +1034,7 @@ class VisecaWorker:
             return StoreHistoryIndex.load(s)
 
     async def _recover_pending(self) -> None:
-        rows = await asyncio.to_thread(self._load_events)
+        rows = await self._store(self._load_events)
         for live_id, source_id, event in rows:
             self._events[live_id] = event
             self.source_ids[live_id] = source_id
@@ -1083,7 +1092,7 @@ class VisecaWorker:
                 log.warning("progress of run %s unavailable: %s", run.viseca_run_id, exc)
                 continue
             self._apply_progress(run, progress)
-            await asyncio.to_thread(self._save_run, run)
+            await self._store(self._save_run, run)
         await self._sync_events()
 
     def _apply_progress(self, run: RunState, progress: Any) -> None:
@@ -1125,7 +1134,7 @@ class VisecaWorker:
             # The ledger reads runs.kind (live) to carry the session watch and remembered
             # answers over from earlier live runs, so the row is written before the first
             # decision; a run with no row is treated as a replay.
-            await asyncio.to_thread(self._save_run, run)
+            await self._store(self._save_run, run)
         self._run_of[live_id] = run
         self._events[live_id] = data
         self.source_ids[live_id] = auth["source_authorization_id"]
@@ -1145,7 +1154,7 @@ class VisecaWorker:
         if live_id not in run.live_ids:
             run.live_ids.append(live_id)
         save = asyncio.create_task(
-            asyncio.to_thread(self._save_event, run.run_id, data, received_at, deadline_at)
+            self._store(self._save_event, run.run_id, data, received_at, deadline_at)
         )
         extra = await self._reconcile_context(run, data)
         extra.extend(self._feed_mismatches)
@@ -1160,7 +1169,7 @@ class VisecaWorker:
             log.exception("events_raw write failed")
             self._note_error(f"events_raw write for {live_id} failed: {exc}")
         await self._sync_events()
-        await asyncio.to_thread(self._save_run, run)
+        await self._store(self._save_run, run)
 
     def _run(self, viseca_run_id: str) -> RunState:
         run = self._runs.get(viseca_run_id)
@@ -1206,6 +1215,14 @@ class VisecaWorker:
         return run
 
     # Deciding ----------------------------------------------------------------------------
+
+    async def _store(self, fn: Callable[..., T], *args: Any) -> T:
+        """Run blocking store work on a store thread. Tracked: cancelling the awaiting task
+        does not stop the thread, so ``stop`` waits for it before returning."""
+        work = self._store_pool.submit(fn, *args)
+        self._store_work.add(work)
+        work.add_done_callback(self._store_work.discard)
+        return await asyncio.wrap_future(work)
 
     async def _engine(self, fn: Callable[..., T], *args: Any) -> T:
         """Run ``fn`` on the engine thread inside one short ledger session."""
@@ -1631,7 +1648,7 @@ class VisecaWorker:
         if run is not None:
             run.pending.discard(live_id)
             self._maybe_done(run)
-            await asyncio.to_thread(self._save_run, run)
+            await self._store(self._save_run, run)
         event = self._events.get(live_id)
         if event is None or run is None or run.ctx is None:
             return
@@ -1665,7 +1682,7 @@ class VisecaWorker:
                 if isinstance(item, dict):
                     await self._check_feed_item(item)
         if next_cursor is not None and next_cursor != self._cursor:
-            await asyncio.to_thread(self._save_cursor, next_cursor)
+            await self._store(self._save_cursor, next_cursor)
             self._cursor = next_cursor
 
     async def _check_feed_item(self, item: dict[str, Any]) -> None:

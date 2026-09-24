@@ -539,6 +539,29 @@ def test_a_stale_pending_step_up_envelope_never_sends_a_second_resolve(
     asyncio.run(scenario())
 
 
+def test_stop_waits_for_store_work_a_cancelled_task_left_running(db: Engine, history: StoreHistoryIndex) -> None:
+    """Cancelling the task that awaits a store call does not stop its thread: ``stop`` waits
+    for it, so its pooled connection is back before ``stop`` returns."""
+
+    async def scenario() -> None:
+        async with harness(db, fast(), history=history) as (_, _client, worker):
+            await worker.start()
+            started, finished = threading.Event(), threading.Event()
+
+            def slow_write() -> None:
+                started.set()
+                time.sleep(0.3)
+                finished.set()
+
+            write = asyncio.create_task(worker._store(slow_write))
+            await asyncio.to_thread(started.wait, 5)
+            write.cancel()
+            await worker.stop()
+            assert finished.is_set()
+
+    asyncio.run(scenario())
+
+
 def test_the_ledger_holds_no_connection_between_decisions_or_after_stop(
     db: Engine, history: StoreHistoryIndex, ledger_kind: str
 ) -> None:
