@@ -2,6 +2,8 @@
 # §5.2), no volume: state lives in Supabase via ONEGUARD_DATABASE_URL. Secrets
 # (VISECA_API_KEY, OPENAI_API_KEY, ONEGUARD_DATABASE_URL, ...) are Fly secrets.
 # The worker long-polls Viseca from inside the app, so the machine never auto-stops.
+# 4 GB: the Laya checkpoint baked into the image (Dockerfile) is loaded once at startup and
+# answers agent_directed on the machine's CPUs; shared-cpu-4x rather than performance-2x on cost.
 app = "oneguard"
 primary_region = "lhr"
 
@@ -25,12 +27,12 @@ primary_region = "lhr"
     hard_limit = 250
 
   [[http_service.checks]]
-    grace_period = "60s"
+    grace_period = "120s"
     interval = "15s"
     timeout = "5s"
     method = "GET"
     path = "/healthz"
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "1gb"
+  size = "shared-cpu-4x"
+  memory = "4gb"
