@@ -212,7 +212,7 @@ async def create_draft(card_id: str, body: api.PolicyDraftRequest, request: Requ
         instruction = body.instruction or ""
         if not instruction.strip():
             raise ApiError(422, "validation", "The instruction is empty.")
-        compiled = await _compile(s, instruction, card_id)
+        compiled = await _compile(s, instruction, card_id, customer_id)
         rules, flags = _unique_ids(compiled.rules), policies.flags_of(compiled)
         uncertainty = compiled.uncertainty_policy
         open_questions = list(compiled.open_questions)
@@ -253,11 +253,11 @@ async def create_draft(card_id: str, body: api.PolicyDraftRequest, request: Requ
     return reply(draft)
 
 
-async def _compile(s: Services, instruction: str, card_id: str) -> CompiledDraft:
+async def _compile(s: Services, instruction: str, card_id: str, customer_id: str) -> CompiledDraft:
     compile_instruction = s.functions["compile_instruction"]
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(compile_instruction, instruction, s.history, card_id, s.provider),
+            asyncio.to_thread(compile_instruction, instruction, s.history, card_id, s.provider, customer_id=customer_id),
             s.compile_timeout_s,
         )
     except TimeoutError:

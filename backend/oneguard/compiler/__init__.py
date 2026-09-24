@@ -44,11 +44,12 @@ def _with_questions(draft: ParsedDraft, result: LintResult) -> ParsedDraft:
 
 @register("compile_instruction")
 def compile_instruction(
-    text: str, history: HistoryIndex, card_id: str, provider: Provider,
+    text: str, history: HistoryIndex, card_id: str, provider: Provider, customer_id: str | None = None,
     *, today: date | None = None, preferences: str | None = None,
 ) -> CompiledDraft:
     """api-contract §3.2 C1 with ``instruction``. ``today`` defaults to the card's
-    simulated present (its latest history row, M6)."""
+    simulated present (its latest history row, M6); ``customer_id`` is the card's owner,
+    for the dry run's customer-level ``agent_history``."""
     if today is None:
         today = simulated_today(history, card_id)
 
@@ -68,7 +69,7 @@ def compile_instruction(
             log.warning("compiler: LLM unavailable, using fallback: %s", exc)
 
     chosen = _with_questions(chosen, chosen_lint)
-    result: DryRunResult = dry_run(chosen, history, card_id)
+    result: DryRunResult = dry_run(chosen, history, card_id, customer_id)
     return CompiledDraft(
         instruction=text,
         rules=chosen.rules,
@@ -103,8 +104,9 @@ def lint_accepted_ids(rules: list[Rule], accepted_ids: list[str]) -> tuple[list[
 
 
 @_register_when_in_contract("dry_run")
-def dry_run_policy(policy: Policy, history: HistoryIndex, card_id: str) -> DryRunResult:
-    """A confirmed or draft policy (instruction or form) over the card's recent history."""
+def dry_run_policy(policy: Policy, history: HistoryIndex, card_id: str, customer_id: str) -> DryRunResult:
+    """A confirmed or draft policy (instruction or form) over the card's recent history;
+    ``agent_history`` is the customer's, across their cards."""
     draft = ParsedDraft(
         instruction=policy.instruction,
         rules=policy.rules,
@@ -117,7 +119,7 @@ def dry_run_policy(policy: Policy, history: HistoryIndex, card_id: str) -> DryRu
         nothing_extra=policy.nothing_extra,
         shop_type=policy.shop_type,
     )
-    return dry_run(draft, history, card_id)
+    return dry_run(draft, history, card_id, customer_id)
 
 
 __all__ = ["compile_instruction", "dry_run_policy", "lint_accepted_ids"]
