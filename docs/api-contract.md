@@ -154,7 +154,9 @@ Decision {
   engine_version?: string,                    // NEW
   latency_ms?: number,                        // NEW: engine wall time for this decision
   explanation_source?: 'template' | 'model', // NEW: who wrote `message` (rules.md §4a, tier 3)
-  resolved_by?: 'customer' | 'timeout'        // NEW: resolved step-ups only (§3.5)
+  resolved_by?: 'customer' | 'timeout',       // NEW: resolved step-ups only (§3.5)
+  confirmable?: { rule_id: string, phrase: string } | null   // NEW: step-up decided by one `unverifiable` rule
+                                              // (§3.3); phrase = its value. Approving can be remembered for the shop
 }
 
 Evidence  { rule: string,                     // which check or signal
@@ -385,6 +387,7 @@ neutral fallback for unknown codes.
 9. Policy screen renders DryRunResult.examples and dry_run.agent_history as one line
 10. PolicyDraft.compiler == 'fallback' shown as a banner; Decision.explanation_source shown as a subtle tag
 11. Optional: `Mandate.usage.confirmations` as a "Things you've confirmed" list on the policy screen (names rendered as plain text)
+12. Optional: `Decision.confirmable` - on a step-up, "Approve, and treat <shop> as <phrase> from now on"; absent or null means the ordinary approve button
 
 No endpoint changes. No screen removals. Tighten UI stays dormant.
 
