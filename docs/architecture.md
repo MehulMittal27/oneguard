@@ -84,25 +84,35 @@ oneguard/
 
 ## Deployment (Plan C)
 
-One container on Fly, built by P1-2 (docs/team-plan.md). The files below arrive with that
-code; this section is the target they are built to.
+One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
 
-- `Dockerfile`: a node build stage builds `frontend/dist`; the runtime stage is
-  `python:3.12-slim` with the backend installed and `frontend/dist` copied in; `uvicorn`
-  listens on `$PORT`; `ONEGUARD_SOFT_SIGNALS=keywords` is the image default.
-- python:3.12-slim needs the tzdata package for Europe/Zurich rules
-- `fly.toml`: region `lhr`, one machine, no volume (state lives in Supabase via
-  `ONEGUARD_DATABASE_URL`).
-- Fly secrets: `VISECA_API_KEY`, `OPENAI_API_KEY`, `ONEGUARD_DATABASE_URL`.
-- Makefile targets: `make deploy`, `make demo-live SCEN=…`, `make demo-offline`,
-  `make matrix` (45-row replay matrix), `make seed`, `make reset-db` (guarded by
-  `ONEGUARD_ENV != prod`). `demo-live` and `demo-offline` exist today; the others are added
-  with the Wave 1–2 code (P1-0 `seed` / `reset-db`, P1-2 `deploy`, P5-4 `matrix`).
-- `/healthz` reports worker polling, provider configured, signals backend, database engine
-  (sqlite/postgres), a 1-row round-trip time, and the `GET /v1/events` cursor position;
-  the `viseca_calls` table (docs/database.md §2) feeds it.
+- `Dockerfile`: a node stage builds `frontend/dist` (only when `frontend/package.json` is in
+  the context) with `VITE_API_BASE_URL=/api` and `VITE_USE_MOCKS=false`; the runtime stage is
+  `python:3.12-slim` + `tzdata` (Europe/Zurich rules), the backend installed editable with
+  `data/` beside it and `frontend/dist` copied in, run as a non-root user; `uvicorn
+  oneguard.api.app:app` listens on `$PORT` (8080); `ONEGUARD_SOFT_SIGNALS=keywords` and
+  `ONEGUARD_ENV=prod` are the image defaults.
+- `fly.toml`: region `lhr` (nearest Supabase in eu-west-1), one `shared-cpu-1x` machine with
+  1 GB, never auto-stopped (the worker polls from inside the app), no volume: state lives in
+  Supabase via `ONEGUARD_DATABASE_URL`. Health check `GET /healthz`, 60 s grace.
+- Fly secrets: `VISECA_API_KEY`, `OPENAI_API_KEY`, `ONEGUARD_DATABASE_URL`,
+  `ONEGUARD_LLM_PROVIDER`, `ONEGUARD_SOFT_SIGNALS`; temporarily `ONEGUARD_ALLOW_RUNS=false`
+  (D3 and `make demo-live` refuse to start a run while it is set). Set with `fly secrets`, never in files.
+- Makefile: `make deploy` (`fly deploy -a oneguard --ha=false`), `make logs`, `make image`
+  (the same image locally), `make demo-live SCEN=…`, `make demo-offline`, `make seed`,
+  `make reset-db` (refused when `ONEGUARD_ENV=prod`); `make matrix` arrives with P5-4.
+- App start (`oneguard/api/app.py` lifespan): `init_db` (creates missing tables, never drops),
+  seeds only an empty store, loads `HistoryIndex`, warms the pool (5 connections), warms
+  soft signals if enabled, then starts the worker in the background only when
+  `VISECA_API_KEY` is set, after binding every stored mandate's policy to it.
+- `/healthz` (never names a secret or URL): `status` (`ok` when the database answers and the
+  worker, if configured, is polling), `worker` (`VisecaWorker.status()`: state, polling,
+  last poll, events cursor, human window, pending step-ups, last error), `events_cursor`,
+  `provider` (name, configured), `signals` (backend, enabled, model loaded), `database`
+  (engine name `sqlite`/`postgresql`, `SELECT 1` round trip in ms), `engine.stubbed`.
+  503 only when the database does not answer.
 - SQLite fallback (docs/database.md §5): if Supabase is unreachable, unset
-  `ONEGUARD_DATABASE_URL` → SQLite on the Fly machine, `make seed`, restart.
+  `ONEGUARD_DATABASE_URL`; the app seeds the empty SQLite store on the machine at start.
 
 ## Dependencies (ask before adding)
 

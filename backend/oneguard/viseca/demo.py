@@ -35,7 +35,13 @@ from oneguard.llm.provider import Provider, get_provider
 from oneguard.store import seed as seed_module
 from oneguard.store.db import get_engine, init_db, session
 from oneguard.store.schema import ScenarioCatalogue
-from oneguard.viseca.client import API_KEY_ENV, VisecaClient, store_sink
+from oneguard.viseca.client import (
+    API_KEY_ENV,
+    RUNS_DISABLED_MESSAGE,
+    VisecaClient,
+    runs_allowed,
+    store_sink,
+)
 from oneguard.viseca.worker import (
     POLL_WAIT_S,
     VisecaWorker,
@@ -213,6 +219,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
+    if not runs_allowed():
+        print(RUNS_DISABLED_MESSAGE, file=sys.stderr)
+        return 2
     if not os.environ.get(API_KEY_ENV, "").strip():
         print(MISSING_KEY, file=sys.stderr)
         return 2

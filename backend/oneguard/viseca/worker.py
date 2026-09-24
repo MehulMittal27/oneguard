@@ -647,6 +647,18 @@ class VisecaWorker:
             policy = policy.model_copy(update={"status": "revoked"})
         self._policies[viseca_mandate_id] = policy
 
+    def set_models(self, *, signals_enabled: bool, provider: Provider | None) -> None:
+        """Soft signals and the tier-2 provider for every later decision, in every run (D5).
+
+        ``engine_version`` follows, so a decision records whether signals were on.
+        """
+        self._signals_enabled = signals_enabled
+        self._provider = provider
+        for run in self._runs.values():
+            if run.ctx is not None:
+                run.ctx.signals_enabled = signals_enabled
+                run.ctx.provider = provider
+
     def track_run(
         self,
         viseca_run_id: str,

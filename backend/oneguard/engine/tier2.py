@@ -6,9 +6,13 @@ input is the ``item_details`` text of those lines, as quoted data; nothing else 
 the purchase is sent. Every answer is checked before it is used:
 
 - type and range (size 16–60 in half steps, letter size XS–XXXL, 0–365 days);
-- grounded: the number must be in that line's text (digits, a number word, "N weeks",
-  "a month"; 0 days only with no-returns wording), so a model cannot invent a fact and
-  an instruction hidden in the text cannot supply one;
+- grounded next to its label word (issue #17), so a model cannot invent a fact, move a
+  number from one fact to another, or take one from an instruction hidden in the text:
+  a size must follow a size label ("size 43", "Größe 43", "taille 43", "EU 43") or sit
+  right before "EU" ("43 EU"); a letter size must follow a size label ("size M"); a
+  return window must be a number attached to a time unit ("30 Tagen", "2 weeks",
+  "a month") in a clause that talks about returns; 0 days needs no-returns wording.
+  In "Größe 43; Rückgabe innerhalb von 30 Tagen" size 30 and 43 days are refused;
 - which facts may be asked is P2's rule, ``facts.tier2_candidates`` /
   ``facts.tier2_may_resolve``: a contradiction, a seller statement that the policy is
   not stated, and exchange/store-credit-only terms stay unknown and are never sent
@@ -129,44 +133,118 @@ def _asks(facts: Facts, relevant: set[str]) -> dict[int, list[str]]:
     return out
 
 
-def _numbers_in(text: str) -> set[Decimal]:
-    lowered = text.lower()
-    found = {Decimal(n.replace(",", ".")) for n in re.findall(r"\d+(?:[.,]5)?", lowered)}
-    found |= {Decimal(n) + Decimal("0.5") for n in re.findall(r"(\d+)\s*(?:½|1/2)", lowered)}
-    found |= {Decimal(v) for w, v in _NUMBER_WORDS.items() if re.search(rf"\b{w}\b", lowered)}
-    return found
+_SIZE_LABEL = (r"(?:shoe\s*)?size|sz|gr(?:ö|oe)(?:ß|ss)e|schuhgr(?:ö|oe)(?:ß|ss)e|gr\.|taille|pointure|"
+               r"talla|taglia|misura|maat|maßgr(?:ö|oe)(?:ß|ss)e")
+_HALF = r"(?:[.,]5|\s*½|\s*1/2)?"
+_SIZE_EU = [
+    re.compile(rf"(?:{_SIZE_LABEL})\s*[:=\-]?\s*(?:\(?\s*(?:eu|eur)\s*\)?\s*[:=\-]?\s*)?(?P<n>\d{{2}}{_HALF})(?!\d)",
+               re.IGNORECASE),
+    re.compile(rf"\b(?:eu|eur)\s*[:=\-]?\s*(?P<n>\d{{2}}{_HALF})(?!\d)", re.IGNORECASE),
+    re.compile(rf"(?<![\d.,])(?P<n>\d{{2}}{_HALF})\s*(?:eu|eur)\b", re.IGNORECASE),
+]
+_SIZE_LETTER = re.compile(rf"(?:{_SIZE_LABEL})\s*[:=\-]?\s*(?P<l>XXXL|XXL|XL|XXS|XS|S|M|L)(?![A-Za-z])",
+                          re.IGNORECASE)
+_RETURN_WORD = re.compile(
+    r"return|rückgabe|rücksendung|zurückgeben|retour|renvoi|reso|resi|restitu|devoluci|devolver|"
+    r"money[- ]?back|refund|erstattung|rembours|rimborso|reembolso",
+    re.IGNORECASE,
+)
+_COUNT = r"\d+|a|an|one|ein(?:en|em|es)?|un(?:e|o|a)?|" + "|".join(_NUMBER_WORDS)
+_UNITS = {
+    1: r"days?|tage?n?|jours?|giorni|d[ií]as|dagen",
+    7: r"weeks?|wochen?|semaines?|settimane|semanas|weken",
+    30: r"months?|monate?n?|monats|mois|mesi|mes(?:es)?|maand(?:en)?",
+}
+# A time that belongs to something else when it sits between the number and the return word.
+_OTHER_TIME = re.compile(
+    r"ship|deliver|dispatch|liefer|versand|zustell|livr|exp[ée]di|env[ií]o|entreg|consegn|spedi|warrant|garant",
+    re.IGNORECASE,
+)
+NEAR_CHARS = 40
+_PERIOD = re.compile(
+    rf"(?<![\w.,])(?P<n>{_COUNT})\s*-?\s*(?P<u>{'|'.join(_UNITS.values())})(?![A-Za-zäöüß])",
+    re.IGNORECASE,
+)
 
 
-def _grounded_days(days: int, text: str) -> bool:
-    if days == 0:
-        return bool(_NO_RETURNS.search(text))
-    numbers = _numbers_in(text)
-    if Decimal(days) in numbers:
-        return True
-    lowered = text.lower()
-    week = re.findall(r"(\d+|" + "|".join(_NUMBER_WORDS) + r")\s*(?:weeks?|wochen|semaines?|settimane)", lowered)
-    if any(days == 7 * (int(w) if w.isdigit() else _NUMBER_WORDS[w]) for w in week):
-        return True
-    return days == 30 and bool(re.search(r"\b(?:a|one|1)\s*(?:month|monat|mois|mese)\b", lowered))
+def _size_value(raw: str) -> Decimal:
+    raw = raw.replace(" ", "")
+    if raw.endswith(("½", "1/2")):
+        return Decimal(raw.rstrip("½").removesuffix("1/2")) + Decimal("0.5")
+    return Decimal(raw.replace(",", "."))
+
+
+def labelled_sizes(text: str) -> set[Decimal]:
+    """EU sizes that sit next to a size label in ``text``."""
+    return {_size_value(m.group("n")) for p in _SIZE_EU for m in p.finditer(text or "")}
+
+
+def labelled_letters(text: str) -> set[str]:
+    """Letter sizes that follow a size label. One-letter sizes must be capitals ("size M";
+    "size m" could be metres)."""
+    out = set()
+    for m in _SIZE_LETTER.finditer(text or ""):
+        letter = m.group("l")
+        if len(letter) == 1 and not letter.isupper():
+            continue
+        out.add(letter.upper())
+    return out
+
+
+def _count(word: str) -> int | None:
+    word = word.lower()
+    if word.isdigit():
+        return int(word)
+    if word in ("a", "an", "one") or word.startswith(("ein", "un")):
+        return 1
+    return _NUMBER_WORDS.get(word)
+
+
+def _next_to(clause: str, period: re.Match[str], word: re.Match[str]) -> bool:
+    """The return word is within ``NEAR_CHARS`` of the period, with no shipping, delivery
+    or warranty word between them ("Rückgabe möglich, Lieferung in 14 Tagen": 14 is
+    delivery)."""
+    gap = clause[min(period.end(), word.end()):max(period.start(), word.start())]
+    return len(gap) <= NEAR_CHARS and not _OTHER_TIME.search(gap)
+
+
+def labelled_return_days(text: str) -> set[int]:
+    """Return windows stated as a number attached to a time unit, next to a return word
+    in the same clause ("Rückgabe innerhalb von 30 Tagen" -> 30, "2 weeks to return" -> 14)."""
+    out: set[int] = set()
+    for clause in re.split(r"[;\n]|\.(?!\d)", text or ""):
+        words = list(_RETURN_WORD.finditer(clause))
+        for m in _PERIOD.finditer(clause):
+            if not any(_next_to(clause, m, w) for w in words):
+                continue
+            n = _count(m.group("n"))
+            if n is None:
+                continue
+            factor = next(f for f, units in _UNITS.items() if re.fullmatch(units, m.group("u"), re.IGNORECASE))
+            out.add(n * factor)
+    return out
 
 
 def _accept(name: str, value: Any, text: str) -> FactValue | None:
-    """A validated, grounded FactValue for one model answer, or None."""
+    """A validated FactValue for one model answer, grounded next to its label word, or None."""
     if value is None:
         return None
     if name == "size_eu":
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            return None
         size = Decimal(str(value))
-        if not (16 <= size <= 60) or (size * 2) % 1 != 0 or size not in _numbers_in(text):
+        if not (16 <= size <= 60) or (size * 2) % 1 != 0 or size not in labelled_sizes(text):
             return None
         return FactValue[float](value=float(size), known=True, source="model",
                                 detail=f"size {size.normalize():f}, {MODEL_DETAIL}")
     if name == "size_letter":
-        if value not in SIZE_LETTERS or not re.search(rf"(?<![A-Za-z]){value}(?![A-Za-z])", text):
+        if value not in SIZE_LETTERS or value not in labelled_letters(text):
             return None
         return FactValue[str](value=value, known=True, source="model", detail=f"size {value}, {MODEL_DETAIL}")
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 365:
         return None
-    if not _grounded_days(value, text):
+    grounded = bool(_NO_RETURNS.search(text)) if value == 0 else value in labelled_return_days(text)
+    if not grounded:
         return None
     detail = "no returns" if value == 0 else f"returns within {value} days"
     return FactValue[int](value=value, known=True, source="model", detail=f"{detail}, {MODEL_DETAIL}")

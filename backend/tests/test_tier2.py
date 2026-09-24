@@ -240,3 +240,41 @@ def test_the_schema_meets_strict_mode():
 def test_tier_2_is_registered():
     load_implementations()
     assert IMPLEMENTATIONS["resolve_unknowns"] is resolve_unknowns
+
+
+# --- Grounding next to the label word (issue #17) ----------------------------------------
+@pytest.mark.parametrize("answer", [
+    _line(size_eu=30),   # 30 is the return window, not the size
+    _line(days=43),      # 43 is the size, not the return window
+], ids=["return-days-as-size", "size-as-return-days"])
+def test_a_number_from_another_fact_is_refused(answer):
+    facts = _facts("Größe 43; Rückgabe innerhalb von 30 Tagen")
+    assert resolve_unknowns(facts, evaluate_rules(facts, SHOES), Answers(answer), 1.5) is facts
+
+
+@pytest.mark.parametrize("details,answer,field,value", [
+    ("Talla: 43 EU. Devolución en 14 días", _line(size_eu=43, days=14), "return_window_days", 14),
+    ("taille 42,5 ; retours sous 30 jours", _line(size_eu=42.5, days=30), "size_eu", 42.5),
+    ("Laufschuh 43 EU, Rückgabe innerhalb eines Monats", _line(size_eu=43, days=30), "return_window_days", 30),
+    ("Größe 43; 2 Wochen Rückgaberecht", _line(size_eu=43, days=14), "return_window_days", 14),
+], ids=["spanish", "french-half-size", "german-month", "german-weeks"])
+def test_labelled_values_in_other_languages_are_accepted(details, answer, field, value):
+    facts = _facts(details)
+    resolved = resolve_unknowns(facts, evaluate_rules(facts, SHOES), Answers(answer), 1.5)
+    fact = getattr(resolved.items[0], field)
+    assert (fact.value, fact.known, fact.source) == (value, True, "model")
+
+
+@pytest.mark.parametrize("details,answer", [
+    ("Laufschuh, Modell 2043, 43 Kunden empfehlen ihn", _line(size_eu=43)),       # no size label
+    ("Größe 43; Versand in 30 Tagen", _line(size_eu=43, days=30)),                # 30 days is shipping
+    ("Größe 43; Rückgabe möglich, Lieferung in 14 Tagen", _line(size_eu=43, days=14)),
+], ids=["no-size-label", "shipping-days", "delivery-days-other-clause"])
+def test_unlabelled_numbers_are_refused(details, answer):
+    facts = _facts(details)
+    resolved = resolve_unknowns(facts, evaluate_rules(facts, SHOES), Answers(answer), 1.5)
+    line = resolved.items[0]
+    if "Größe 43" in details:  # the labelled size is still accepted; only the days are refused
+        assert line.size_eu.source == "model" and not line.return_window_days.known
+    else:
+        assert resolved is facts
