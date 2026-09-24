@@ -51,7 +51,7 @@ from oneguard.engine.types import (
 )
 from oneguard.store import seed as seed_module
 from oneguard.store.db import make_engine, session
-from oneguard.store.schema import Decision, Mandate, PolicyDraft
+from oneguard.store.schema import Decision, Mandate, PolicyDraft, Run
 from oneguard.viseca.client import VisecaClient, store_sink
 from oneguard.viseca.demo import rule_to_viseca
 from tests.fake_viseca import FakeConfig, FakeViseca
@@ -333,12 +333,13 @@ def by_total(decisions: list[dict[str, Any]], total: float) -> dict[str, Any]:
 
 
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-TIMESTAMP_KEYS = {"occurred_at", "deadline_at", "confirmed_at", "period_window_start", "as_of", "next_at"}
+TIMESTAMP_KEYS = {"occurred_at", "deadline_at", "confirmed_at", "period_window_start", "as_of", "next_at", "run_started_at"}
 DECISION_KEYS = {
     "authorization_id", "customer_id", "card_id", "decision", "uncertain_outcome", "status", "reason_codes",
     "message", "uncertainty", "occurred_at", "merchant", "amount", "currency", "billing_amount_chf", "items",
     "injection_flag", "evidence", "order_returnable", "delivery_by",
     "counterfactual", "related", "session", "merchant_meta", "engine_version", "latency_ms", "explanation_source",
+    "run_id", "run_started_at",
 }  # fmt: skip
 NULLABLE_DECISION_KEYS = {"uncertain_outcome", "uncertainty", "injection_flag", "delivery_by", "counterfactual", "related", "session"}
 MATRIX = {
@@ -602,6 +603,34 @@ def test_offline_replay_terms_injection_merchants_and_one_customer(db_url: str) 
             assert lookalike and original
             assert {d["merchant"]["merchant_id"] for d in lookalike} != {d["merchant"]["merchant_id"] for d in original}
             assert all(not d["merchant_meta"]["familiar"] for d in lookalike)
+
+    asyncio.run(scenario())
+
+
+def test_each_decision_names_its_run_and_when_the_run_started(db_url: str) -> None:
+    """Two runs on one card: C6 carries each decision's run id and its run's start (§2)."""
+
+    async def scenario() -> None:
+        clock = Clock()
+        async with running(db_url, clock=clock) as run:
+            first = await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
+            clock.offset = timedelta(minutes=5)
+            both = await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
+            assert len({d["authorization_id"] for d in both}) == 20
+            first_ids = {d["authorization_id"] for d in first}
+            runs: dict[str, set[str]] = {}
+            for d in both:
+                assert d["run_id"] and TIMESTAMP.match(d["run_started_at"])
+                runs.setdefault(d["run_id"], set()).add(d["run_started_at"])
+            assert len(runs) == 2 and all(len(starts) == 1 for starts in runs.values())
+            (older,) = {d["run_id"] for d in both if d["authorization_id"] in first_ids}
+            (newer,) = set(runs) - {older}
+            (older_start,), (newer_start,) = runs[older], runs[newer]
+            gap = datetime.fromisoformat(newer_start) - datetime.fromisoformat(older_start)
+            assert timedelta(minutes=5) <= gap < timedelta(minutes=6)
+            with session(run.services.db_engine) as s:
+                stored = dict(s.execute(select(Run.run_id, Run.started_at)).all())
+            assert {older, newer} <= set(stored)
 
     asyncio.run(scenario())
 
@@ -1251,12 +1280,13 @@ def test_d7_shows_the_newest_run_live_or_replay(db_url: str, monkeypatch: pytest
             live = (await run.post("/api/dev/runs", json={"scenario_id": "SCEN0000", "card_id": "CA0001"})).json()
             current = (await run.get("/api/dev/runs/current")).json()
             assert current["run_id"] == live["run_id"]
-            assert current == (await run.get(f"/api/dev/runs/{live['run_id']}")).json()
 
             async def decided() -> bool:
                 return (await run.get("/api/dev/runs/current")).json()["decided"] == 1
 
-            await until(decided)
+            await until(decided)  # counters settled: D7 and D4 read the same run alike
+            current = (await run.get("/api/dev/runs/current")).json()
+            assert current == (await run.get(f"/api/dev/runs/{live['run_id']}")).json()
             await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
             current = (await run.get("/api/dev/runs/current")).json()
             assert set(current) == {"scenario_id", "card_id", "delivered", "total", "running", "next_at"}

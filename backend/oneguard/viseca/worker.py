@@ -11,7 +11,15 @@ loop, never blocked by a human:
   scenarios then exist for the API. The sandbox serves no history-file hash, so the
   file is downloaded from ``/v1/reference-data/authorization-history.csv`` and hashed; if
   it differs from the one the seed checked (``data/metadata.json``),
-  ``authorization_history`` is re-seeded from it and that is logged loudly.
+  ``authorization_history`` is re-seeded from it and that is logged loudly. The served
+  scenario ids go to ``worker_state`` (``served_scenarios``, C12 ``live``).
+- which customer and card a served scenario runs on: the catalogue does not say, the
+  platform does in the bootstrap ``profile``, every run's ``fixture_profiles`` and every
+  authorization. Each sighting is upserted into ``scenario_profiles`` (``remember_profiles``):
+  at start, from D3's run reply, from run progress, from a run's first event and the feed.
+- start also reads ``GET /v1/authorizations`` once: its runs name their cards, and a step-up
+  the platform still serves as waiting that the ledger already closed by the timeout rule
+  gets its timeout ``/resolve`` now, so the platform stops serving it.
 - loop: long-poll ``/v1/decision-requests/next?wait=25``. 204 → read the progress of
   every tracked run and the event feed, poll again. 200 → validate ``data`` against the
   event schema, remember the live → source id map (and the live related id), store the
@@ -112,7 +120,16 @@ from oneguard.store import seed as seed_module
 from oneguard.store.db import get_engine, session
 from oneguard.store.history import StoreHistoryIndex
 from oneguard.store.lease import WorkerLease, worker_lease
-from oneguard.store.schema import Decision, EventRaw, Mandate, Run, WorkerState
+from oneguard.store.schema import (
+    Account,
+    Card,
+    Decision,
+    EventRaw,
+    Mandate,
+    Run,
+    ScenarioProfile,
+    WorkerState,
+)
 from oneguard.viseca.client import VisecaClient, VisecaError, cap
 from oneguard.viseca.schema import event_errors
 
@@ -143,6 +160,8 @@ busy (no 204): its ``scenario.completed`` closes finished runs."""
 RECONCILE_TOLERANCE_CHF = Decimal("0.005")
 HISTORY_FILE = "authorization_history.csv"
 EVENTS_CURSOR_KEY = "events_cursor"
+SERVED_SCENARIOS_KEY = "served_scenarios"
+"""``worker_state`` row: the scenario ids the platform served at the last start (C12 ``live``)."""
 
 TIMEOUT_MESSAGE = "No answer within {seconds} s; nothing was approved"
 """rules.md Q2 / api-contract §3.1, §3.5, with the human window from /v1/bootstrap."""
@@ -165,6 +184,15 @@ INVALID_EVENT_MESSAGE = (
 
 _DONE_STATES = {"completed", "complete", "done", "finished"}
 _ERROR_STATES = {"failed", "error", "errored", "cancelled", "canceled", "aborted"}
+PLATFORM_PENDING = frozenset({"awaiting_decision", STEP_UP_WAITING})
+"""``GET /v1/authorizations`` statuses of a purchase still open at the platform."""
+
+
+def run_finished(progress: Any) -> bool:
+    """True when a ``GET /v1/scenario-runs/{id}`` reply says the run is over (done or failed)."""
+    state = progress.get("status") if isinstance(progress, dict) else None
+    state = str(state or first_value(progress, "status", "state") or "").lower()
+    return state in _DONE_STATES or state in _ERROR_STATES
 _FEED_FINAL = {
     "approved": "approved",
     "approve": "approved",
@@ -219,11 +247,20 @@ def first_value(obj: Any, *keys: str) -> Any:
 
 @dataclass(frozen=True)
 class ServedProfile:
-    """The fixture profile ``/v1/bootstrap`` names for the team."""
+    """A fixture profile the platform names: the scenario, its customer and card.
+
+    ``customer_id`` is None when the platform named only the card (an authorization);
+    the store then finds the customer through the card.
+    """
 
     scenario_id: str
-    customer_id: str
+    customer_id: str | None
     card_id: str
+    profile_id: str | None = None
+
+
+def _text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value)
 
 
 def served_profile(bootstrap: Any) -> ServedProfile | None:
@@ -246,7 +283,81 @@ def served_profile(bootstrap: Any) -> ServedProfile | None:
     card = context.get("card_id") or part("card").get("card_id")
     if not all(isinstance(v, str) and v for v in (scenario, customer, card)):
         return None
-    return ServedProfile(scenario_id=scenario, customer_id=customer, card_id=card)
+    profile_id = profile.get("profile_id") or context.get("profile_id")
+    return ServedProfile(
+        scenario_id=scenario, customer_id=customer, card_id=card, profile_id=profile_id if _text(profile_id) else None
+    )
+
+
+def profile_sightings(obj: Any) -> list[ServedProfile]:
+    """Every scenario → customer / card binding the platform states anywhere in ``obj``.
+
+    Three shapes: the bootstrap ``profile`` (``scenario_id`` + ``profile_context``), a run
+    (reply, progress, feed item: ``scenario_id`` + ``fixture_profiles[{profile_id,
+    customer_id, card_id}]``) and an authorization (``scenario_id`` + ``card_id`` +
+    ``profile_id``). The served catalogue names no card, so these are the only sources.
+    """
+    found: list[ServedProfile] = []
+
+    def visit(node: Any) -> None:
+        if isinstance(node, list):
+            for value in node:
+                visit(value)
+            return
+        if not isinstance(node, dict):
+            return
+        scenario = node.get("scenario_id")
+        if _text(scenario):
+            bootstrap = served_profile({"profile": node}) if "profile_context" in node else None
+            if bootstrap is not None:
+                found.append(bootstrap)
+            profiles = node.get("fixture_profiles")
+            for p in profiles if isinstance(profiles, list) else []:
+                if isinstance(p, dict) and _text(p.get("card_id")):
+                    found.append(
+                        ServedProfile(
+                            scenario_id=scenario,
+                            customer_id=p["customer_id"] if _text(p.get("customer_id")) else None,
+                            card_id=p["card_id"],
+                            profile_id=p["profile_id"] if _text(p.get("profile_id")) else None,
+                        )
+                    )
+            if _text(node.get("card_id")):
+                found.append(
+                    ServedProfile(
+                        scenario_id=scenario,
+                        customer_id=node["customer_id"] if _text(node.get("customer_id")) else None,
+                        card_id=node["card_id"],
+                        profile_id=node["profile_id"] if _text(node.get("profile_id")) else None,
+                    )
+                )
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                visit(value)
+
+    visit(obj)
+    return found
+
+
+def served_scenario_ids(bootstrap: Any, reference: Any) -> list[str] | None:
+    """The scenario ids the platform serves now: bootstrap ``scenarios``, else reference
+    data ``runtime.scenario_ids``, else its ``scenario_catalogue``; None if neither says."""
+    candidates: list[Any] = []
+    if isinstance(bootstrap, dict):
+        candidates.append(bootstrap.get("scenarios"))
+    if isinstance(reference, dict):
+        runtime = reference.get("runtime")
+        candidates.append(runtime.get("scenario_ids") if isinstance(runtime, dict) else None)
+        tables = reference.get("tables")
+        candidates.append(tables.get("scenario_catalogue") if isinstance(tables, dict) else None)
+    for candidate in candidates:
+        if not isinstance(candidate, list) or not candidate:
+            continue
+        ids = [c.get("scenario_id") if isinstance(c, dict) else c for c in candidate]
+        ids = [i for i in ids if _text(i)]
+        if ids:
+            return sorted(set(ids))
+    return None
 
 
 def seconds_setting(
@@ -663,6 +774,11 @@ class VisecaWorker:
         """What the start-up pack check did to each served reference table."""
         self.served_history_sha256: str | None = None
         """SHA-256 of the history file Viseca serves, once checked at start."""
+        self.served_scenarios: list[str] | None = None
+        """The scenario ids the platform serves now, once read at start."""
+        self._profiles: dict[str, tuple[str, str, str | None]] = {}
+        """scenario id → (customer, card, profile) as last stored, so a repeat sighting
+        costs no store round trip."""
 
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="oneguard-engine")
         self._task: asyncio.Task[None] | None = None
@@ -803,6 +919,7 @@ class VisecaWorker:
             self._history = await asyncio.to_thread(self._load_history)
         if self._ledger is None:
             self._ledger = default_ledger(self._db_engine, self._history)
+        await self._remember_served()
         held = await self._try_lease()
         if held:
             await self._take_over()
@@ -863,8 +980,9 @@ class VisecaWorker:
             await self._step_down()
 
     async def _take_over(self) -> None:
-        """What only the lease holder does before its first poll."""
+        """What only the lease holder does before its first poll (it may ``/resolve``)."""
         await self._recover_pending()
+        await self._reconcile_platform()
         self._cursor = await asyncio.to_thread(self._load_cursor)
         await self._track_unfinished_runs()
 
@@ -902,6 +1020,23 @@ class VisecaWorker:
         await asyncio.to_thread(self._mark_mandate_revoked, viseca_mandate_id)
         log.info("mandate %s revoked; later requests under it are declined", viseca_mandate_id)
         await self.client.delete_mandate(viseca_mandate_id)
+
+    async def remember_profiles(self, obj: Any, source: str) -> list[ServedProfile]:
+        """Store every scenario → customer / card binding ``obj`` states (``profile_sightings``).
+
+        Returns the bindings found, with the customer filled in from the card where the
+        platform named only the card. A store failure is logged, never raised: a binding is
+        operator data and must not stop a decision.
+        """
+        sightings = profile_sightings(obj)
+        if not sightings:
+            return []
+        try:
+            return await asyncio.to_thread(self._save_profiles, sightings, source)
+        except Exception as exc:
+            log.exception("storing scenario profiles failed")
+            self._note_error(f"scenario profiles not stored: {type(exc).__name__}: {exc}")
+            return []
 
     async def ledger_entries(self, live_ids: list[str]) -> list[LedgerEntry]:
         """The stored entries for these live ids (read on the ledger's thread)."""
@@ -1131,6 +1266,69 @@ class VisecaWorker:
         with session(self._db_engine) as s:
             return StoreHistoryIndex.load(s)
 
+    async def _remember_served(self) -> None:
+        """Store which scenarios the platform serves and the bootstrap profile's binding."""
+        served = served_scenario_ids(self.bootstrap, self.reference_data)
+        if served is not None:
+            self.served_scenarios = served
+            try:
+                await asyncio.to_thread(self._save_state, SERVED_SCENARIOS_KEY, served)
+            except Exception as exc:
+                log.exception("storing the served scenarios failed")
+                self._note_error(f"served scenarios not stored: {type(exc).__name__}: {exc}")
+        profile = self.bootstrap.get("profile") if isinstance(self.bootstrap, dict) else None
+        await self.remember_profiles(profile, "bootstrap")
+
+    async def _reconcile_platform(self) -> None:
+        """Read every platform authorization once at start.
+
+        - Every run it lists says which card its scenario runs on (``remember_profiles``).
+        - A step-up the platform still serves as waiting (``pending_step_up``) that our
+          ledger already closed by the timeout rule never got its ``/resolve`` through
+          (a restart or a failed call): it is sent now, ``decline`` with the timeout
+          message, so the platform stops serving it (rules.md Q2). One the ledger does not
+          know is another decider's and is left alone; one the customer answered is only
+          logged, since a human answer is never re-sent on their behalf.
+        """
+        try:
+            items = await self.client.list_authorizations()
+        except VisecaError as exc:
+            log.warning("platform authorizations unavailable at start: %s", exc)
+            return
+        if not isinstance(items, list):
+            return
+        await self.remember_profiles(items, "authorization")
+        waiting = [
+            i["authorization_id"]
+            for i in items
+            if isinstance(i, dict) and i.get("status") == STEP_UP_WAITING and _text(i.get("authorization_id"))
+        ]
+        async with self._resolution_lock:
+            for live_id in waiting:
+                entry = await self._engine(self.ledger.get, live_id)
+                if entry is None or entry.outcome != "step_up" or not entry.final:
+                    continue
+                if entry.resolved_by != "timeout":
+                    log.warning(
+                        "Viseca still waits on step-up %s, which the ledger has %s by the %s; not re-sent",
+                        live_id,
+                        entry.uncertain_outcome,
+                        entry.resolved_by,
+                    )
+                    continue
+                if not self._claim_resolve(live_id):
+                    continue
+                try:
+                    await self.client.resolve(
+                        live_id, "decline", timeout_message(self.human_window_s), [_resolved_by_row("timeout")]
+                    )
+                    log.info("step-up %s expired in the ledger; its timeout decline is now at Viseca", live_id)
+                except VisecaError as exc:
+                    if exc.status == 409:
+                        log.info("Viseca closed step-up %s itself (%s)", live_id, exc.code)
+                    else:
+                        self._note_error(f"timeout resolve of {live_id} at start failed: {exc}")
+
     async def _recover_pending(self) -> None:
         rows = await asyncio.to_thread(self._load_events)
         for live_id, source_id, event in rows:
@@ -1207,6 +1405,7 @@ class VisecaWorker:
                 run.finished_at = run.finished_at or self._now()
             else:
                 self._apply_progress(run, progress)
+                await self.remember_profiles(progress, "run")
             await asyncio.to_thread(self._save_run, run)
 
     async def _track_unfinished_runs(self) -> None:
@@ -1279,6 +1478,7 @@ class VisecaWorker:
             # answers over from earlier live runs, so the row is written before the first
             # decision; a run with no row is treated as a replay.
             await asyncio.to_thread(self._save_run, run)
+            await self.remember_profiles(auth, "authorization")
         self._run_of[live_id] = run
         self._events[live_id] = data
         self.source_ids[live_id] = auth["source_authorization_id"]
@@ -1814,6 +2014,7 @@ class VisecaWorker:
             log.warning("event feed reply has no events list; cursor stays at %s", self._cursor)
             return
         next_cursor = reply.get("next_cursor")
+        await self.remember_profiles(items, "run")
         completed: list[str] = []
         async with self._resolution_lock:
             for item in items:
@@ -1957,8 +2158,95 @@ class VisecaWorker:
         return row.value
 
     def _save_cursor(self, cursor: int | str) -> None:
+        self._save_state(EVENTS_CURSOR_KEY, cursor)
+
+    def _save_state(self, key: str, value: Any) -> None:
         with session(self._db_engine) as s:
-            s.merge(WorkerState(key=EVENTS_CURSOR_KEY, value=cursor, updated_at=self._now()))
+            s.merge(WorkerState(key=key, value=value, updated_at=self._now()))
+
+    def _save_profiles(self, sightings: list[ServedProfile], source: str) -> list[ServedProfile]:
+        """Upsert ``scenario_profiles``, the last sighting of a scenario winning. The customer
+        is the card's holder in the store (the platform's own id when the card is unknown).
+        A row is written only when the binding is new or changed; a sighting that names no
+        profile id keeps the stored one."""
+        latest = {p.scenario_id: p for p in sightings}
+        saved: list[ServedProfile] = []
+        with session(self._db_engine) as s:
+            for scenario_id, p in latest.items():
+                customer = s.scalar(
+                    select(Account.customer_id)
+                    .join(Card, Card.account_id == Account.account_id)
+                    .where(Card.card_id == p.card_id)
+                ) or p.customer_id
+                if customer is None:
+                    log.warning("scenario %s runs on card %s, which the store does not know", scenario_id, p.card_id)
+                    continue
+                known = self._profiles.get(scenario_id)
+                if known is not None and known[:2] == (customer, p.card_id) and p.profile_id in (None, known[2]):
+                    saved.append(ServedProfile(scenario_id, customer, p.card_id, known[2]))
+                    continue
+                row = s.get(ScenarioProfile, scenario_id)
+                same = row is not None and (row.customer_id, row.card_id) == (customer, p.card_id)
+                profile_id = p.profile_id or (row.profile_id if same and row is not None else None)
+                if row is None:
+                    row = ScenarioProfile(scenario_id=scenario_id)
+                    s.add(row)
+                if not same or row.profile_id != profile_id:
+                    row.customer_id, row.card_id, row.profile_id = customer, p.card_id, profile_id
+                    row.source = source
+                    row.seen_at = self._now()
+                    log.info("scenario %s runs on customer %s, card %s (%s)", scenario_id, customer, p.card_id, source)
+                self._profiles[scenario_id] = (customer, p.card_id, profile_id)
+                saved.append(ServedProfile(scenario_id, customer, p.card_id, profile_id))
+        return saved
+
+    def _load_cursor(self) -> int | str:
+        with session(self._db_engine) as s:
+            row = s.get(WorkerState, EVENTS_CURSOR_KEY)
+        if row is None or not isinstance(row.value, int | str) or isinstance(row.value, bool):
+            log.info("no stored event feed cursor; reading the feed from 0")
+            return 0
+        log.info("event feed cursor resumed at %s", row.value)
+        return row.value
+
+    def _save_cursor(self, cursor: int | str) -> None:
+        self._save_state(EVENTS_CURSOR_KEY, cursor)
+
+    def _save_state(self, key: str, value: Any) -> None:
+        with session(self._db_engine) as s:
+            s.merge(WorkerState(key=key, value=value, updated_at=self._now()))
+
+    def _save_profiles(self, sightings: list[ServedProfile], source: str) -> list[ServedProfile]:
+        """Upsert ``scenario_profiles``, the last sighting of a scenario winning. A row is
+        written only when the binding is new or changed."""
+        latest = {p.scenario_id: p for p in sightings}
+        saved: list[ServedProfile] = []
+        with session(self._db_engine) as s:
+            for scenario_id, p in latest.items():
+                customer = s.scalar(
+                    select(Account.customer_id)
+                    .join(Card, Card.account_id == Account.account_id)
+                    .where(Card.card_id == p.card_id)
+                ) or p.customer_id
+                if customer is None:
+                    log.warning("scenario %s runs on card %s, which the store does not know", scenario_id, p.card_id)
+                    continue
+                known = self._profiles.get(scenario_id)
+                binding = (customer, p.card_id, p.profile_id or (known[2] if known else None))
+                saved.append(ServedProfile(scenario_id, customer, p.card_id, binding[2]))
+                if known == binding:
+                    continue
+                row = s.get(ScenarioProfile, scenario_id)
+                if row is None or (row.customer_id, row.card_id, row.profile_id) != binding:
+                    if row is None:
+                        row = ScenarioProfile(scenario_id=scenario_id)
+                        s.add(row)
+                    row.customer_id, row.card_id, row.profile_id = binding
+                    row.source = source
+                    row.seen_at = self._now()
+                    log.info("scenario %s runs on customer %s, card %s (%s)", scenario_id, customer, p.card_id, source)
+                self._profiles[scenario_id] = binding
+        return saved
 
     def _mark_mandate_revoked(self, viseca_mandate_id: str) -> None:
         with session(self._db_engine) as s:
