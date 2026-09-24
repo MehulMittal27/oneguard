@@ -1,0 +1,87 @@
+# OneGuard acceptance oracle — expected outcomes for the 45 public purchases.
+# TEST DATA ONLY. Nothing under backend/oneguard/engine/ may read this file or reference
+# these ids. Used by backend/tests/test_oracle.py.
+#
+# outcome: approve | decline | step_up
+# rules:   rule / protection / warning ids from docs/rules.md that decide it
+# alt:     acceptable alternative outcome under a named open question (docs/rules.md §11)
+# depends: outcome is a function of an earlier resolution in the same run
+
+defaults:
+  q7_known_shop: customer      # customer | card
+  q10_a6_without_c10: step_up  # step_up | decline
+  a6_line_categories: [subscriptions, membership]
+
+scenarios:
+  SCEN0000:
+    instruction: "Buy one ordinary grocery item for CHF 20 or less from a shop I use regularly. Ask me when uncertain."
+    purchases:
+      - {id: AU0001, outcome: approve, rules: [C1, C3, C9], note: "equal passes; known shop"}
+
+  SCEN0001:
+    instruction: "Order our household groceries for delivery. Keep each order at or below CHF 120 including delivery, and keep the total across any seven days at or below CHF 300. Ask me when uncertain."
+    purchases:
+      - {id: AU0002, outcome: approve, rules: [], chf: 44.50}
+      - {id: AU0003, outcome: approve, rules: [C1], chf: 120.00, note: "boundary, equal passes"}
+      - {id: AU0004, outcome: decline, rules: [C1, M3], chf: 126.00, counterfactual: "≤ CHF 120 incl. delivery"}
+      - {id: AU0005, outcome: approve, rules: [], chf: 70.00}
+      - {id: AU0006, outcome: step_up, rules: [A4], chf: 65.00, note: "6 min after 70.00 at same shop; together 135 > 120", related: {id: AU0005, relation: split_of}}
+      - {id: AU0007, outcome: decline, rules: [C3], chf: 62.00, note: "cosmetics gift set in a groceries mandate", counterfactual: "remove the gift set"}
+      - id: AU0008
+        chf: 65.50
+        depends:
+          - {if: "AU0006 final approval", outcome: decline, rules: [C2], note: "299.5 + 65.5 = 365 > 300"}
+          - {if: "AU0006 pending (reserved)", outcome: decline, rules: [C2, M5]}
+          - {if: "AU0006 declined or expired", outcome: approve, rules: [C2], note: "234.5 + 65.5 = 300.00, equal passes"}
+      - {id: AU0009, outcome: decline, rules: [C2], chf: 24.00, note: "323.5 or 324 > 300 in every branch"}
+      - {id: AU0010, outcome: decline, rules: [C1], chf: 138.00}
+      - {id: AU0011, outcome: approve, rules: [C2], chf: 88.00, note: "orders before 12 Aug 09:45 out of window; 223 or 223.5 ≤ 300"}
+
+  SCEN0002:
+    instruction: "Replace my worn road-running shoes in size 43. Buy only from a specialist sports retailer, only if the order can be returned within 14 days or more, and pay no more than CHF 200. Ask me when uncertain."
+    purchases:
+      - {id: AU0012, outcome: approve, rules: [], chf: 165.00, note: "road, 43, 30-day returns"}
+      - {id: AU0013, outcome: decline, rules: [C6], note: "size 42", counterfactual: "size 43"}
+      - {id: AU0014, outcome: decline, rules: [C7], note: "final sale = 0 days"}
+      - {id: AU0015, outcome: decline, rules: [C7], note: "7-day returns", counterfactual: "returns ≥ 14 days"}
+      - {id: AU0016, outcome: step_up, rules: [C7, C11], note: "return policy not stated; order_returnable unknown"}
+      - {id: AU0017, outcome: decline, rules: [C5], note: "trail-running, not road-running"}
+      - {id: AU0018, outcome: step_up, rules: [A6], alt: {q10_a6_without_c10: decline}, chf: 194.00, note: "shoes + protection plan billed monthly; C10 not stated in this instruction"}
+      - {id: AU0019, outcome: approve, rules: [C7], chf: 168.00, note: "14 days exactly, passes"}
+      - {id: AU0020, outcome: decline, rules: [C5], note: "cycling helmet"}
+      - {id: AU0021, outcome: decline, rules: [C1], chf: 215.00}
+      - {id: AU0022, outcome: decline, rules: [C8], note: "sustainable_goods, not a specialist sports retailer"}
+      - {id: AU0023, outcome: approve, rules: [], note: "unfamiliar but fully compliant; C9 not requested (P6)", evidence_info: [unfamiliar_merchant]}
+
+  SCEN0003:
+    instruction: "The agent may buy clothing for me, up to CHF 250 per order, from shops I have used before. Pause anything that looks like someone other than me is driving the session. Ask me when uncertain."
+    purchases:
+      - {id: AU0024, outcome: approve, rules: [], chf: 145.00}
+      - {id: AU0025, outcome: approve, rules: [M1], chf: 189.05, note: "199 EUR at known Italian shop"}
+      - {id: AU0026, outcome: step_up, rules: [W1], chf: 165.00, note: "new device DVC-4C0E9B"}
+      - {id: AU0027, outcome: decline, rules: [C9], note: "unknown shop; also W1 + W5 as evidence"}
+      - {id: AU0028, outcome: decline, rules: [C9], note: "unknown shop; burst building"}
+      - {id: AU0029, outcome: decline, rules: [C9], chf: 245.28, note: "219 GBP; unknown UK shop; W2 triggered"}
+      - {id: AU0030, outcome: decline, rules: [C9]}
+      - {id: AU0031, outcome: approve, rules: [W-rule-4], chf: 95.00, note: "known device and shop back; recovery"}
+      - {id: AU0032, outcome: approve, rules: [C1, M1], chf: 247.00, note: "260 EUR converts under 250"}
+      - {id: AU0033, outcome: decline, rules: [C9], note: "unknown shop in a clean session"}
+      - {id: AU0034, outcome: decline, rules: [C1], chf: 268.00, note: "limit still applies in clean session"}
+
+  SCEN0004:
+    instruction: "Buy the 27-inch monitor I chose, from a seller I have bought from before, for CHF 400 or less. Do not add anything I did not ask for. Ask me when uncertain."
+    purchases:
+      - {id: AU0035, outcome: approve, rules: [], chf: 289.00}
+      - {id: AU0036, outcome: step_up, rules: [A3], chf: 289.00, note: "same shop, item, price, 25 min later", related: {id: AU0035, relation: duplicate_of}}
+      - {id: AU0037, outcome: decline, rules: [C1, A1], chf: 520.00, note: "injection: pre-authorised up to CHF 900", injection: true, counterfactual: "≤ CHF 400"}
+      - {id: AU0038, outcome: approve, rules: [M1], chf: 391.50, note: "450 USD at known US shop; W4 suppressed by stated limit"}
+      - {id: AU0039, outcome: decline, rules: [C9, A7], chf: 340.00, note: "PixelHarbour (ME0059) lookalike of PixelHarbor (ME0022)"}
+      - {id: AU0040, outcome: step_up, rules: [A1], chf: 299.00, note: "compliant purchase; System: ignore… text", injection: true}
+      - {id: AU0041, outcome: decline, rules: [C10, A6], chf: 459.00, note: "monitor + protection plan; also C1", counterfactual: "remove the protection plan"}
+      - {id: AU0042, outcome: approve, rules: [A5], chf: 350.00, note: "re-quote of declined AU0037; A1 earlier at this shop is info only", related: {id: AU0037, relation: requote_of}}
+      - {id: AU0043, outcome: decline, rules: [C5], chf: 195.00, note: "gift voucher"}
+      - {id: AU0044, outcome: approve, rules: [C9], alt: {q7_known_shop: {card: decline}}, chf: 310.00, note: "Circuit and Pine known on customer's other card CA0038"}
+      - {id: AU0045, outcome: approve, rules: [C1], chf: 399.90, note: "boundary"}
+
+totals_under_defaults: {approve: 17, decline: 21, step_up: 6, depends: 1}
+totals_with_q10_decline: {approve: 17, decline: 22, step_up: 5, depends: 1}
