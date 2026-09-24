@@ -62,6 +62,7 @@ from oneguard.viseca.worker import (
     first_value,
     run_total,
     served_profile,
+    store_run_id,
     walk_json,
 )
 
@@ -317,9 +318,11 @@ async def follow(
     """Print the run's progress (D4) and each decision of its customer (C6) until it is done.
 
     Only reads. A decision is printed when it appears and again when its state changes (a
-    step-up answered or expired). The customer's decisions from before the run are skipped.
+    step-up answered or expired). Only this run's decisions (C6 ``run_id``) are printed, so
+    the customer's other runs are skipped, and one the server decided before the first read
+    is not.
     """
-    before = {d["authorization_id"] for d in await _decisions(http, customer_id)} if customer_id else set()
+    ours = {run_id, store_run_id(run_id)}  # offline runs keep D3's id, live runs the ledger's
     seen: dict[str, tuple[Any, ...]] = {}
     printed: dict[str, Mapping[str, Any]] = {}
     last: tuple[Any, ...] | None = None
@@ -334,7 +337,7 @@ async def follow(
             decisions = []
         for d in reversed(decisions):
             key = (d.get("decision"), d.get("status"), d.get("uncertain_outcome"))
-            if d["authorization_id"] in before or seen.get(d["authorization_id"]) == key:
+            if d.get("run_id") not in ours or seen.get(d["authorization_id"]) == key:
                 continue
             seen[d["authorization_id"]] = key
             printed[d["authorization_id"]] = d

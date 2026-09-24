@@ -552,6 +552,12 @@ class ScopedStoreLedger:
         return call
 
 
+def store_run_id(viseca_run_id: str) -> str:
+    """The ledger's ``run_id`` (``runs.run_id``, C6 ``Decision.run_id``) of a platform run;
+    D3/D4 name the run by the platform's id."""
+    return f"live-{viseca_run_id}"
+
+
 def default_ledger(db: Engine, history: HistoryIndex) -> Ledger:
     """P2's store-backed ledger (``engine/ledger.py``) on short sessions."""
     return cast(Ledger, ScopedStoreLedger(db, history=history))
@@ -1519,7 +1525,7 @@ class VisecaWorker:
         run = self._runs.get(viseca_run_id)
         if run is None:
             run = RunState(
-                viseca_run_id=viseca_run_id, run_id=f"live-{viseca_run_id}", started_at=self._now()
+                viseca_run_id=viseca_run_id, run_id=store_run_id(viseca_run_id), started_at=self._now()
             )
             self._runs[viseca_run_id] = run
         return run
