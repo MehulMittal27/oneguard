@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { messageWithoutCounterfactual } from '../src/lib/decisionMessage.ts'
+import { messageWithoutCounterfactual, noteAddsToMessage } from '../src/lib/decisionMessage.ts'
 
 const suggestion = 'Would approve at CHF 20.00 or less.'
 
@@ -44,4 +44,41 @@ test('a pending step-up message ending with its counterfactual is said once on A
     ),
     'Asking about CHF 64.00: this looks like a repeat of an order you already placed.',
   )
+})
+
+test('a note that restates the message clause adds nothing (AU0036)', () => {
+  assert.equal(
+    noteAddsToMessage(
+      'Waiting for you CHF 289.00: Same shop and items as the CHF 289.00 order 25 min earlier.',
+      'Same shop and items as the CHF 289.00 order 25 min earlier (CHF 289.00 then, CHF 289.00 now).',
+    ),
+    false,
+  )
+})
+
+test('a note that rewords the message clause adds nothing (AU0040)', () => {
+  assert.equal(
+    noteAddsToMessage(
+      "Waiting for you CHF 299.00: The shop's text had instructions aimed at the agent; they were ignored, so you decide.",
+      "The shop's text contains instructions aimed at the agent (line 1 details); they were ignored.",
+    ),
+    false,
+  )
+})
+
+test('a note naming what the message does not is shown', () => {
+  assert.equal(
+    noteAddsToMessage(
+      'Waiting for you CHF 80.00: your rules could not settle this purchase.',
+      'The shop does not say which size this is; you asked for size 42.',
+    ),
+    true,
+  )
+})
+
+test('an empty or identical note adds nothing', () => {
+  const message = 'Waiting for you CHF 80.00: the size is not stated.'
+  assert.equal(noteAddsToMessage(message, null), false)
+  assert.equal(noteAddsToMessage(message, '  '), false)
+  assert.equal(noteAddsToMessage(message, message), false)
 })

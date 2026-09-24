@@ -8,7 +8,7 @@ import { OrderCapLeashMeter, PeriodLeashMeter } from '../../components/LeashMete
 import { RevokeSheet } from '../../components/RevokeSheet'
 import { SessionBanner } from '../../components/SessionBanner'
 import { formatShortDate } from '../../lib/datetime'
-import { messageWithoutCounterfactual } from '../../lib/decisionMessage'
+import { messageWithoutCounterfactual, noteAddsToMessage } from '../../lib/decisionMessage'
 import { formatChf } from '../../lib/money'
 import { limitsFromMandate, spendFromMandate } from '../../lib/spend'
 import { useDecisions } from '../../state/DecisionsContext'
@@ -148,7 +148,9 @@ function PendingCard({
         this screen (CLAUDE.md rule 10). The counterfactual is one line under the
         message, as in DecisionDetail: what would have let this through is the
         thing the customer weighs before answering. Said once: a message that
-        still ends with the same suggestion drops its trailing copy.
+        still ends with the same suggestion drops its trailing copy. The note
+        shows only when it says something the message does not (it is usually
+        the uncertain evidence row's detail, listed just below anyway).
       */}
       <div className="mt-3 rounded-row border border-asked-border bg-asked-tint px-4 py-3">
         <p className="text-[11px] font-semibold tracking-[0.08em] text-asked-ink uppercase">
@@ -160,7 +162,7 @@ function PendingCard({
         {decision.counterfactual && (
           <p className="mt-1 text-[13px] text-asked-ink">{decision.counterfactual}</p>
         )}
-        {decision.uncertainty && (
+        {decision.uncertainty && noteAddsToMessage(decision.message, decision.uncertainty.note) && (
           <p className="mt-2 text-[13px] text-asked-ink">{decision.uncertainty.note}</p>
         )}
       </div>
