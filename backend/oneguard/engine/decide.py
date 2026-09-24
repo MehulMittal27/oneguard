@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from oneguard.engine.facts import CONTRADICTORY
 from oneguard.engine.interfaces import register
-from oneguard.engine.policy import CONFIRMED, RESERVATION_ONLY
+from oneguard.engine.policy import CONFIRMED, COUNT_FIELD, RESERVATION_ONLY
 from oneguard.engine.types import (
     STEP1_RULE_IDS,
     EngineDecision,
@@ -89,6 +89,8 @@ def _dedupe(codes: list[str]) -> list[str]:
 def _fail_code(result: RuleResult, rule: Rule | None) -> str:
     if result.rule_id in STEP1_RULE_IDS:
         return "card_or_authority_inactive"
+    if rule is not None and rule.field == COUNT_FIELD:
+        return "period_count_exceeded"  # like C2, a reservation-only breach asks (M5)
     if rule is not None and rule.scope == "period":
         return "period_limit_exceeded"  # a reservation-only breach never gets here (M5, step 4)
     if rule is not None and rule.field in _FAIL_CODE_BY_FIELD:

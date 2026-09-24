@@ -51,6 +51,7 @@ REASON_TEMPLATES: dict[str, str] = {
     "rule_satisfied": "it meets every rule you set",
     "per_order_limit_exceeded": "it is over your per-order limit",
     "period_limit_exceeded": "it would take you over your spending limit for the period",
+    "period_count_exceeded": "it would be more orders than you allowed for the period",
     "merchant_category_mismatch": "the shop is not the type of shop you asked for",
     "unfamiliar_merchant": "you have not bought from this shop before",
     "lookalike_merchant": "the shop's name imitates a shop you know",

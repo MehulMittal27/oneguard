@@ -38,7 +38,7 @@ from oneguard import __version__
 from oneguard.api import models as api
 from oneguard.engine import stubs
 from oneguard.engine.ledger_base import Ledger, LedgerEntry
-from oneguard.engine.policy import add_ledger_results
+from oneguard.engine.policy import COUNT_FIELD, add_ledger_results
 from oneguard.engine.types import (
     EngineDecision,
     EvidenceRow,
@@ -111,9 +111,16 @@ class PipelineContext:
         return version
 
 
-def period_days_of(policy: Policy) -> int | None:
-    """The shortest period window among the policy's period rules, or None (C2)."""
-    days = [r.period_days for r in policy.rules if r.scope == "period" and r.period_days]
+def period_days_of(policy: Policy, *, spend_only: bool = False) -> int | None:
+    """The shortest period window among the policy's period rules, or None (C2).
+
+    ``spend_only`` leaves out purchase counts (``cart.purchases_in_period``): the window
+    the platform's ``approved_spend_in_period_chf`` is reconciled over.
+    """
+    days = [
+        r.period_days for r in policy.rules
+        if r.scope == "period" and r.period_days and not (spend_only and r.field == COUNT_FIELD)
+    ]
     return min(days) if days else None
 
 
