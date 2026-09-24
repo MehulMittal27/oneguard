@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oneguard"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic>=2",
+    "httpx",
+    "jsonschema",
+    "pyyaml",
+    "pandas",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+compiler = ["anthropic"]
+signals = ["laya"]
+
+[tool.setuptools.packages.find]
+include = ["oneguard*"]
