@@ -4,7 +4,8 @@ Runs as an asyncio task inside the API process (docs/architecture.md Runtime). O
 loop, never blocked by a human:
 
 - ``start``: ``GET /v1/bootstrap`` (``limits``: human window, decision deadline, long-poll
-  cap) and ``GET /v1/reference-data``. Every reference table it serves under ``tables``
+  cap; ``pack_version``), then, in the lease holder only, the reference sync:
+  ``GET /v1/reference-data``. Every reference table it serves under ``tables``
   (customers, accounts, cards, merchants, items, fx rates, the scenario catalogue) is
   upserted into the store in one transaction when it differs from the stored rows, with
   per-table counts logged (``seed.sync_served``); served-only customers, cards and
@@ -12,7 +13,23 @@ loop, never blocked by a human:
   file is downloaded from ``/v1/reference-data/authorization-history.csv`` and hashed; if
   it differs from the one the seed checked (``data/metadata.json``),
   ``authorization_history`` is re-seeded from it and that is logged loudly. The served
+  ``tables.fx_rates`` must equal ``facts.FX_TO_CHF`` (the rates every CHF amount is
+  converted with); a mismatch is logged loudly and keeps ``ok`` false (``/healthz`` degraded). The served
   scenario ids go to ``worker_state`` (``served_scenarios``, C12 ``live``).
+- the reference sync runs again while the worker polls (``_sync_reference``; lease holder
+  only, concurrent triggers join the sync in flight, a failure is logged and never stops a
+  decision): when a bootstrap re-read shows a new ``pack_version``; when
+  ``/v1/reference-data`` (read every ``REFERENCE_CHECK_S``) shows another pack version or
+  other row counts than the last sync; and when an event names a merchant, item, customer
+  or card the store does not know. That event waits at most ``UNKNOWN_ID_SYNC_S`` for it,
+  then is decided with what the store has: no catalogue price range, the merchant's
+  category and country from the event, no history (never familiar), plus an ``info``
+  evidence row naming the ids. After a change the history index is reloaded in place
+  (``ReloadableHistory``), so the ledger, every run and the API read the new one.
+- every run start (D3 before it creates the run, and the first sight of a run: ``track_run``
+  or its first event) re-reads ``/v1/bootstrap`` unless it was read in the last
+  ``BOOTSTRAP_FRESH_S``: a changed human window, decision deadline or long-poll wait is
+  logged and used from then on, in every run.
 - which customer and card a served scenario runs on: the catalogue does not say, the
   platform does in the bootstrap ``profile``, every run's ``fixture_profiles`` and every
   authorization. Each sighting is upserted into ``scenario_profiles`` (``remember_profiles``):
@@ -22,9 +39,10 @@ loop, never blocked by a human:
   gets its timeout ``/resolve`` now, so the platform stops serving it.
 - loop: long-poll ``/v1/decision-requests/next?wait=25``. 204 → read the progress of
   every tracked run and the event feed, poll again. 200 → validate ``data`` against the
-  event schema, remember the live → source id map (and the live related id), store the
-  full event in ``events_raw``, reconcile ``context.approved_spend_in_period_chf``
-  against the ledger, run ``pipeline.decide_event`` within ``ONEGUARD_ENGINE_BUDGET_MS``
+  event schema (properties it does not list are logged and passed on; a missing required
+  field or a wrong type declines with an ``event_schema`` evidence row), remember the
+  live → source id map (and the live related id), store the full event in ``events_raw``,
+  reconcile ``context.approved_spend_in_period_chf`` against the ledger, run ``pipeline.decide_event`` within ``ONEGUARD_ENGINE_BUDGET_MS``
   and POST the decision before ``deadline_at``. An engine still unfinished just before
   ``deadline_at`` gets a pending ``step_up`` (``unevaluable``) posted in its place, which
   then waits on the customer like any other step-up (rules.md D3).
@@ -75,6 +93,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import math
 import threading
@@ -82,6 +101,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import wait as wait_futures
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -98,6 +118,7 @@ from sqlalchemy.orm import Session
 from oneguard import __version__
 from oneguard.api import models as api
 from oneguard.engine.explain import expired_message
+from oneguard.engine.facts import FX_TO_CHF
 from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import Ledger, LedgerEntry
 from oneguard.engine.types import (
@@ -118,20 +139,23 @@ from oneguard.pipeline import (
 )
 from oneguard.store import seed as seed_module
 from oneguard.store.db import get_engine, session
-from oneguard.store.history import StoreHistoryIndex
+from oneguard.store.history import ReloadableHistory, StoreHistoryIndex
 from oneguard.store.lease import WorkerLease, worker_lease
 from oneguard.store.schema import (
     Account,
     Card,
+    Customer,
     Decision,
     EventRaw,
+    Item,
     Mandate,
+    Merchant,
     Run,
     ScenarioProfile,
     WorkerState,
 )
 from oneguard.viseca.client import VisecaClient, VisecaError, cap
-from oneguard.viseca.schema import event_errors
+from oneguard.viseca.schema import check_event
 
 log = logging.getLogger(__name__)
 
@@ -157,6 +181,15 @@ LEASE_CHECK_S = 10.0
 FEED_SYNC_S = 5.0
 """The event feed is read at least this often, also while waiting step-ups keep every poll
 busy (no 204): its ``scenario.completed`` closes finished runs."""
+REFERENCE_CHECK_S = 300.0
+"""How often the polling worker compares ``/v1/reference-data`` (pack version, row counts)
+with the last reference sync."""
+UNKNOWN_ID_SYNC_S = 1.0
+"""Longest a decision waits for the reference sync an unknown id started (the platform's
+deadline is 8 s); then it is decided with what the store has."""
+BOOTSTRAP_FRESH_S = 30.0
+"""A run start re-reads ``/v1/bootstrap`` unless it was read this recently (D3 reads it just
+before it creates the run)."""
 RECONCILE_TOLERANCE_CHF = Decimal("0.005")
 HISTORY_FILE = "authorization_history.csv"
 EVENTS_CURSOR_KEY = "events_cursor"
@@ -407,6 +440,101 @@ def find_history_metadata(reference: Any) -> dict[str, Any] | None:
     return None
 
 
+def _decimal(value: Any) -> Decimal | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = Decimal(str(value).strip())
+    except ArithmeticError:
+        return None
+    return number if number.is_finite() else None
+
+
+def fx_rate_mismatches(reference: Any, expected: Mapping[str, Decimal] = FX_TO_CHF) -> list[str]:
+    """How the served ``tables.fx_rates`` differ from ``expected``; empty when they agree.
+
+    Rows are ``{from_currency, to_currency, rate, ...}`` as in ``data/fx_rates.csv``. A rate
+    served as a number or a string is read as a decimal and compared exactly (``0.95`` equals
+    ``0.950000``); no tolerance. A table that is missing or unreadable is a mismatch.
+    """
+    tables = reference.get("tables") if isinstance(reference, dict) else None
+    rows = tables.get("fx_rates") if isinstance(tables, dict) else None
+    if not isinstance(rows, list):
+        return ["no fx_rates table served"]
+    problems: list[str] = []
+    served: dict[str, Decimal] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            problems.append(f"unreadable row {row!r}")
+            continue
+        currency, target, raw = row.get("from_currency"), row.get("to_currency"), row.get("rate")
+        if target != "CHF":
+            problems.append(f"{currency}: converts to {target!r}, not CHF")
+            continue
+        rate = _decimal(raw)
+        if rate is None:
+            problems.append(f"{currency}: unreadable rate {raw!r}")
+            continue
+        if currency in served:
+            problems.append(f"{currency}: served twice")
+        served[str(currency)] = rate
+    for currency in sorted(set(expected) | set(served)):
+        want, got = expected.get(currency), served.get(currency)
+        if want is None:
+            problems.append(f"{currency}: served {got}, the engine has no rate")
+        elif got is None:
+            if not any(p.startswith(f"{currency}:") for p in problems):
+                problems.append(f"{currency}: not served, the engine uses {want}")
+        elif got != want:
+            problems.append(f"{currency}: served {got}, the engine uses {want}")
+    return problems
+
+
+@dataclass(frozen=True)
+class ReferenceShape:
+    """What tells served reference data changed without syncing it: the pack version, the
+    row count of every served table and the history file's metadata (``history``)."""
+
+    pack_version: str | None
+    counts: tuple[tuple[str, int], ...]
+    history: str
+
+    def drift(self, served: ReferenceShape) -> str | None:
+        """Why ``served`` differs from this shape (the last one synced), or None."""
+        if served.pack_version != self.pack_version:
+            return f"pack_version {self.pack_version} -> {served.pack_version}"
+        before, after = dict(self.counts), dict(served.counts)
+        changed = [f"{t} {before.get(t, 0)} -> {after.get(t, 0)}" for t in sorted(before.keys() | after.keys())
+                   if before.get(t, 0) != after.get(t, 0)]  # fmt: skip
+        if changed:
+            return "reference-data rows changed: " + ", ".join(changed)
+        if served.history != self.history:
+            return "the served history file changed"
+        return None
+
+
+def reference_shape(reference: Any) -> ReferenceShape:
+    """The ``ReferenceShape`` of a ``/v1/reference-data`` reply."""
+    ref = reference if isinstance(reference, dict) else {}
+    tables = ref.get("tables") if isinstance(ref.get("tables"), dict) else {}
+    counts = tuple(sorted((str(name), len(rows)) for name, rows in tables.items() if isinstance(rows, list)))
+    version = ref.get("pack_version")
+    return ReferenceShape(
+        pack_version=str(version) if version is not None else None,
+        counts=counts,
+        history=json.dumps(ref.get("history"), sort_keys=True, default=str),
+    )
+
+
+def event_ids(data: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """The reference ids a (valid) event names: its merchant, items, customer and cards."""
+    auth, mandate = data["authorization"], data["mandate"]
+    ids = [("merchant", auth["merchant"]["merchant_id"])]
+    ids += [("item", line["item_id"]) for line in auth["items"]]
+    ids += [("customer", mandate["customer_id"]), ("card", auth["card_id"]), ("card", mandate["card_id"])]
+    return list(dict.fromkeys(ids))
+
+
 def _parse_time(value: Any) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -644,6 +772,9 @@ class RunStatus(BaseModel):
     total: int
     redeliveries: int
     last_error: str | None
+    recorded_state: Literal["starting", "running", "done", "error"] | None = None
+    """``state`` of the committed ``runs`` row (None before the first write); lags ``state``
+    until the write that follows a change has committed."""
 
 
 class WorkerStatus(BaseModel):
@@ -660,6 +791,10 @@ class WorkerStatus(BaseModel):
     decision_deadline_s: float | None
     pending_step_ups: int
     history_reseeded: bool
+    fx_rates_match: bool | None
+    """Served ``tables.fx_rates`` equal ``facts.FX_TO_CHF``; None until checked. False keeps
+    ``ok`` false (``state`` stays the loop's own)."""
+    fx_rates_mismatch: list[str]
     last_error: str | None
     runs: list[RunStatus]
 
@@ -692,6 +827,10 @@ class RunState:
     platform_done: bool = False
     finished_at: datetime | None = None
     last_error: str | None = None
+    recorded_state: Literal["starting", "running", "done", "error"] | None = None
+    """``state`` as last committed to the ``runs`` row."""
+    recorded_final: asyncio.Event = field(default_factory=asyncio.Event)
+    """Set once a ``runs`` row with state done or error has committed."""
     stored: RunCounts | None = None
     """The counters as last recomputed from the store (``_save_run``): they include what
     other processes, or this one before a restart, delivered and decided."""
@@ -712,10 +851,12 @@ class RunState:
             total=max(self.total, delivered),
             redeliveries=self.redeliveries,
             last_error=self.last_error,
+            recorded_state=self.recorded_state,
         )
 
 
 DecisionListener = Callable[[api.Decision], Any]
+HandledListener = Callable[[str], Any]
 
 
 # The worker --------------------------------------------------------------------------------
@@ -744,6 +885,8 @@ class VisecaWorker:
         standby_retry_s: float = STANDBY_RETRY_S,
         lease_check_s: float = LEASE_CHECK_S,
         feed_sync_s: float = FEED_SYNC_S,
+        reference_check_s: float = REFERENCE_CHECK_S,
+        unknown_id_sync_s: float = UNKNOWN_ID_SYNC_S,
     ) -> None:
         self.client = client
         self._db_engine = db or get_engine()
@@ -753,12 +896,17 @@ class VisecaWorker:
         self._lease_checked_at = 0.0
         self._feed_sync_s = feed_sync_s
         self._feed_synced_at = 0.0
-        self._history = history
+        self._reference_check_s = reference_check_s
+        self._reference_checked_at = 0.0
+        self._unknown_id_sync_s = unknown_id_sync_s
+        self._history = ReloadableHistory(history) if history is not None else None
         self._ledger = ledger
         self._provider = provider
         self._signals_enabled = signals_enabled
         self._budget_ms = budget_ms if budget_ms is not None else budget_ms_from_env()
         self._poll_wait_s = poll_wait_s
+        self._poll_wait_max_s = poll_wait_s
+        """The configured long-poll wait; the bootstrap's ``long_poll_max_seconds`` caps it."""
         self._waiting_step_up_pause_s = waiting_step_up_pause_s
         self._implementations = implementations
         self._stubbed = stubbed
@@ -768,19 +916,42 @@ class VisecaWorker:
         self.human_window_s = DEFAULT_HUMAN_WINDOW_S
         self.decision_deadline_s: float | None = None
         self.bootstrap: dict[str, Any] | None = None
+        self.pack_version: str | None = None
+        """The bootstrap's ``pack_version`` at its last read."""
+        self._bootstrap_read_at: float | None = None
+        self._bootstrap_task: asyncio.Task[None] | None = None
         self.reference_data: dict[str, Any] | None = None
         self.history_reseeded = False
         self.served_tables: list[seed_module.TableSync] = []
-        """What the start-up pack check did to each served reference table."""
+        """What the last reference sync did to each served reference table."""
         self.served_history_sha256: str | None = None
-        """SHA-256 of the history file Viseca serves, once checked at start."""
+        """SHA-256 of the history file Viseca serves, once checked."""
+        self.fx_rates_mismatch: list[str] | None = None
+        """How the served fx rates differ from ``FX_TO_CHF`` (empty: equal); None until checked."""
         self.served_scenarios: list[str] | None = None
-        """The scenario ids the platform serves now, once read at start."""
+        """The scenario ids the platform serves now, as of the last reference sync."""
+        self.reference_syncs = 0
+        """Reference syncs finished since start (one at start, then any runtime ones)."""
+        self._reference_seen: ReferenceShape | None = None
+        """Pack version, row counts and history metadata of the last reference data synced."""
+        self._sync_task: asyncio.Task[bool] | None = None
+        self._known_ids: dict[str, frozenset[str]] | None = None
+        """Merchant, item, customer and card ids in the store, as of the last sync."""
+        self._unresolved_ids: set[tuple[str, str]] = set()
+        """Ids an event named that a finished sync did not bring: they start no second sync."""
+        self._background: set[asyncio.Task[Any]] = set()
+        self._extras_seen: set[str] = set()
+        """Event properties outside the schema already logged at warning level."""
+        self._holder = False
+        """True while this process holds the worker lease (only then it syncs and polls)."""
         self._profiles: dict[str, tuple[str, str, str | None]] = {}
         """scenario id → (customer, card, profile) as last stored, so a repeat sighting
         costs no store round trip."""
 
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="oneguard-engine")
+        self._store_pool = ThreadPoolExecutor(thread_name_prefix="oneguard-store")
+        self._store_work: set[Future[Any]] = set()
+        """Store reads and writes off the event loop, still running (``stop`` waits for them)."""
         self._task: asyncio.Task[None] | None = None
         self._state: Literal["stopped", "starting", "polling", "degraded"] = "stopped"
         self._failures = 0
@@ -802,6 +973,7 @@ class VisecaWorker:
         self._feed_mismatches: list[EvidenceRow] = []
         self._feed_seen: set[tuple[str, str]] = set()
         self._listeners: list[DecisionListener] = []
+        self._handled_listeners: list[HandledListener] = []
         self._warned_no_set_deadline = False
         self.source_ids: dict[str, str] = {}
         """live authorization id → source ``AU…`` id (offline parity)."""
@@ -817,7 +989,9 @@ class VisecaWorker:
         return self._ledger
 
     @property
-    def history(self) -> HistoryIndex:
+    def history(self) -> ReloadableHistory:
+        """The history index every run, the ledger and the API read; a reference sync that
+        changes the store replaces what it points at (``ReloadableHistory``)."""
         if self._history is None:
             raise RuntimeError("worker not started")
         return self._history
@@ -826,9 +1000,24 @@ class VisecaWorker:
     def events_cursor(self) -> int | str:
         return self._cursor
 
+    @property
+    def poll_wait_s(self) -> float:
+        """The long-poll wait in use: the configured one, capped by the bootstrap's."""
+        return self._poll_wait_s
+
     def add_listener(self, listener: DecisionListener) -> None:
         """Called with the API ``Decision`` after every posted decision and resolution."""
         self._listeners.append(listener)
+
+    def add_handled_listener(self, listener: HandledListener) -> None:
+        """Called with the live authorization id once a delivered request is fully handled.
+
+        At that point its decision is posted and in the ledger (the ledger's unit of work
+        closed), and its ``events_raw`` and ``runs`` rows have committed; only call summaries
+        (``viseca_calls``) may still be on their way (``client.drain``). Not called for a
+        request that failed to be handled.
+        """
+        self._handled_listeners.append(listener)
 
     def bind_policy(self, viseca_mandate_id: str, policy: Policy) -> None:
         """The confirmed policy (typed rules) behind a Viseca ``TM…`` mandate."""
@@ -856,11 +1045,27 @@ class VisecaWorker:
         viseca_mandate_id: str | None = None,
         total: int | None = None,
     ) -> RunStatus:
-        """Follow a run from its creation, so its progress is read while nothing arrives."""
+        """Follow a run from its creation, so its progress is read while nothing arrives.
+
+        A run not seen before is a run start: ``/v1/bootstrap`` is re-read in the background
+        unless it was just read (``BOOTSTRAP_FRESH_S``).
+        """
+        if viseca_run_id not in self._runs:
+            self._run_started(viseca_run_id)
         run = self._run(viseca_run_id)
         run.scenario_id = scenario_id or run.scenario_id
         run.viseca_mandate_id = viseca_mandate_id or run.viseca_mandate_id
         run.total = max(run.total, total or 0)
+        return run.status()
+
+    async def wait_run_recorded(self, viseca_run_id: str) -> RunStatus:
+        """Wait until the run's final ``runs`` row (done or error) has committed.
+
+        ``status().runs[].state`` flips in memory before that write; readers of the
+        ``runs`` table wait here instead. Raises KeyError for an untracked run.
+        """
+        run = self._runs[viseca_run_id]
+        await run.recorded_final.wait()
         return run.status()
 
     def run_status(self, viseca_run_id: str) -> RunStatus | None:
@@ -889,15 +1094,18 @@ class VisecaWorker:
 
     def status(self) -> WorkerStatus:
         running = self._task is not None and not self._task.done()
+        fx_ok = not self.fx_rates_mismatch  # the loop still polls; ok says it is not healthy
         return WorkerStatus(
             state=self._state if running or self._state == "stopped" else "degraded",
-            ok=running and self._state == "polling" and self._failures == 0,
+            ok=running and self._state == "polling" and self._failures == 0 and fx_ok,
             last_poll_at=self._last_poll_at,
             events_cursor=self._cursor,
             human_window_s=self.human_window_s,
             decision_deadline_s=self.decision_deadline_s,
             pending_step_ups=len(self._expiry),
             history_reseeded=self.history_reseeded,
+            fx_rates_match=None if self.fx_rates_mismatch is None else fx_ok,
+            fx_rates_mismatch=self.fx_rates_mismatch or [],
             last_error=self._last_error,
             runs=[run.status() for run in self._runs.values()],
         )
@@ -912,15 +1120,14 @@ class VisecaWorker:
         if self._task is not None:
             return
         self._state = "starting"
-        await self._load_settings()
-        await self._check_reference_data()
-        refresh = self.history_reseeded or any(t.changed for t in self.served_tables)
-        if self._history is None or refresh:
-            self._history = await asyncio.to_thread(self._load_history)
+        await self._load_settings("start")
+        held = await self._try_lease()
+        if held:
+            await self._sync_reference("start")
+        if self._history is None:
+            self._history = ReloadableHistory(await self._store(self._load_history))
         if self._ledger is None:
             self._ledger = default_ledger(self._db_engine, self._history)
-        await self._remember_served()
-        held = await self._try_lease()
         if held:
             await self._take_over()
         else:
@@ -930,17 +1137,24 @@ class VisecaWorker:
     async def stop(self) -> None:
         """Stop polling and cancel expiry timers (pending step-ups are recovered on start).
 
-        Waits up to ``STOP_DRAIN_S`` for the engine thread's current work, writes the rows
-        of the runs it drove, then closes any ledger session still open, so no pooled
-        connection outlives the worker, and gives the worker lease up.
+        Waits up to ``STOP_DRAIN_S`` for the engine thread's current work and for store work
+        a cancelled task left running on its thread, writes the rows of the runs it drove,
+        then closes any ledger session still open, so no pooled connection outlives the
+        worker, and gives the worker lease up.
         """
         leading = self._state in ("polling", "degraded")
-        tasks = [t for t in [self._task, *self._expiry.values()] if t is not None]
+        tasks = [
+            t
+            for t in [self._task, self._sync_task, self._bootstrap_task, *self._expiry.values(), *self._background]
+            if t is not None
+        ]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self._task = None
         self._expiry.clear()
+        self._background.clear()
+        self._holder = False
         self._state = "stopped"
         try:
             await asyncio.wait_for(
@@ -948,25 +1162,33 @@ class VisecaWorker:
             )
         except TimeoutError:
             log.warning("the engine thread is still busy after %s s; closing its ledger session", STOP_DRAIN_S)
+        if self._store_work:
+            _, busy = await asyncio.to_thread(wait_futures, list(self._store_work), STOP_DRAIN_S)
+            if busy:
+                log.warning("%d store call(s) still running after %s s", len(busy), STOP_DRAIN_S)
         if leading:
-            await asyncio.to_thread(self._save_runs_while_held)
+            await self._store(self._save_runs_while_held)
+            for run in self._runs.values():
+                if run.recorded_state in ("done", "error"):
+                    run.recorded_final.set()
         close = getattr(self._ledger, "close", None)
         if callable(close):
             close()
-        await asyncio.to_thread(self._lease.release)
+        await self._store(self._lease.release)
         await self.client.drain()
 
     # The worker lease --------------------------------------------------------------------
 
     async def _try_lease(self) -> bool:
         try:
-            held = await asyncio.to_thread(self._lease.acquire)
+            held = await self._store(self._lease.acquire)
         except (SQLAlchemyError, OSError) as exc:
             self._note_error(f"worker lease unavailable: {type(exc).__name__}: {exc}")
             return False
         if not held and self._state != "standby":
             log.warning("another process holds the worker lease and polls Viseca; this worker stands by")
         self._lease_checked_at = time.monotonic()
+        self._holder = held
         return held
 
     async def _lead(self, held: bool) -> None:
@@ -977,6 +1199,7 @@ class VisecaWorker:
                 while not await self._try_lease():
                     await asyncio.sleep(self._standby_retry_s)
                 log.info("took the worker lease; polling Viseca")
+                await self._sync_reference("took the worker lease")
                 await self._take_over()
             await self._loop()
             held = False
@@ -986,14 +1209,18 @@ class VisecaWorker:
         """What only the lease holder does before its first poll (it may ``/resolve``)."""
         await self._recover_pending()
         await self._reconcile_platform()
-        self._cursor = await asyncio.to_thread(self._load_cursor)
+        self._cursor = await self._store(self._load_cursor)
         await self._track_unfinished_runs()
 
     async def _step_down(self) -> None:
         """The lease is gone: stop closing step-ups here; the new holder recovers them."""
         log.warning("lost the worker lease; this worker stands by")
-        tasks = list(self._expiry.values())
+        self._holder = False
+        tasks = [*self._expiry.values(), *self._background]
+        if self._sync_task is not None:
+            tasks.append(self._sync_task)
         self._expiry.clear()
+        self._background.clear()
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -1005,7 +1232,7 @@ class VisecaWorker:
             return False
         self._lease_checked_at = time.monotonic()
         try:
-            return not await asyncio.to_thread(self._lease.held)
+            return not await self._store(self._lease.held)
         except (SQLAlchemyError, OSError) as exc:
             self._note_error(f"worker lease check failed: {type(exc).__name__}: {exc}")
             return True
@@ -1020,7 +1247,7 @@ class VisecaWorker:
         for run in self._runs.values():
             if run.viseca_mandate_id == viseca_mandate_id and run.ctx is not None:
                 run.ctx.policy = run.ctx.policy.model_copy(update={"status": "revoked"})
-        await asyncio.to_thread(self._mark_mandate_revoked, viseca_mandate_id)
+        await self._store(self._mark_mandate_revoked, viseca_mandate_id)
         log.info("mandate %s revoked; later requests under it are declined", viseca_mandate_id)
         await self.client.delete_mandate(viseca_mandate_id)
 
@@ -1035,7 +1262,7 @@ class VisecaWorker:
         if not sightings:
             return []
         try:
-            return await asyncio.to_thread(self._save_profiles, sightings, source)
+            return await self._store(self._save_profiles, sightings, source)
         except Exception as exc:
             log.exception("storing scenario profiles failed")
             self._note_error(f"scenario profiles not stored: {type(exc).__name__}: {exc}")
@@ -1146,14 +1373,21 @@ class VisecaWorker:
 
     # Start-up ----------------------------------------------------------------------------
 
-    async def _load_settings(self) -> None:
+    async def _load_settings(self, reason: str) -> bool:
+        """Read ``/v1/bootstrap``: human window, decision deadline, long-poll wait and pack
+        version. A value that changed since the last read is logged and used from now on,
+        in every run. True when the pack version changed (not at the first read)."""
         try:
-            self.bootstrap = await self.client.bootstrap()
+            bootstrap = await self.client.bootstrap()
         except VisecaError as exc:
-            self._note_error(f"bootstrap failed, using default timeouts: {exc}")
-            return
-        limits = self.bootstrap.get("limits") if isinstance(self.bootstrap, dict) else None
+            self._note_error(f"bootstrap failed ({reason}), keeping the timeouts in use: {exc}")
+            return False
+        self._bootstrap_read_at = time.monotonic()
+        first = self.bootstrap is None
+        self.bootstrap = bootstrap if isinstance(bootstrap, dict) else {}
+        limits = self.bootstrap.get("limits")
         limits = limits if isinstance(limits, dict) else {}
+        before = (self.human_window_s, self.decision_deadline_s, self._poll_wait_s, self.pack_version)
         self.human_window_s = (
             positive_number(limits.get("step_up_timeout_seconds"))
             or seconds_setting(self.bootstrap, ("step_up",), ("window", "timeout"), None)
@@ -1164,47 +1398,254 @@ class VisecaWorker:
             limits.get("decision_timeout_seconds")
         ) or seconds_setting(self.bootstrap, ("decision",), ("deadline", "timeout"), None)
         long_poll = positive_number(limits.get("long_poll_max_seconds"))
-        if long_poll is not None and self._poll_wait_s > long_poll:
-            self._poll_wait_s = long_poll
-        log.info(
-            "Viseca bootstrap: human window %s s, decision deadline %s s, long poll %s s",
-            self.human_window_s,
-            self.decision_deadline_s,
-            self._poll_wait_s,
-        )
+        self._poll_wait_s = min(self._poll_wait_max_s, long_poll) if long_poll is not None else self._poll_wait_max_s
+        version = self.bootstrap.get("pack_version")
+        self.pack_version = str(version) if version is not None else None
+        after = (self.human_window_s, self.decision_deadline_s, self._poll_wait_s, self.pack_version)
+        if first:
+            log.info(
+                "Viseca bootstrap: human window %s s, decision deadline %s s, long poll %s s, pack %s",
+                *after,
+            )
+            return False
+        names = ("human window (s)", "decision deadline (s)", "long-poll wait (s)", "pack_version")
+        changes = [f"{n} {old} -> {new}" for n, old, new in zip(names, before, after, strict=True) if old != new]
+        if changes:
+            log.warning("Viseca bootstrap changed (%s): %s", reason, "; ".join(changes))
+            for run in self._runs.values():
+                if run.ctx is not None:
+                    run.ctx.human_window_s = math.ceil(self.human_window_s)
+        else:
+            log.info("Viseca bootstrap re-read (%s): unchanged", reason)
+        return before[3] != after[3]
 
-    async def _check_reference_data(self) -> None:
-        try:
-            self.reference_data = await self.client.reference_data()
-        except VisecaError as exc:
-            self._note_error(f"reference data unavailable, keeping the seeded history: {exc}")
+    async def refresh_bootstrap(self, reason: str) -> None:
+        """A run starts: re-read ``/v1/bootstrap`` (``_load_settings``); a new pack version
+        syncs the reference data before this returns. Lease holder only; concurrent calls
+        share one read. Never raises: a failure keeps the values in use."""
+        if not self._holder:
             return
-        await self._sync_served_tables()
+        task = self._bootstrap_task
+        if task is None or task.done():
+            task = self._bootstrap_task = asyncio.create_task(self._refresh_bootstrap(reason), name="bootstrap-read")
+        await asyncio.shield(task)
+
+    async def _refresh_bootstrap(self, reason: str) -> None:
+        try:
+            before = self.pack_version
+            if await self._load_settings(reason):
+                await self._sync_reference(f"pack_version {before} -> {self.pack_version}")
+        except Exception as exc:
+            log.exception("bootstrap re-read failed")
+            self._note_error(f"bootstrap re-read ({reason}) failed: {type(exc).__name__}: {exc}")
+
+    def _run_started(self, viseca_run_id: str) -> None:
+        """A run seen for the first time: re-read the bootstrap in the background, unless it
+        was read in the last ``BOOTSTRAP_FRESH_S`` (D3 reads it just before creating the run)."""
+        fresh = self._bootstrap_read_at is not None and time.monotonic() - self._bootstrap_read_at < BOOTSTRAP_FRESH_S
+        if fresh or not self._holder:
+            return
+        try:
+            self._spawn(self.refresh_bootstrap(f"run {viseca_run_id} started"), "bootstrap-read")
+        except RuntimeError:  # no running loop: nothing to schedule on
+            return
+
+    def _spawn(self, coro: Any, name: str) -> asyncio.Task[Any]:
+        """A background task the worker cancels when it stops or stands by."""
+        task = asyncio.create_task(coro, name=name)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+        return task
+
+    # Reference data ------------------------------------------------------------------------
+
+    async def _sync_reference(self, reason: str, reference: dict[str, Any] | None = None) -> bool:
+        """Sync the served reference data into the store (``_run_sync``); True if it changed.
+
+        Lease holder only. A sync already running is joined, not repeated, so concurrent
+        triggers coalesce. The sync runs on even when a waiter gives up (the bounded wait of
+        an unknown id), and never raises: a failure is logged and decisions go on with what
+        the store has.
+        """
+        if not self._holder:
+            log.debug("reference sync (%s) skipped: this worker does not hold the lease", reason)
+            return False
+        task = self._sync_task
+        if task is None or task.done():
+            task = self._sync_task = asyncio.create_task(self._run_sync(reason, reference), name="reference-sync")
+        else:
+            log.info("reference sync (%s) joins the sync in flight", reason)
+        return await asyncio.shield(task)
+
+    async def _run_sync(self, reason: str, reference: dict[str, Any] | None) -> bool:
+        started = time.perf_counter()
+        log.info("reference sync (%s) started", reason)
+        changed = False
+        try:
+            changed = await self._check_reference_data(reference)
+            if changed or self._history is None:
+                index = await self._store(self._load_history)
+                if self._history is None:
+                    self._history = ReloadableHistory(index)
+                else:
+                    self._history.replace(index)
+                    log.info("history index reloaded after the reference sync")
+            await self._remember_served()
+        except Exception as exc:
+            log.exception("reference sync failed")
+            self._note_error(f"reference sync ({reason}) failed, keeping the stored reference data: {exc}")
+        try:
+            self._known_ids = await self._store(self._load_known_ids)
+        except Exception as exc:
+            log.exception("reading the known reference ids failed")
+            self._note_error(f"known reference ids not read: {type(exc).__name__}: {exc}")
+        self._reference_checked_at = time.monotonic()
+        self.reference_syncs += 1
+        log.info(
+            "reference sync (%s) finished in %.0f ms: %s",
+            reason,
+            (time.perf_counter() - started) * 1000,
+            "store changed" if changed else "store unchanged",
+        )
+        return changed
+
+    async def _check_reference(self) -> None:
+        """Every ``REFERENCE_CHECK_S``: sync when ``/v1/reference-data`` differs from the last
+        sync in pack version, row counts or history file (``ReferenceShape.drift``)."""
+        try:
+            reference = await self.client.reference_data()
+        except VisecaError as exc:
+            log.warning("reference data check skipped: %s", exc)
+            return
+        if not isinstance(reference, dict):
+            log.warning("reference data check skipped: the reply is not an object")
+            return
+        seen = self._reference_seen
+        why = "no reference sync has succeeded yet" if seen is None else seen.drift(reference_shape(reference))
+        if why is None:
+            log.debug("reference data unchanged since the last sync")
+            return
+        log.warning("reference data changed (%s); syncing", why)
+        await self._sync_reference(why, reference)
+
+    def _unknown_ids(self, ids: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """Those of ``ids`` the store does not know. None of them while the known ids were
+        never read (nothing to compare with)."""
+        known = self._known_ids
+        if known is None:
+            return []
+        return [(kind, value) for kind, value in ids if value not in known[kind]]
+
+    async def _reference_rows(self, data: Mapping[str, Any], deadline_at: datetime) -> list[EvidenceRow]:
+        """The ids an event names that the store does not know: sync for them (unless a
+        finished sync already failed to bring them), then an ``info`` row naming those still
+        unknown. Missing is never a pass: no price range, no history, never familiar."""
+        unknown = self._unknown_ids(event_ids(data))
+        to_sync = [u for u in unknown if u not in self._unresolved_ids]
+        if to_sync:
+            await self._sync_for_unknown(to_sync, deadline_at)
+        missing = self._unknown_ids(unknown)
+        if not missing:
+            return []
+        shown = ", ".join(f"{kind} {value}" for kind, value in missing)
+        return [
+            EvidenceRow(
+                rule="reference_data",
+                outcome="info",
+                detail=f"Not in the reference data: {shown}. Their catalogue prices and purchase history "
+                "count as unknown, never as familiar.",
+                source="history",
+            )
+        ]
+
+    async def _sync_for_unknown(self, ids: list[tuple[str, str]], deadline_at: datetime) -> None:
+        """Sync for ids the store does not know, waiting at most ``UNKNOWN_ID_SYNC_S`` (less
+        when the deadline is near); the sync goes on in the background after that. Ids the
+        finished sync did not bring start no further sync."""
+        names = ", ".join(f"{kind} {value}" for kind, value in ids)
+        left = (deadline_at - self._now()).total_seconds() - self._budget_ms / 1000 - POST_MARGIN_S
+        wait = max(0.0, min(self._unknown_id_sync_s, left))
+        log.warning("the store does not know %s; syncing the reference data (waiting up to %.1f s)", names, wait)
+        sync = self._spawn(self._sync_reference(f"unknown {names}"), "reference-sync-wait")
+
+        def settle(_: Any) -> None:
+            unresolved = self._unknown_ids(ids)
+            self._unresolved_ids.update(unresolved)
+            if unresolved:
+                log.warning(
+                    "the reference data does not have %s either; decided without catalogue or history for them",
+                    ", ".join(f"{kind} {value}" for kind, value in unresolved),
+                )
+
+        sync.add_done_callback(settle)
+        try:
+            await asyncio.wait_for(asyncio.shield(sync), wait)
+        except TimeoutError:
+            log.warning("the reference sync is still running after %.1f s; deciding with what the store has", wait)
+
+    def _load_known_ids(self) -> dict[str, frozenset[str]]:
+        columns = {
+            "merchant": Merchant.merchant_id,
+            "item": Item.item_id,
+            "customer": Customer.customer_id,
+            "card": Card.card_id,
+        }
+        with session(self._db_engine) as s:
+            return {kind: frozenset(s.scalars(select(column))) for kind, column in columns.items()}
+
+    async def _check_reference_data(self, reference: dict[str, Any] | None = None) -> bool:
+        """Sync the served tables and check the served history file; True if the store changed.
+
+        ``reference`` is a ``/v1/reference-data`` reply already read (the periodic check);
+        without one it is read here. The history file is downloaded at the first sync and
+        again only when the served ``history`` metadata or the pack version changed.
+        """
+        if reference is None:
+            try:
+                reference = await self.client.reference_data()
+            except VisecaError as exc:
+                self._note_error(f"reference data unavailable, keeping the stored reference data: {exc}")
+                return False
+        self.reference_data = reference
+        self._check_fx_rates()
+        seen, shape = self._reference_seen, reference_shape(reference)
+        changed = await self._sync_served_tables()
+        if seen is not None and (seen.pack_version, seen.history) == (shape.pack_version, shape.history):
+            history_checked, reseeded = True, False
+        else:
+            history_checked, reseeded = await self._check_history()
+        if changed is not None and history_checked:
+            self._reference_seen = shape  # a later check compares with this; a failure is retried
+        return bool(changed) or reseeded
+
+    async def _check_history(self) -> tuple[bool, bool]:
+        """Compare the served history file with the pack's; re-seed on a difference.
+        Returns (checked, re-seeded)."""
         meta = find_history_metadata(self.reference_data)
         served = str(meta.get("sha256", "")).strip().lower() if meta else ""
-        expected = seed_module.pack_file_sha256(HISTORY_FILE, self._data_dir)
+        expected = self.served_history_sha256 or seed_module.pack_file_sha256(HISTORY_FILE, self._data_dir)
         if served and served == expected:
             self.served_history_sha256 = served
-            log.info("Viseca history file matches the seeded pack (sha256 %s)", expected)
-            return
+            log.info("Viseca history file matches the stored one (sha256 %s)", expected)
+            return True, False
         try:
             text = await self.client.authorization_history_csv()
         except VisecaError as exc:
-            self._note_error(f"history download failed, keeping the seeded history: {exc}")
-            return
+            self._note_error(f"history download failed, keeping the stored history: {exc}")
+            return False, False
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         if served and digest != served:
             self._note_error(
                 f"downloaded history sha256 {digest} does not match the served {served}; not re-seeding"
             )
-            return
-        self.served_history_sha256 = digest
+            return False, False
         if digest == expected:
-            log.info("Viseca history file matches the seeded pack (downloaded, sha256 %s)", expected)
-            return
+            self.served_history_sha256 = digest
+            log.info("Viseca history file matches the stored one (downloaded, sha256 %s)", expected)
+            return True, False
         banner = "!" * 72
         log.warning(
-            "%s\nVISECA SERVES A DIFFERENT HISTORY FILE: sha256 %s, seeded pack has %s.\n"
+            "%s\nVISECA SERVES A DIFFERENT HISTORY FILE: sha256 %s, the store has %s.\n"
             "Re-seeding authorization_history from /v1/reference-data/authorization-history.csv\n%s",
             banner,
             digest,
@@ -1212,11 +1653,12 @@ class VisecaWorker:
             banner,
         )
         try:
-            rows = await asyncio.to_thread(self._reseed_history, text)
+            rows = await self._store(self._reseed_history, text)
         except Exception as exc:
             log.exception("re-seeding history failed")
-            self._note_error(f"re-seeding history failed, keeping the seeded history: {exc}")
-            return
+            self._note_error(f"re-seeding history failed, keeping the stored history: {exc}")
+            return False, False
+        self.served_history_sha256 = digest
         self.history_reseeded = True
         log.warning(
             "%s\nRE-SEEDED authorization_history: %d rows from Viseca (sha256 %s)\n%s",
@@ -1225,20 +1667,37 @@ class VisecaWorker:
             digest,
             banner,
         )
+        return True, True
 
-    async def _sync_served_tables(self) -> None:
+    def _check_fx_rates(self) -> None:
+        self.fx_rates_mismatch = fx_rate_mismatches(self.reference_data)
+        if not self.fx_rates_mismatch:
+            log.info("Viseca fx rates match the engine's FX_TO_CHF")
+            return
+        banner = "!" * 72
+        log.error(
+            "%s\nVISECA SERVES DIFFERENT FX RATES FROM THE ENGINE'S FX_TO_CHF:\n%s\n"
+            "Every CHF amount may be converted wrongly; /healthz stays degraded.\n%s",
+            banner,
+            "\n".join(self.fx_rates_mismatch),
+            banner,
+        )
+        self._last_error = "fx rates differ from FX_TO_CHF: " + "; ".join(self.fx_rates_mismatch)
+
+    async def _sync_served_tables(self) -> bool | None:
         """Upsert the served reference tables before the history check, so a served history
-        file's customers and cards already exist when it is re-seeded."""
+        file's customers and cards already exist when it is re-seeded. True if one changed,
+        None if nothing could be synced."""
         tables = self.reference_data.get("tables") if isinstance(self.reference_data, dict) else None
         if not isinstance(tables, dict):
-            self._note_error("reference data serves no tables; keeping the seeded reference tables")
-            return
+            self._note_error("reference data serves no tables; keeping the stored reference tables")
+            return None
         try:
-            self.served_tables = await asyncio.to_thread(self._sync_served, tables)
+            self.served_tables = await self._store(self._sync_served, tables)
         except Exception as exc:
             log.exception("syncing the served reference tables failed")
             self._note_error(f"served reference tables not synced, keeping the stored ones: {exc}")
-            return
+            return None
         for t in self.served_tables:
             log.info(
                 "reference table %-18s served %3d, store %3d -> %3d rows (%d added, %d updated)%s",
@@ -1256,6 +1715,7 @@ class VisecaWorker:
             log.info("reference tables not served, kept as stored: %s", ", ".join(missing))
         if ignored:
             log.info("served tables the store does not keep, ignored: %s", ", ".join(ignored))
+        return any(t.changed for t in self.served_tables)
 
     def _sync_served(self, tables: dict[str, Any]) -> list[seed_module.TableSync]:
         with session(self._db_engine) as s:
@@ -1275,7 +1735,7 @@ class VisecaWorker:
         if served is not None:
             self.served_scenarios = served
             try:
-                await asyncio.to_thread(self._save_state, SERVED_SCENARIOS_KEY, served)
+                await self._store(self._save_state, SERVED_SCENARIOS_KEY, served)
             except Exception as exc:
                 log.exception("storing the served scenarios failed")
                 self._note_error(f"served scenarios not stored: {type(exc).__name__}: {exc}")
@@ -1333,25 +1793,38 @@ class VisecaWorker:
                         self._note_error(f"timeout resolve of {live_id} at start failed: {exc}")
 
     async def _recover_pending(self) -> None:
-        rows = await asyncio.to_thread(self._load_events)
-        for live_id, source_id, event in rows:
+        """Re-arm the expiry of every pending step-up from a live run.
+
+        Only ``runs.kind = live``: a replay step-up was never posted to Viseca, so a timeout
+        ``/resolve`` for it would only be refused (404); a run with no row is a replay, as
+        in the ledger.
+        """
+        rows = await self._store(self._load_events)
+        for live_id, source_id, event, kind in rows:
             self._events[live_id] = event
             self.source_ids[live_id] = source_id
             related = event.get("authorization", {}).get("related_authorization_id")
             if related:
                 self.related_ids[live_id] = related
+            if kind != "live":
+                continue
             entry = await self._engine(self.ledger.get, live_id)
             if entry is not None and entry.outcome == "step_up" and not entry.final:
                 deadline = entry.deadline_at or self._now()
                 log.info("recovered pending step-up %s, closes at %s", live_id, deadline)
                 self._schedule_expiry(live_id, deadline)
 
-    def _load_events(self) -> list[tuple[str, str, dict[str, Any]]]:
+    def _load_events(self) -> list[tuple[str, str, dict[str, Any], str | None]]:
         with session(self._db_engine) as s:
             rows = s.execute(
-                select(EventRaw.live_authorization_id, EventRaw.source_authorization_id, EventRaw.event)
+                select(
+                    EventRaw.live_authorization_id,
+                    EventRaw.source_authorization_id,
+                    EventRaw.event,
+                    Run.kind,
+                ).outerjoin(Run, Run.run_id == EventRaw.run_id)
             ).all()
-        return [(r[0], r[1], r[2]) for r in rows]
+        return [(r[0], r[1], r[2], r[3]) for r in rows]
 
     # The loop ----------------------------------------------------------------------------
 
@@ -1370,8 +1843,12 @@ class VisecaWorker:
                     raise VisecaError(200, "invalid_response", "decision request is not an object")
                 else:
                     await self._handle(envelope)
+                    self._after_handled(envelope)
                 if time.monotonic() - self._feed_synced_at >= self._feed_sync_s:
                     await self._sync_events()
+                if time.monotonic() - self._reference_checked_at >= self._reference_check_s:
+                    self._reference_checked_at = time.monotonic()
+                    self._spawn(self._check_reference(), "reference-check")
                 self._failures = 0
                 self._state = "polling"
             except asyncio.CancelledError:
@@ -1409,13 +1886,13 @@ class VisecaWorker:
             else:
                 self._apply_progress(run, progress)
                 await self.remember_profiles(progress, "run")
-            await asyncio.to_thread(self._save_run, run)
+            await self._persist_run(run)
 
     async def _track_unfinished_runs(self) -> None:
         """Follow the live runs the store still shows as unfinished, so their state is read
         from the platform again: a run that completed while no worker polled (or while
         another process decided it) is closed instead of staying ``running``."""
-        rows = await asyncio.to_thread(self._unfinished_run_rows)
+        rows = await self._store(self._unfinished_run_rows)
         runs = [self._track_row(row) for row in rows if row.viseca_run_id]
         if runs:
             log.info("following %d unfinished live run(s) from the store", len(runs))
@@ -1464,23 +1941,29 @@ class VisecaWorker:
 
     async def _handle(self, envelope: dict[str, Any]) -> None:
         data = envelope.get("data")
-        errors = event_errors(data)
-        if errors:
-            await self._reject_invalid(envelope, errors)
+        check = check_event(data)
+        if check.errors:
+            await self._reject_invalid(envelope, check.errors)
             return
         assert isinstance(data, dict)
         received_at = self._now()
         auth = data["authorization"]
         live_id: str = auth["authorization_id"]
+        if check.extras:
+            self._log_extras(live_id, check.extras)
         deadline_at = _parse_time(data["deadline_at"]) or received_at
         viseca_run_id = str(envelope.get("run_id") or "")
+        if viseca_run_id not in self._runs:
+            self._run_started(viseca_run_id)
+        waiting = envelope.get("status") == STEP_UP_WAITING  # decided already; served on every poll
+        reference_rows = [] if waiting else await self._reference_rows(data, deadline_at)
         bound = viseca_run_id in self._runs and self._runs[viseca_run_id].ctx is not None
         run = self._bind_run(viseca_run_id, data)
         if not bound:
             # The ledger reads runs.kind (live) to carry the session watch and remembered
             # answers over from earlier live runs, so the row is written before the first
             # decision; a run with no row is treated as a replay.
-            await asyncio.to_thread(self._save_run, run)
+            await self._persist_run(run)
             await self.remember_profiles(auth, "authorization")
         self._run_of[live_id] = run
         self._events[live_id] = data
@@ -1501,9 +1984,10 @@ class VisecaWorker:
         if live_id not in run.live_ids:
             run.live_ids.append(live_id)
         save = asyncio.create_task(
-            asyncio.to_thread(self._save_event, run.run_id, data, received_at, deadline_at)
+            self._store(self._save_event, run.run_id, data, received_at, deadline_at)
         )
         extra = await self._reconcile_context(run, data)
+        extra.extend(reference_rows)
         extra.extend(self._feed_mismatches)
         self._feed_mismatches.clear()
 
@@ -1516,7 +2000,18 @@ class VisecaWorker:
             log.exception("events_raw write failed")
             self._note_error(f"events_raw write for {live_id} failed: {exc}")
         await self._sync_events()
-        await asyncio.to_thread(self._save_run, run)
+        await self._persist_run(run)
+
+    def _log_extras(self, live_id: str, extras: list[str]) -> None:
+        """Properties the event schema does not list are passed on unread: logged loudly the
+        first time each one is seen, then quietly."""
+        new = [p for p in extras if p not in self._extras_seen]
+        self._extras_seen.update(new)
+        if new:
+            log.warning("request %s carries properties the event schema does not list, passed on unread: %s",
+                        live_id, ", ".join(new))  # fmt: skip
+        else:
+            log.debug("request %s carries unlisted properties: %s", live_id, ", ".join(extras))
 
     def _run(self, viseca_run_id: str) -> RunState:
         run = self._runs.get(viseca_run_id)
@@ -1562,6 +2057,14 @@ class VisecaWorker:
         return run
 
     # Deciding ----------------------------------------------------------------------------
+
+    async def _store(self, fn: Callable[..., T], *args: Any) -> T:
+        """Run blocking store work on a store thread. Tracked: cancelling the awaiting task
+        does not stop the thread, so ``stop`` waits for it before returning."""
+        work = self._store_pool.submit(fn, *args)
+        self._store_work.add(work)
+        work.add_done_callback(self._store_work.discard)
+        return await asyncio.wrap_future(work)
 
     async def _engine(self, fn: Callable[..., T], *args: Any) -> T:
         """Run ``fn`` on the engine thread inside one short ledger session."""
@@ -1987,7 +2490,7 @@ class VisecaWorker:
         if run is not None:
             run.pending.discard(live_id)
             self._maybe_done(run)
-            await asyncio.to_thread(self._save_run, run)
+            await self._persist_run(run)
         event = self._events.get(live_id)
         if event is None or run is None or run.ctx is None:
             return
@@ -2029,7 +2532,7 @@ class VisecaWorker:
                     await self._check_feed_item(item)
         await self._close_completed(completed)
         if next_cursor is not None and next_cursor != self._cursor:
-            await asyncio.to_thread(self._save_cursor, next_cursor)
+            await self._store(self._save_cursor, next_cursor)
             self._cursor = next_cursor
 
     async def _close_completed(self, viseca_run_ids: list[str]) -> None:
@@ -2039,7 +2542,7 @@ class VisecaWorker:
         for viseca_run_id in dict.fromkeys(viseca_run_ids):
             run = self._runs.get(viseca_run_id)
             if run is None:
-                row = await asyncio.to_thread(self._live_run_row, viseca_run_id)
+                row = await self._store(self._live_run_row, viseca_run_id)
                 run = self._track_row(row) if row is not None else None
             if run is not None and run.state not in ("done", "error"):
                 runs.append(run)
@@ -2092,11 +2595,23 @@ class VisecaWorker:
                 )
             )
 
+    async def _persist_run(self, run: RunState) -> None:
+        await self._store(self._save_run, run)
+        if run.recorded_state in ("done", "error"):
+            run.recorded_final.set()
+
     def _save_run(self, run: RunState) -> None:
         """Write the run's row. Its counters are recomputed from the store (``events_raw``
         and the ledger) and ``started_at`` keeps its first write, so a restart or a second
-        process never resets them; ``run.stored`` takes the recomputed counters."""
-        with self._run_write_lock, session(self._db_engine) as s:
+        process never resets them; ``run.stored`` takes the recomputed counters, and
+        ``run.recorded_state`` the state once the row has committed."""
+        with self._run_write_lock:
+            run.recorded_state = self._write_run_row(run)
+
+    def _write_run_row(self, run: RunState) -> Literal["starting", "running", "done", "error"]:
+        """The run's row, committed on return; returns the state it wrote."""
+        written = run.state
+        with session(self._db_engine) as s:
             counts = self._run_counts(s, run.run_id)
             run.stored = counts
             status = run.status()
@@ -2110,7 +2625,7 @@ class VisecaWorker:
                         scenario_id=run.scenario_id,
                         mandate_id=run.mandate_id or run.viseca_mandate_id or "",
                         card_id=run.card_id or "",
-                        state=run.state,
+                        state=written,
                         delivered=counts.delivered,
                         decided=counts.decided,
                         pending_human=counts.pending_human,
@@ -2121,12 +2636,12 @@ class VisecaWorker:
                         last_error=run.last_error,
                     )
                 )
-                return
+                return written
             row.viseca_run_id = row.viseca_run_id or run.viseca_run_id
             row.scenario_id = row.scenario_id or run.scenario_id
             row.mandate_id = run.mandate_id or run.viseca_mandate_id or row.mandate_id
             row.card_id = run.card_id or row.card_id
-            row.state = run.state
+            row.state = written
             row.delivered = counts.delivered
             row.decided = counts.decided
             row.pending_human = counts.pending_human
@@ -2134,6 +2649,7 @@ class VisecaWorker:
             row.finished_at = run.finished_at
             row.worker_last_poll_at = self._last_poll_at or row.worker_last_poll_at
             row.last_error = run.last_error
+        return written
 
     def _save_runs_while_held(self) -> None:
         """At stop: write every run's row once more. The loop writes a row a step after it
@@ -2165,58 +2681,6 @@ class VisecaWorker:
         entries = [e for e in (self._ledger.get(i) for i in live_ids) if e is not None]
         waiting = sum(e.outcome == "step_up" and not e.final for e in entries)
         return RunCounts(len(live_ids), len(entries), waiting)
-
-    def _load_cursor(self) -> int | str:
-        with session(self._db_engine) as s:
-            row = s.get(WorkerState, EVENTS_CURSOR_KEY)
-        if row is None or not isinstance(row.value, int | str) or isinstance(row.value, bool):
-            log.info("no stored event feed cursor; reading the feed from 0")
-            return 0
-        log.info("event feed cursor resumed at %s", row.value)
-        return row.value
-
-    def _save_cursor(self, cursor: int | str) -> None:
-        self._save_state(EVENTS_CURSOR_KEY, cursor)
-
-    def _save_state(self, key: str, value: Any) -> None:
-        with session(self._db_engine) as s:
-            s.merge(WorkerState(key=key, value=value, updated_at=self._now()))
-
-    def _save_profiles(self, sightings: list[ServedProfile], source: str) -> list[ServedProfile]:
-        """Upsert ``scenario_profiles``, the last sighting of a scenario winning. The customer
-        is the card's holder in the store (the platform's own id when the card is unknown).
-        A row is written only when the binding is new or changed; a sighting that names no
-        profile id keeps the stored one."""
-        latest = {p.scenario_id: p for p in sightings}
-        saved: list[ServedProfile] = []
-        with session(self._db_engine) as s:
-            for scenario_id, p in latest.items():
-                customer = s.scalar(
-                    select(Account.customer_id)
-                    .join(Card, Card.account_id == Account.account_id)
-                    .where(Card.card_id == p.card_id)
-                ) or p.customer_id
-                if customer is None:
-                    log.warning("scenario %s runs on card %s, which the store does not know", scenario_id, p.card_id)
-                    continue
-                known = self._profiles.get(scenario_id)
-                if known is not None and known[:2] == (customer, p.card_id) and p.profile_id in (None, known[2]):
-                    saved.append(ServedProfile(scenario_id, customer, p.card_id, known[2]))
-                    continue
-                row = s.get(ScenarioProfile, scenario_id)
-                same = row is not None and (row.customer_id, row.card_id) == (customer, p.card_id)
-                profile_id = p.profile_id or (row.profile_id if same and row is not None else None)
-                if row is None:
-                    row = ScenarioProfile(scenario_id=scenario_id)
-                    s.add(row)
-                if not same or row.profile_id != profile_id:
-                    row.customer_id, row.card_id, row.profile_id = customer, p.card_id, profile_id
-                    row.source = source
-                    row.seen_at = self._now()
-                    log.info("scenario %s runs on customer %s, card %s (%s)", scenario_id, customer, p.card_id, source)
-                self._profiles[scenario_id] = (customer, p.card_id, profile_id)
-                saved.append(ServedProfile(scenario_id, customer, p.card_id, profile_id))
-        return saved
 
     def _load_cursor(self) -> int | str:
         with session(self._db_engine) as s:
@@ -2274,6 +2738,14 @@ class VisecaWorker:
                     mandate.revoked_at = self._now()
 
     # Helpers -----------------------------------------------------------------------------
+
+    def _after_handled(self, envelope: dict[str, Any]) -> None:
+        live_id = str(envelope.get("authorization_id") or "")
+        for listener in self._handled_listeners:
+            try:
+                listener(live_id)
+            except Exception:
+                log.exception("handled listener failed")
 
     def _notify(self, decision: api.Decision) -> None:
         for listener in self._listeners:

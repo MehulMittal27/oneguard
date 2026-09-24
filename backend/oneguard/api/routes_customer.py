@@ -219,7 +219,7 @@ async def create_draft(card_id: str, body: api.PolicyDraftRequest, request: Requ
         instruction = body.instruction or ""
         if not instruction.strip():
             raise ApiError(422, "validation", "The instruction is empty.")
-        compiled = await _compile(s, instruction, card_id)
+        compiled = await _compile(s, instruction, card_id, customer_id)
         rules, flags = _unique_ids(compiled.rules), policies.flags_of(compiled)
         uncertainty = compiled.uncertainty_policy
         open_questions = list(compiled.open_questions)
@@ -260,11 +260,11 @@ async def create_draft(card_id: str, body: api.PolicyDraftRequest, request: Requ
     return reply(draft)
 
 
-async def _compile(s: Services, instruction: str, card_id: str) -> CompiledDraft:
+async def _compile(s: Services, instruction: str, card_id: str, customer_id: str) -> CompiledDraft:
     compile_instruction = s.functions["compile_instruction"]
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(compile_instruction, instruction, s.history, card_id, s.provider),
+            asyncio.to_thread(compile_instruction, instruction, s.history, card_id, s.provider, customer_id=customer_id),
             s.compile_timeout_s,
         )
     except TimeoutError:
@@ -444,8 +444,11 @@ async def tighten_policy(card_id: str, body: api.TightenRequest, request: Reques
 async def revoke_at_platform(s: Services, row: Mandate, *, strict: bool) -> None:
     """Revoke at Viseca (the worker flips its policy first, so nothing more is approved).
 
-    A platform that already has it revoked (404 / 409) counts as done. With ``strict``
-    any other failure is a 503; otherwise it is logged.
+    A platform that no longer has it active counts as done: 404, or 409 because it is
+    already revoked or was superseded (the sandbox keeps one active mandate per team, so
+    confirming any policy supersedes the previous one). Its state is read and logged,
+    never shown to the customer. With ``strict`` any other failure (5xx, network,
+    timeout) is a 503 and nothing is retried; otherwise it is logged.
     """
     tm = row.viseca_mandate_id
     if not tm or s.client is None:
@@ -457,7 +460,10 @@ async def revoke_at_platform(s: Services, row: Mandate, *, strict: bool) -> None
             await s.platform(s.client.delete_mandate(tm))
     except VisecaError as exc:
         if exc.status in (404, 409):
-            log.info("Viseca already has mandate %s revoked (%s)", tm, exc.code)
+            log.info(
+                "Viseca no longer has mandate %s active (%s %s); platform status: %s",
+                tm, exc.status, exc.code, await _platform_status(s, tm),
+            )  # fmt: skip
             return
         if not strict:
             log.error("could not revoke replaced mandate %s at Viseca: %s", tm, exc)
@@ -469,6 +475,17 @@ async def revoke_at_platform(s: Services, row: Mandate, *, strict: bool) -> None
             "did not confirm. Try again.",
             {"platform_status": exc.status, "platform_code": exc.code},
         ) from None
+
+
+async def _platform_status(s: Services, tm: str) -> str:
+    """The mandate's status at Viseca for the log (``revoked``, ``superseded``, ...)."""
+    if s.client is None:
+        return "unread (no platform)"
+    try:
+        mandate = await s.platform(s.client.get_mandate(tm))
+        return str(mandate.get("status")) if isinstance(mandate, dict) else "unread (no body)"
+    except VisecaError as exc:
+        return f"unread ({exc.status or 'network'} {exc.code})"
 
 
 @router.post("/cards/{card_id}/policy/revoke", status_code=204)

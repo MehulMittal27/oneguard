@@ -410,3 +410,31 @@ def test_demo_live_names_the_run_in_progress_and_starts_another_only_with_force(
             assert len(fake.runs) == 2 and no_local_worker == []
 
     asyncio.run(scenario())
+
+
+def test_a_run_started_after_a_pack_change_compiles_its_new_instruction(
+    db_url: str,  # noqa: F811
+    no_local_worker: list[str],
+) -> None:
+    """A judge serves a new pack (new ``pack_version``, a changed instruction) while the
+    server runs: D8 re-reads the bootstrap, the worker syncs the catalogue first, and
+    demo-live compiles and confirms the new instruction."""
+    new = "Buy one loaf of bread for CHF 10 or less. Ask me when uncertain."
+
+    async def scenario() -> None:
+        fake = two_profiles()
+        lines: list[str] = []
+        async with running(db_url, fake=fake, **REAL_ENGINE) as run:
+            assert await demo_live(run, "SCEN9001", lines) == 0
+            assert "Instruction: Buy one ordinary grocery item for CHF 20 or less. Ask me when uncertain." in lines
+
+            fake.config.pack_version = "saw27"
+            fake.config.served_extra["scenario_catalogue"][0]["cardholder_instruction"] = new
+            lines.clear()
+            assert await demo_live(run, "SCEN9001", lines) == 0
+            assert f"Instruction: {new}" in lines
+            latest = max(fake.mandates.values(), key=lambda m: m["created_at"])
+            assert latest["instruction"] == new
+            assert run.services.worker.pack_version == "saw27"
+
+    asyncio.run(scenario())

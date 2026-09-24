@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { Card, FormInput } from '../../api/types'
 import { CardPicker } from '../../components/CardPicker'
+import { NetworkState } from '../../components/NetworkState'
 import { NewPolicyForm } from './NewPolicyForm'
 import { NewPolicyShell } from './NewPolicyShell'
 
@@ -49,6 +50,8 @@ export function NewPolicyDescribe({
   onSubmitForm,
   onCancel,
   formError,
+  accountStatus,
+  onRetryAccounts,
 }: {
   cardId: string
   // Every card on the same account (D-050) — a picker only makes sense
@@ -66,6 +69,8 @@ export function NewPolicyDescribe({
   onSubmitForm: () => void
   onCancel: () => void
   formError: boolean
+  accountStatus: 'loading' | 'error' | 'ready'
+  onRetryAccounts: () => void
 }) {
   const [pickingCard, setPickingCard] = useState(false)
 
@@ -99,7 +104,8 @@ export function NewPolicyDescribe({
           <>
             {formError && (
               <p className="text-[13px] text-destructive">
-                Couldn&apos;t read these checks — nothing was saved. Try again.
+                Couldn&apos;t read these checks. Nothing was approved while we were offline. Nothing
+                was saved. Try again.
               </p>
             )}
             <button
@@ -124,7 +130,11 @@ export function NewPolicyDescribe({
         <p className="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
           Applies to
         </p>
-        {cards.length > 1 ? (
+        {accountStatus === 'loading' ? (
+          <NetworkState kind="loading" label="cards" />
+        ) : accountStatus === 'error' ? (
+          <NetworkState kind="error" label="cards" onRetry={onRetryAccounts} />
+        ) : cards.length > 1 ? (
           <button
             type="button"
             onClick={() => setPickingCard(true)}

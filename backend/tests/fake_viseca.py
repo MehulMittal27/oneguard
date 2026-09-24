@@ -26,8 +26,14 @@ behaviour the worker depends on:
   plus any served-only rows a test adds (``served_extra``), whose scenarios replay a pack
   scenario's purchases (``served_scenarios``) under the served id, on the card of their
   fixture profile (``fixture_profiles``) when one is set;
-- knobs for redelivery, corrupt events, a served history file that differs, a
-  context / event-feed that disagrees with the worker, and whether team reset is enabled.
+- ``tables.fx_rates`` can be replaced (``FakeConfig.fx_rates``) to serve rates that differ;
+- the team keeps one active mandate: confirming a draft supersedes the active one
+  (``status: "superseded"``, as the live sandbox showed on 25 Sep 2026); revoking a
+  superseded mandate is 409 ``mandate_inactive`` (assumed, like PATCH and scenario runs);
+- knobs for redelivery, corrupt or rewritten events, a served history file or fx rates that differ, a
+  context / event-feed that disagrees with the worker, whether team reset is enabled, a
+  new pack (``pack_version``, ``served_extra`` changed while running), the long-poll cap
+  and slow or failing reference data.
 
 Errors use the ``{"error": {"code", "message", "details"?}}`` envelope. Everything is on
 the real clock except the purchases' simulated timestamps.
@@ -39,6 +45,7 @@ import asyncio
 import copy
 import csv
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -76,11 +83,26 @@ class FakeConfig:
     """Source ids delivered a second time after their first decision."""
     corrupt: frozenset[str] = frozenset()
     """Source ids delivered with ``merchant`` missing (fails the event schema)."""
+    rewrite: dict[str, Callable[[dict[str, Any]], None]] = field(default_factory=dict)
+    """Source id → a function that edits the event's ``data`` at every delivery (unknown ids,
+    properties the schema does not list, ...)."""
+    pack_version: str = "saw26"
+    """``pack_version`` in ``/v1/bootstrap`` and ``/v1/reference-data``; a test changes it
+    together with ``served_extra`` to serve a new pack."""
+    long_poll_max_s: float = 25.0
+    """``limits.long_poll_max_seconds`` in ``/v1/bootstrap``."""
+    reference_status: int | None = None
+    """When set, ``/v1/reference-data`` fails with this HTTP status."""
+    reference_delay_s: float = 0.0
+    """Delay before ``/v1/reference-data`` answers."""
     context_spend_offset: float = 0.0
     """Added to ``approved_spend_in_period_chf`` so it disagrees with the worker."""
     feed_status_override: dict[str, str] = field(default_factory=dict)
     """Source id → status the event feed reports for it, whatever really happened."""
     history_csv: str | None = None
+    fx_rates: list[dict[str, Any]] | None = None
+    """``tables.fx_rates`` rows served instead of the pack's (which, like every served table,
+    are CSV strings)."""
     """History file served instead of data/authorization_history.csv."""
     reset_enabled: bool = True
     """``features.reset``; the live sandbox has it off (403 ``reset_disabled``)."""
@@ -284,6 +306,8 @@ class FakeViseca:
         self.resets: list[dict[str, Any]] = []
         self.authorization_reads: list[dict[str, Any]] = []
         self.polls = 0
+        self.bootstrap_reads = 0
+        self.reference_reads = 0
         self.authorization_headers: list[str] = []
 
     # Queries used by tests ------------------------------------------------------------
@@ -453,7 +477,7 @@ class FakeViseca:
 
         @app.get("/healthz")
         async def healthz() -> dict[str, Any]:
-            return {"status": "ok", "service": "fake-viseca", "api_version": "0.1.0", "pack_version": "saw26"}
+            return {"status": "ok", "service": "fake-viseca", "api_version": "0.1.0", "pack_version": fake.config.pack_version}
 
         def catalogue() -> list[dict[str, Any]]:
             return [
@@ -474,30 +498,36 @@ class FakeViseca:
 
         @app.get("/v1/bootstrap")
         async def bootstrap() -> dict[str, Any]:
+            fake.bootstrap_reads += 1
             return {
                 "type": "bootstrap",
                 "api_version": "0.1.0",
-                "pack_version": "saw26",
+                "pack_version": fake.config.pack_version,
                 "team_id": "team-fake",
                 "profile": fake.config.profile or {"profile_id": "PROFILE_AUTH0001", "scenario_id": "SCEN0000"},
                 "scenarios": catalogue(),
                 "limits": {
                     "decision_timeout_seconds": fake.config.decision_deadline_s,
                     "step_up_timeout_seconds": fake.config.human_window_s,
-                    "long_poll_max_seconds": 25,
+                    "long_poll_max_seconds": fake.config.long_poll_max_s,
                 },
                 "features": {"reset": fake.config.reset_enabled},
             }
 
         @app.get("/v1/reference-data")
-        async def reference_data() -> dict[str, Any]:
+        async def reference_data() -> Any:
+            fake.reference_reads += 1
+            if fake.config.reference_delay_s:
+                await asyncio.sleep(fake.config.reference_delay_s)
+            if fake.config.reference_status is not None:
+                return _error(fake.config.reference_status, "unavailable", "reference data unavailable")
             return {
                 "type": "reference_data",
-                "pack_version": "saw26",
+                "pack_version": fake.config.pack_version,
                 "classification": "SYNTHETIC TEST DATA",
                 "tables": {
                     **{name: table(name) for name in ("customers", "accounts", "cards", "merchants", "items")},
-                    "fx_rates": table("fx_rates"),
+                    "fx_rates": table("fx_rates") if fake.config.fx_rates is None else fake.config.fx_rates,
                     "scenario_catalogue": catalogue(),
                 },
                 "history": {
@@ -548,6 +578,9 @@ class FakeViseca:
             if draft["status"] != "draft":
                 return _error(409, "already_confirmed", "draft already confirmed")
             draft["status"] = "confirmed"
+            for other in fake.mandates.values():
+                if other["status"] == "active":
+                    other["status"] = "superseded"
             mandate_id = "TM" + secrets.token_hex(8)
             mandate = copy.deepcopy(draft)
             mandate.update(mandate_id=mandate_id, status="active")
@@ -582,6 +615,8 @@ class FakeViseca:
             mandate = fake.mandates.get(mandate_id)
             if mandate is None:
                 return _error(404, "not_found", "unknown mandate")
+            if mandate["status"] == "superseded":
+                return _error(409, "mandate_inactive", "mandate is not active")
             mandate["status"] = "revoked"
             return JSONResponse({"mandate_id": mandate_id, "status": "revoked"})
 
@@ -669,6 +704,8 @@ class FakeViseca:
             data = copy.deepcopy(auth.event)
             if auth.source_id in fake.config.corrupt:
                 del data["authorization"]["merchant"]
+            if auth.source_id in fake.config.rewrite:
+                fake.config.rewrite[auth.source_id](data)
             if status == "pending_step_up" and fake.config.pending_serve_delay_s:
                 await asyncio.sleep(fake.config.pending_serve_delay_s)
             return JSONResponse(

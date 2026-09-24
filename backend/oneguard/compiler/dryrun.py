@@ -1,9 +1,12 @@
 """Dry-run a draft over the card's recent history (rules.md T5, api-contract §2 DryRunResult).
 
 Replays the typed rules over ``HistoryIndex.recent_rows(card_id, 90)`` (no CSV) with a
-minimal evaluator of its own: history rows carry the order total, time, shop, country
-and familiarity (customer level over all history, Q7), not cart lines or order terms.
-Rules history cannot show (item details, delivery, returns) are left out of the verdict
+minimal evaluator of its own: history rows carry the order total, time, shop and
+country, not cart lines or order terms. A known-shop check (a rule on
+``merchant.known_shop`` / ``merchant.familiar_on_card``, or the ``requires_known_shop``
+flag alone) makes a purchase at a shop the card had not bought from before ``ask``, as
+the form preview does (api/policies.py ``form_dry_run``): the card's history only, so it
+can ask more than the engine's customer-level C9 (Q7). Rules history cannot show (item details, delivery, returns) are left out of the verdict
 and named in the insight; rules no data can ever check make the row ``ask``. A preview for the customer, never a
 decision: the engine decides at purchase time.
 """
@@ -17,16 +20,17 @@ from zoneinfo import ZoneInfo
 from oneguard.api.models import AgentHistory, DryRunExample, DryRunResult
 from oneguard.compiler.draft import (
     COUNT_FIELD,
-    KNOWN_SHOP_FIELD,
     WEEKDAYS,
     ParsedDraft,
     fmt_amount,
     human,
     to_chf,
 )
+from oneguard.engine.policy import KNOWN_SHOP_FIELDS
 from oneguard.engine.types import HistoryIndex, HistoryRow, Rule
 
 WINDOW_DAYS = 90
+ALL_DAYS = 36500
 ZURICH = ZoneInfo("Europe/Zurich")
 _ORDER = {"violate": 0, "ask": 1, "fit": 2}
 
@@ -35,7 +39,14 @@ def _cmp(a: Decimal, op: str, b: Decimal) -> bool:
     return {"<": a < b, "<=": a <= b, "=": a == b, "!=": a != b, ">": a > b, ">=": a >= b}[op]
 
 
-def _check(rule: Rule, row: HistoryRow, prior: list[HistoryRow], known: set[str]) -> tuple[str, str] | None:
+def _known_shop(row: HistoryRow, seen: set[str]) -> tuple[str, str]:
+    """C9 on a past purchase: a shop bought from before on this card fits, a new one asks."""
+    if row.merchant_id in seen:
+        return "fit", "a shop you know"
+    return "ask", "a shop not bought from before on this card"
+
+
+def _check(rule: Rule, row: HistoryRow, prior: list[HistoryRow], seen: set[str]) -> tuple[str, str] | None:
     """(verdict, reason) for one rule on one past purchase, or None if history can't show it."""
     f, op = rule.field, rule.operator
     local = row.timestamp.astimezone(ZURICH)
@@ -64,9 +75,8 @@ def _check(rule: Rule, row: HistoryRow, prior: list[HistoryRow], known: set[str]
     if f == "merchant.merchant_country":
         ok = (row.merchant_country == rule.value) == (op == "=")
         return ("fit" if ok else "violate", f"shop in {row.merchant_country}")
-    if f in (KNOWN_SHOP_FIELD, "merchant.known_shop"):  # api-contract §3.3: the same check
-        ok = row.merchant_id in known
-        return ("fit" if ok else "violate", "a shop you know" if ok else "a shop you have not bought from")
+    if f in KNOWN_SHOP_FIELDS:  # api-contract §3.3: the same check
+        return _known_shop(row, seen)
     if f == "authorization.weekday":
         day = WEEKDAYS[local.weekday()]
         ok = (day in rule.value) == (op == "in")
@@ -79,25 +89,35 @@ def _check(rule: Rule, row: HistoryRow, prior: list[HistoryRow], known: set[str]
     return None
 
 
-def dry_run(draft: ParsedDraft, history: HistoryIndex, card_id: str) -> DryRunResult:
-    rows = [r for r in (history.recent_rows(card_id, WINDOW_DAYS) if card_id else [])
-            if r.transaction_type == "purchase" and r.status == "approved"]
-    rows.sort(key=lambda r: (r.timestamp, r.authorization_id))
-    customer = rows[0].customer_id if rows else None
-    known = set(history.known_merchants(customer)) if customer else set()
+def dry_run(draft: ParsedDraft, history: HistoryIndex, card_id: str, customer_id: str | None) -> DryRunResult:
+    """The draft over the card's last 90 days. ``agent_history`` is the customer's across
+    their cards; with no ``customer_id`` it is the card's customer, when history has one."""
+    everything = history.recent_rows(card_id, ALL_DAYS) if card_id else []
+    approved = sorted((r for r in everything if r.transaction_type == "purchase" and r.status == "approved"),
+                      key=lambda r: (r.timestamp, r.authorization_id))
+    window = {r.authorization_id for r in history.recent_rows(card_id, WINDOW_DAYS)} if card_id else set()
+    customer = customer_id or next((r.customer_id for r in everything), None)
     agent = history.agent_history(customer) if customer else None
+    flag_only = draft.requires_known_shop and not any(r.field in KNOWN_SHOP_FIELDS for r in draft.rules)
 
     counts = {"fit": 0, "violate": 0, "ask": 0}
+    rows: list[HistoryRow] = []
     examples: list[tuple[str, HistoryRow, str]] = []
     unchecked: set[str] = set()
-    for i, row in enumerate(rows):
-        verdicts = []
+    seen: set[str] = set()  # shops the card bought from before the row being checked
+    for i, row in enumerate(approved):
+        if row.authorization_id not in window:
+            seen.add(row.merchant_id)
+            continue
+        rows.append(row)
+        verdicts = [_known_shop(row, seen)] if flag_only else []
         for rule in draft.rules:
-            result = _check(rule, row, rows[:i], known)
+            result = _check(rule, row, approved[:i], seen)
             if result is None:
                 unchecked.add(rule.text)
             else:
                 verdicts.append(result)
+        seen.add(row.merchant_id)
         worst = min(verdicts, key=lambda v: _ORDER[v[0]], default=("fit", "no rule history can show"))
         outcome = worst[0]
         counts[outcome] += 1
