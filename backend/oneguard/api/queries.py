@@ -14,7 +14,7 @@ from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
-from sqlalchemy import Engine, select, text
+from sqlalchemy import Engine, select, text, update
 from sqlalchemy.orm import Session
 
 from oneguard.engine.ledger_base import LedgerEntry
@@ -299,3 +299,31 @@ def card_draft_rules(db: Engine, card_id: str) -> dict[str, dict[str, Any]]:
                 if check_id != POLICY_KEY:
                     found.setdefault(check_id, rule)
     return found
+
+
+def restore_form_instructions(db: Engine, words: str) -> int:
+    """Form drafts, and the mandates confirmed from them, stored before the form path kept
+    ``words`` held the joined check texts as their instruction; set them to ``words``.
+
+    A mandate is matched to its form draft by card and confirmation time (C2 writes both in
+    one transaction under the policy lock). Idempotent; returns the mandates changed.
+    """
+    from_form = (
+        select(PolicyDraft.draft_id)
+        .where(
+            PolicyDraft.compiler == "form",
+            PolicyDraft.card_id == Mandate.card_id,
+            PolicyDraft.confirmed_at == Mandate.confirmed_at,
+        )
+        .exists()
+    )
+    with session(db) as s:
+        mandates = s.execute(
+            update(Mandate).where(Mandate.instruction != words, from_form).values(instruction=words)
+        ).rowcount
+        s.execute(
+            update(PolicyDraft)
+            .where(PolicyDraft.compiler == "form", PolicyDraft.instruction != words)
+            .values(instruction=words)
+        )
+    return mandates
