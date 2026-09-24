@@ -91,13 +91,13 @@ export function Accounts({
       </div>
 
       {status === 'loading' && (
-        <NetworkState kind="loading" label="accounts" />
+        <NetworkState kind="loading" label="your accounts" />
       )}
 
       {status === 'error' && (
         <NetworkState
           kind="error"
-          label="accounts"
+          label="your accounts"
           onRetry={() => {
             if (accountsStatus === 'error') {
               setAccountsStatus('loading')
@@ -109,7 +109,7 @@ export function Accounts({
       )}
 
       {status === 'ready' && accounts.length === 0 && (
-        <NetworkState kind="empty" label="accounts">
+        <NetworkState kind="empty" label="your accounts">
           No accounts are available for this customer yet.
         </NetworkState>
       )}

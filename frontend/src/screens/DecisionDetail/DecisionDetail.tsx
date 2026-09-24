@@ -233,13 +233,14 @@ export function DecisionDetail({
           restated reason text, which left the message unrendered on the one
           screen whose whole job is explaining. The provenance tag sits beside it
           rather than floating alone, so the source plainly qualifies this
-          sentence and not the decision.
+          sentence and not the decision. It wraps under the sentence when the two
+          do not fit on one line, so a long tag never squeezes the message.
         */}
         <div className="mt-4 border-t border-hairline pt-4">
-          <div className="flex items-start justify-between gap-3">
+          <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
             <p className="text-[15px] leading-[1.45] font-medium text-ink">{decision.message}</p>
             {decision.explanation_source && (
-              <span className="mt-0.5 shrink-0 rounded-pill bg-surface-sunken px-2 py-0.5 text-[11px] text-ink-muted">
+              <span className="mt-0.5 max-w-full rounded-pill bg-surface-sunken px-2 py-0.5 text-[11px] text-ink-muted">
                 {EXPLANATION_SOURCE[decision.explanation_source] ?? EXPLANATION_SOURCE_FALLBACK}
               </span>
             )}
