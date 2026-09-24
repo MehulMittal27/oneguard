@@ -45,6 +45,15 @@ loop, never blocked by a human:
   processed its ``next_cursor`` is stored (``worker_state``); ``start`` resumes from the
   stored cursor, so a restart never re-scans the team-wide feed (0 only on first boot).
 
+- one worker polls per store (``store/lease.py``): ``start`` takes the worker lease (a
+  Postgres advisory lock; always granted on SQLite). Without it the worker stays in
+  ``standby``: no poll, no step-up recovery, no feed; it retries and takes over once the
+  holder stops, and a holder whose lease is gone stands by again.
+- a run's row: counters recomputed from ``events_raw`` and the ledger on every write,
+  ``started_at`` kept from the first. A finished run is closed from ``GET
+  /v1/scenario-runs/{id}`` on a 204, on the feed's ``scenario.completed`` (the feed is read
+  at least every ``FEED_SYNC_S``) and at start for live rows still ``running``.
+
 ``status()`` is what ``/healthz`` reports: state, last poll, events cursor, runs.
 
 All ledger and pipeline calls run on one dedicated thread, so a SQL ledger session is
@@ -61,6 +70,7 @@ import hashlib
 import logging
 import math
 import threading
+import time
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -73,7 +83,8 @@ from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from oneguard import __version__
@@ -100,7 +111,8 @@ from oneguard.pipeline import (
 from oneguard.store import seed as seed_module
 from oneguard.store.db import get_engine, session
 from oneguard.store.history import StoreHistoryIndex
-from oneguard.store.schema import EventRaw, Mandate, Run, WorkerState
+from oneguard.store.lease import WorkerLease, worker_lease
+from oneguard.store.schema import Decision, EventRaw, Mandate, Run, WorkerState
 from oneguard.viseca.client import VisecaClient, VisecaError, cap
 from oneguard.viseca.schema import event_errors
 
@@ -121,6 +133,13 @@ POST_MARGIN_S = 0.5
 """Time kept free before ``deadline_at`` to POST the step-up when the engine overruns its budget."""
 POST_RETRY_DELAYS_S = (0.2, 0.5, 1.0)
 LOOP_BACKOFF_MAX_S = 10.0
+STANDBY_RETRY_S = 5.0
+"""How often a worker in standby tries to take the lease."""
+LEASE_CHECK_S = 10.0
+"""How often the polling worker checks that its lease still holds."""
+FEED_SYNC_S = 5.0
+"""The event feed is read at least this often, also while waiting step-ups keep every poll
+busy (no 204): its ``scenario.completed`` closes finished runs."""
 RECONCILE_TOLERANCE_CHF = Decimal("0.005")
 HISTORY_FILE = "authorization_history.csv"
 EVENTS_CURSOR_KEY = "events_cursor"
@@ -521,7 +540,8 @@ class WorkerStatus(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    state: Literal["stopped", "starting", "polling", "degraded"]
+    state: Literal["stopped", "starting", "standby", "polling", "degraded"]
+    """``standby``: another process holds the worker lease and polls; this one does not."""
     ok: bool
     last_poll_at: datetime | None
     events_cursor: int | str
@@ -531,6 +551,15 @@ class WorkerStatus(BaseModel):
     history_reseeded: bool
     last_error: str | None
     runs: list[RunStatus]
+
+
+@dataclass(frozen=True)
+class RunCounts:
+    """A run's counters in the store: events received, decisions recorded, step-ups waiting."""
+
+    delivered: int
+    decided: int
+    pending_human: int
 
 
 @dataclass
@@ -552,8 +581,13 @@ class RunState:
     platform_done: bool = False
     finished_at: datetime | None = None
     last_error: str | None = None
+    stored: RunCounts | None = None
+    """The counters as last recomputed from the store (``_save_run``): they include what
+    other processes, or this one before a restart, delivered and decided."""
 
     def status(self) -> RunStatus:
+        stored = self.stored or RunCounts(0, 0, 0)
+        delivered = max(len(self.live_ids), stored.delivered)
         return RunStatus(
             run_id=self.run_id,
             viseca_run_id=self.viseca_run_id,
@@ -561,10 +595,10 @@ class RunState:
             mandate_id=self.mandate_id,
             card_id=self.card_id,
             state=self.state,
-            delivered=len(self.live_ids),
-            decided=len(self.decided),
-            pending_human=len(self.pending),
-            total=max(self.total, len(self.live_ids)),
+            delivered=delivered,
+            decided=max(len(self.decided), stored.decided),
+            pending_human=max(len(self.pending), stored.pending_human),
+            total=max(self.total, delivered),
             redeliveries=self.redeliveries,
             last_error=self.last_error,
         )
@@ -595,9 +629,19 @@ class VisecaWorker:
         stubbed: frozenset[str] | None = None,
         data_dir: Path = seed_module.DATA_DIR,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        lease: WorkerLease | None = None,
+        standby_retry_s: float = STANDBY_RETRY_S,
+        lease_check_s: float = LEASE_CHECK_S,
+        feed_sync_s: float = FEED_SYNC_S,
     ) -> None:
         self.client = client
         self._db_engine = db or get_engine()
+        self._lease = lease if lease is not None else worker_lease(self._db_engine)
+        self._standby_retry_s = standby_retry_s
+        self._lease_check_s = lease_check_s
+        self._lease_checked_at = 0.0
+        self._feed_sync_s = feed_sync_s
+        self._feed_synced_at = 0.0
         self._history = history
         self._ledger = ledger
         self._provider = provider
@@ -743,7 +787,12 @@ class VisecaWorker:
         )
 
     async def start(self) -> None:
-        """Read settings and reference data, load history, recover pending step-ups, poll."""
+        """Read settings and reference data, load history, then poll if this process holds
+        the worker lease; else stay in standby until it can take it.
+
+        Only the lease holder recovers pending step-ups, reads the event feed and polls, so
+        two processes on one store never both decide (``store/lease.py``).
+        """
         if self._task is not None:
             return
         self._state = "starting"
@@ -754,15 +803,19 @@ class VisecaWorker:
             self._history = await asyncio.to_thread(self._load_history)
         if self._ledger is None:
             self._ledger = default_ledger(self._db_engine, self._history)
-        await self._recover_pending()
-        self._cursor = await asyncio.to_thread(self._load_cursor)
-        self._task = asyncio.create_task(self._loop(), name="viseca-worker")
+        held = await self._try_lease()
+        if held:
+            await self._take_over()
+        else:
+            self._state = "standby"
+        self._task = asyncio.create_task(self._lead(held), name="viseca-worker")
 
     async def stop(self) -> None:
         """Stop polling and cancel expiry timers (pending step-ups are recovered on start).
 
         Waits up to ``STOP_DRAIN_S`` for the engine thread's current work, then closes any
-        ledger session still open, so no pooled connection outlives the worker.
+        ledger session still open, so no pooled connection outlives the worker, and gives
+        the worker lease up.
         """
         tasks = [t for t in [self._task, *self._expiry.values()] if t is not None]
         for task in tasks:
@@ -780,7 +833,61 @@ class VisecaWorker:
         close = getattr(self._ledger, "close", None)
         if callable(close):
             close()
+        await asyncio.to_thread(self._lease.release)
         await self.client.drain()
+
+    # The worker lease --------------------------------------------------------------------
+
+    async def _try_lease(self) -> bool:
+        try:
+            held = await asyncio.to_thread(self._lease.acquire)
+        except (SQLAlchemyError, OSError) as exc:
+            self._note_error(f"worker lease unavailable: {type(exc).__name__}: {exc}")
+            return False
+        if not held and self._state != "standby":
+            log.warning("another process holds the worker lease and polls Viseca; this worker stands by")
+        self._lease_checked_at = time.monotonic()
+        return held
+
+    async def _lead(self, held: bool) -> None:
+        """Poll while this process holds the lease; stand by while another one does."""
+        while True:
+            if not held:
+                self._state = "standby"
+                while not await self._try_lease():
+                    await asyncio.sleep(self._standby_retry_s)
+                log.info("took the worker lease; polling Viseca")
+                await self._take_over()
+            await self._loop()
+            held = False
+            await self._step_down()
+
+    async def _take_over(self) -> None:
+        """What only the lease holder does before its first poll."""
+        await self._recover_pending()
+        self._cursor = await asyncio.to_thread(self._load_cursor)
+        await self._track_unfinished_runs()
+
+    async def _step_down(self) -> None:
+        """The lease is gone: stop closing step-ups here; the new holder recovers them."""
+        log.warning("lost the worker lease; this worker stands by")
+        tasks = list(self._expiry.values())
+        self._expiry.clear()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._state = "standby"
+
+    async def _lease_lost(self) -> bool:
+        """At most every ``lease_check_s``: True once the lease no longer holds."""
+        if time.monotonic() - self._lease_checked_at < self._lease_check_s:
+            return False
+        self._lease_checked_at = time.monotonic()
+        try:
+            return not await asyncio.to_thread(self._lease.held)
+        except (SQLAlchemyError, OSError) as exc:
+            self._note_error(f"worker lease check failed: {type(exc).__name__}: {exc}")
+            return True
 
     async def revoke(self, viseca_mandate_id: str) -> None:
         """Revoke a mandate: locally at once (nothing more is approved), then at Viseca."""
@@ -1048,8 +1155,11 @@ class VisecaWorker:
     # The loop ----------------------------------------------------------------------------
 
     async def _loop(self) -> None:
+        """Poll and decide until the worker lease is lost (then return) or the task stops."""
         self._state = "polling"
         while True:
+            if await self._lease_lost():
+                return
             try:
                 envelope = await self.client.next_decision_request(wait=self._poll_wait_s)
                 self._last_poll_at = self._now()
@@ -1059,6 +1169,8 @@ class VisecaWorker:
                     raise VisecaError(200, "invalid_response", "decision request is not an object")
                 else:
                     await self._handle(envelope)
+                if time.monotonic() - self._feed_synced_at >= self._feed_sync_s:
+                    await self._sync_events()
                 self._failures = 0
                 self._state = "polling"
             except asyncio.CancelledError:
@@ -1074,17 +1186,58 @@ class VisecaWorker:
                 await asyncio.sleep(min(LOOP_BACKOFF_MAX_S, 0.25 * 2 ** min(self._failures, 6)))
 
     async def _idle(self) -> None:
-        for run in list(self._runs.values()):
-            if run.state in ("done", "error"):
-                continue
+        await self._refresh_progress([run for run in self._runs.values() if run.state not in ("done", "error")])
+        await self._sync_events()
+
+    async def _refresh_progress(self, runs: list[RunState]) -> None:
+        """Read each run's progress from ``GET /v1/scenario-runs/{id}`` and store its row.
+
+        A run the platform no longer knows (404, e.g. after a team reset) is closed as
+        ``error`` so it is not read again.
+        """
+        for run in runs:
             try:
                 progress = await self.client.get_run(run.viseca_run_id)
             except VisecaError as exc:
-                log.warning("progress of run %s unavailable: %s", run.viseca_run_id, exc)
-                continue
-            self._apply_progress(run, progress)
+                if exc.status != 404:
+                    log.warning("progress of run %s unavailable: %s", run.viseca_run_id, exc)
+                    continue
+                run.state = "error"
+                run.last_error = "Viseca no longer knows this run"
+                run.finished_at = run.finished_at or self._now()
+            else:
+                self._apply_progress(run, progress)
             await asyncio.to_thread(self._save_run, run)
-        await self._sync_events()
+
+    async def _track_unfinished_runs(self) -> None:
+        """Follow the live runs the store still shows as unfinished, so their state is read
+        from the platform again: a run that completed while no worker polled (or while
+        another process decided it) is closed instead of staying ``running``."""
+        rows = await asyncio.to_thread(self._unfinished_run_rows)
+        runs = [self._track_row(row) for row in rows if row.viseca_run_id]
+        if runs:
+            log.info("following %d unfinished live run(s) from the store", len(runs))
+            await self._refresh_progress(runs)
+
+    def _track_row(self, row: Run) -> RunState:
+        assert row.viseca_run_id is not None
+        run = self._run(row.viseca_run_id)
+        run.started_at = min(run.started_at, row.started_at.replace(tzinfo=row.started_at.tzinfo or UTC))
+        run.scenario_id = run.scenario_id or row.scenario_id
+        run.mandate_id = run.mandate_id or row.mandate_id or None
+        run.card_id = run.card_id or row.card_id or None
+        run.total = max(run.total, row.total)
+        if run.state == "starting":
+            run.state = "running"
+        return run
+
+    def _unfinished_run_rows(self) -> list[Run]:
+        with session(self._db_engine) as s:
+            return list(
+                s.scalars(
+                    select(Run).where(Run.kind == "live", Run.state.in_(("starting", "running")))
+                )
+            )
 
     def _apply_progress(self, run: RunState, progress: Any) -> None:
         total = run_total(progress)
@@ -1650,6 +1803,7 @@ class VisecaWorker:
     # Event feed --------------------------------------------------------------------------
 
     async def _sync_events(self) -> None:
+        self._feed_synced_at = time.monotonic()
         try:
             reply = await self.client.events(since=self._cursor)
         except VisecaError as exc:
@@ -1660,13 +1814,36 @@ class VisecaWorker:
             log.warning("event feed reply has no events list; cursor stays at %s", self._cursor)
             return
         next_cursor = reply.get("next_cursor")
+        completed: list[str] = []
         async with self._resolution_lock:
             for item in items:
-                if isinstance(item, dict):
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "scenario.completed" and isinstance(item.get("run_id"), str):
+                    completed.append(item["run_id"])
+                else:
                     await self._check_feed_item(item)
+        await self._close_completed(completed)
         if next_cursor is not None and next_cursor != self._cursor:
             await asyncio.to_thread(self._save_cursor, next_cursor)
             self._cursor = next_cursor
+
+    async def _close_completed(self, viseca_run_ids: list[str]) -> None:
+        """The feed says these runs completed: read their state and close the ones we know
+        (followed here, or stored as live runs), so no row stays ``running``."""
+        runs: list[RunState] = []
+        for viseca_run_id in dict.fromkeys(viseca_run_ids):
+            run = self._runs.get(viseca_run_id)
+            if run is None:
+                row = await asyncio.to_thread(self._live_run_row, viseca_run_id)
+                run = self._track_row(row) if row is not None else None
+            if run is not None and run.state not in ("done", "error"):
+                runs.append(run)
+        await self._refresh_progress(runs)
+
+    def _live_run_row(self, viseca_run_id: str) -> Run | None:
+        with session(self._db_engine) as s:
+            return s.scalar(select(Run).where(Run.viseca_run_id == viseca_run_id, Run.kind == "live"))
 
     async def _check_feed_item(self, item: dict[str, Any]) -> None:
         live_id = item.get("authorization_id")
@@ -1712,27 +1889,63 @@ class VisecaWorker:
             )
 
     def _save_run(self, run: RunState) -> None:
+        """Write the run's row. Its counters are recomputed from the store (``events_raw``
+        and the ledger) and ``started_at`` keeps its first write, so a restart or a second
+        process never resets them; ``run.stored`` takes the recomputed counters."""
         with self._run_write_lock, session(self._db_engine) as s:
+            counts = self._run_counts(s, run.run_id)
+            run.stored = counts
             status = run.status()
-            s.merge(
-                Run(
-                    run_id=run.run_id,
-                    viseca_run_id=run.viseca_run_id,
-                    kind="live",
-                    scenario_id=run.scenario_id,
-                    mandate_id=run.mandate_id or run.viseca_mandate_id or "",
-                    card_id=run.card_id or "",
-                    state=run.state,
-                    delivered=status.delivered,
-                    decided=status.decided,
-                    pending_human=status.pending_human,
-                    total=status.total,
-                    started_at=run.started_at,
-                    finished_at=run.finished_at,
-                    worker_last_poll_at=self._last_poll_at,
-                    last_error=run.last_error,
+            row = s.get(Run, run.run_id)
+            if row is None:
+                s.add(
+                    Run(
+                        run_id=run.run_id,
+                        viseca_run_id=run.viseca_run_id,
+                        kind="live",
+                        scenario_id=run.scenario_id,
+                        mandate_id=run.mandate_id or run.viseca_mandate_id or "",
+                        card_id=run.card_id or "",
+                        state=run.state,
+                        delivered=counts.delivered,
+                        decided=counts.decided,
+                        pending_human=counts.pending_human,
+                        total=status.total,
+                        started_at=run.started_at,
+                        finished_at=run.finished_at,
+                        worker_last_poll_at=self._last_poll_at,
+                        last_error=run.last_error,
+                    )
                 )
-            )
+                return
+            row.viseca_run_id = row.viseca_run_id or run.viseca_run_id
+            row.scenario_id = row.scenario_id or run.scenario_id
+            row.mandate_id = run.mandate_id or run.viseca_mandate_id or row.mandate_id
+            row.card_id = run.card_id or row.card_id
+            row.state = run.state
+            row.delivered = counts.delivered
+            row.decided = counts.decided
+            row.pending_human = counts.pending_human
+            row.total = max(row.total, status.total)
+            row.finished_at = run.finished_at
+            row.worker_last_poll_at = self._last_poll_at or row.worker_last_poll_at
+            row.last_error = run.last_error
+
+    def _run_counts(self, s: Session, run_id: str) -> RunCounts:
+        """Events received for the run (``events_raw``); decisions recorded and step-ups
+        still waiting (the ``decisions`` rows, or the ledger when it is not the store)."""
+        live_ids = list(s.scalars(select(EventRaw.live_authorization_id).where(EventRaw.run_id == run_id)))
+        if isinstance(self._ledger, ScopedStoreLedger | StoreLedger) or self._ledger is None:
+            decided, pending = s.execute(
+                select(
+                    func.count(),
+                    func.count().filter(Decision.outcome == "step_up", Decision.final.is_(False)),
+                ).where(Decision.run_id == run_id)
+            ).one()
+            return RunCounts(len(live_ids), int(decided), int(pending))
+        entries = [e for e in (self._ledger.get(i) for i in live_ids) if e is not None]
+        waiting = sum(e.outcome == "step_up" and not e.final for e in entries)
+        return RunCounts(len(live_ids), len(entries), waiting)
 
     def _load_cursor(self) -> int | str:
         with session(self._db_engine) as s:

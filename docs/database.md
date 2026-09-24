@@ -41,7 +41,7 @@ Runtime tables (ours):
 |---|---|---|
 | `policy_drafts` | P1 api (C1) | `draft_id` PK, `card_id`, `customer_id`, `instruction`, `rules` JSON (typed rules keyed by RuleCheck id, plus the Policy flags such as `requested_item` under the reserved key `__policy__`), `checks` JSON, `uncertainty_policy`, `open_questions` JSON, `dry_run` JSON, `compiler` (llm/form/fallback), `viseca_draft_id`, `created_at`, `confirmed_at` nullable |
 | `mandates` | P1 api (C2, C4, C5) | `mandate_id` PK (ours), `viseca_mandate_id`, `card_id`, `customer_id`, `instruction`, `rules` JSON, `checks` JSON, `uncertainty_policy`, `open_questions` JSON, `status` (active/revoked), `confirmed_at`, `revoked_at` |
-| `runs` | P1 worker / api offline replay | `run_id` PK (ours: `live-<viseca run>`, `replay-<hex>`), `viseca_run_id` nullable, `kind` (live/replay; a step-up in a `replay` run is closed locally, any other through the worker), `scenario_id`, `mandate_id`, `card_id`, `state`, counters, `started_at`, `finished_at`, `worker_last_poll_at`, `last_error`. The worker writes the row (`kind = live`) before a run's first decision, and the offline replay writes its `replay` row before its first: the ledger carries the session watch and remembered answers over only between live runs, and a run with no row counts as a replay |
+| `runs` | P1 worker / api offline replay | `run_id` PK (ours: `live-<viseca run>`, `replay-<hex>`), `viseca_run_id` nullable, `kind` (live/replay; a step-up in a `replay` run is closed locally, any other through the worker), `scenario_id`, `mandate_id`, `card_id`, `state`, counters, `started_at`, `finished_at`, `worker_last_poll_at`, `last_error`. The worker writes the row (`kind = live`) before a run's first decision; a live row's counters are recomputed from `events_raw` and `decisions` on every write and `started_at` keeps its first write, so a restart or a second process never resets them, and the offline replay writes its `replay` row before its first: the ledger carries the session watch and remembered answers over only between live runs, and a run with no row counts as a replay |
 | `events_raw` | P1 worker / replay | `live_authorization_id` PK, `run_id`, `source_authorization_id`, `received_at`, `deadline_at`, `event` JSON (the full validated event) — this is what makes any decision reproducible. The ledger also reads the device and shop country of a run's final approvals from here (known devices and countries, W1, W3) |
 | `decisions` (the ledger) | P2 `ledger.py` only | `live_authorization_id` PK, `run_id`, `mandate_id`, `card_id`, `customer_id`, `ts_sim`, `outcome`, `final` bool, `uncertain_outcome` nullable, `reserved_chf`, `spent_chf`, `merchant_id`, `item_ids` JSON, `billing_amount_chf`, `related_live_id`, `relation`, `session_trust`, `step`, `deciding_ids` JSON (rebuild the EngineDecision on redelivery), `reason_codes` JSON, `evidence` JSON, `message`, `counterfactual`, `explanation_source`, `injection_flag` JSON, `engine_version`, `latency_ms`, `signals_enabled` bool, `decided_at`, `deadline_at` nullable (real clock, pending step-ups; stable across polls), `resolved_at`, `resolved_by` (customer/timeout) |
 | `merchant_flags` | P2 ledger (from A1 signals) | `run_id`, `merchant_id`, `flagged_at`, `reason` — info evidence for later purchases at that shop |
@@ -129,6 +129,13 @@ reads it to build `Decision` responses and `Mandate.usage`. Nobody else writes i
 - **Pool.** `pool_size=5, max_overflow=0, pool_pre_ping=True`: at most 5 pooler clients per
   process (each session-mode client holds a server connection; SQLAlchemy's default
   overflow would allow 15).
+- **Worker lease.** Only one process polls Viseca per store (`store/lease.py`). The worker
+  takes a session-level `pg_try_advisory_lock` on one dedicated autocommit connection,
+  outside the pool (so a process uses at most 6 pooler clients), and holds it while it
+  polls. Any other process on the store (a laptop `make serve` or `make demo-live` next to
+  Fly) stays in `standby`, retries every 5 s and takes over when the holder stops. The
+  holder re-checks its connection every 10 s and stands by if it is gone. Advisory locks
+  are database-wide, not per schema. On SQLite (one process) the lease is always granted.
 - **Round trips are the cost.** The project runs in AWS eu-west-1 (Ireland). From the laptop
   a round trip is p50 ~50 ms, p90 ~170 ms; a short `session()` is four of them (pre-ping,
   BEGIN, query, COMMIT) ≈ 0.3 s, a new connection ≈ 2 s (TLS + pooler auth). Hence: warm

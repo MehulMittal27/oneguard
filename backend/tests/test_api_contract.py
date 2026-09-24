@@ -242,6 +242,7 @@ async def running(
     fake: FakeViseca | None = None,
     clock: Clock | None = None,
     client_timeout_s: float = 10.0,
+    ready: str = "polling",
     **config: Any,
 ) -> AsyncIterator[Running]:
     clock = clock or Clock()
@@ -271,7 +272,7 @@ async def running(
         async with httpx.AsyncClient(transport=transport, base_url="http://oneguard.test") as http:
             run = Running(app, http, fake, faulty, clock)
             if fake is not None:
-                await until(lambda: run.services.worker.status().state == "polling")
+                await until(lambda: run.services.worker.status().state == ready)
             yield run
 
 
@@ -1174,6 +1175,38 @@ def test_operator_endpoints(db_url: str) -> None:
             assert health["events_cursor"] == health["worker"]["events_cursor"] > 0
             assert health["database"]["ok"] and health["database"]["round_trip_ms"] is not None
             assert TIMESTAMP.match(health["worker"]["last_poll_at"])
+
+    asyncio.run(scenario())
+
+
+class TakenLease:
+    """The worker lease while another process holds it."""
+
+    def acquire(self) -> bool:
+        return False
+
+    def held(self) -> bool:
+        return False
+
+    def release(self) -> None:
+        return None
+
+
+def test_healthz_shows_standby_while_another_process_holds_the_worker_lease(db_url: str) -> None:
+    """A second process on the same store does not poll; /healthz says so and stays 200."""
+
+    async def scenario() -> None:
+        fake = FakeViseca(fast())
+        options = {"poll_wait_s": 0.2, "lease": TakenLease(), "standby_retry_s": 0.05}
+        async with running(db_url, fake=fake, ready="standby", worker_options=options) as run:
+            await asyncio.sleep(0.3)
+            r = await run.get("/healthz")
+            assert r.status_code == 200
+            worker = r.json()["worker"]
+            assert (worker["state"], worker["polling"], worker["ok"], worker["last_poll_at"]) == (
+                "standby", False, False, None,
+            )  # fmt: skip
+            assert r.json()["status"] == "degraded" and fake.polls == 0
 
     asyncio.run(scenario())
 

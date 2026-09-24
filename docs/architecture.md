@@ -63,6 +63,11 @@ oneguard/
   blocks on a pending step-up. Poll loop and C8 resolution are independent paths.
 - One database per environment via ONEGUARD_DATABASE_URL (docs/database.md). One transaction per decision.
 - Viseca key from `VISECA_API_KEY`; base URL from `VISECA_BASE_URL`; both server-side.
+- One worker polls per store: the worker lease (docs/database.md §5.1, `store/lease.py`).
+  A second process on the same store (the laptop next to Fly, `make demo-live` next to
+  `make serve`) stays in `standby` and does not poll, recover step-ups or read the feed;
+  it takes over when the holder stops. The sandbox serves each request to whoever polls
+  first, so two workers would decide the same team's requests twice (docs/decisions.md).
 - Worker (`oneguard/viseca/worker.py`, `VisecaWorker`): on start reads `/v1/bootstrap`
   (`limits`: human window, decision deadline, long-poll cap) and `/v1/reference-data`. Every
   reference table served under `tables` (a superset of `data/` during judging) is upserted
@@ -81,12 +86,18 @@ oneguard/
   `/resolve` per live id. Ledger calls run in short `ScopedStoreLedger` sessions.
   All ledger and pipeline calls run on one dedicated thread. The event feed cursor is
   stored in `worker_state` once a page is processed and resumed on start (0 only on first
-  boot), so a restart does not re-scan the team-wide feed. `VisecaWorker.status()` is the
-  `/healthz` worker block: `state`, `ok`, `last_poll_at`, `events_cursor`,
+  boot), so a restart does not re-scan the team-wide feed. The feed is read after each
+  decision, on a 204, and at least every 5 s (waiting step-ups keep every poll busy). A
+  `scenario.completed` item, a 204, or a start that finds live rows still `running` makes
+  the worker read `GET /v1/scenario-runs/{id}` and close each finished run's row (`done`;
+  `error` when the platform no longer knows the run). `VisecaWorker.status()` is the
+  `/healthz` worker block: `state` (`starting`, `standby`, `polling`, `degraded`,
+  `stopped`), `ok` (polling without failures), `last_poll_at`, `events_cursor`,
   `human_window_s`, `pending_step_ups`, `history_reseeded`, `last_error`, `runs`.
 - Every Viseca call is summarised in `viseca_calls` (no key, bodies ≤ 4 KB) by
   `oneguard/viseca/client.py`. `make demo-live SCEN=…` runs one scenario end to end
-  (`oneguard/viseca/demo.py`); it needs `VISECA_API_KEY`.
+  (`oneguard/viseca/demo.py`); it needs `VISECA_API_KEY`, and it starts nothing when
+  another worker already polls the store (its own worker would only stand by).
 
 ## Deployment (Plan C)
 

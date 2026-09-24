@@ -63,6 +63,12 @@ MISSING_KEY = (
 )
 
 
+STANDBY_MESSAGE = (
+    "Another OneGuard worker is already polling Viseca on this store, so this demo would "
+    "not decide anything. Start the run from that server (D3), or stop it first."
+)
+
+
 def rule_to_viseca(rule: Rule) -> dict[str, Any]:
     """A typed rule in Viseca's ``hard_rules`` format: unused optional fields omitted."""
     out: dict[str, Any] = {"field": rule.field, "operator": rule.operator, "value": rule.value}
@@ -148,6 +154,9 @@ async def run_demo(
     worker = VisecaWorker(client, db=db, provider=provider, poll_wait_s=poll_wait_s, **worker_options)
     await worker.start()
     try:
+        if worker.status().state == "standby":
+            out(STANDBY_MESSAGE)
+            return 1
         instruction, served_card = scenario_from_reference(worker.reference_data, scenario_id)
         instruction = instruction or await asyncio.to_thread(scenario_from_store, db, scenario_id)
         if not instruction:

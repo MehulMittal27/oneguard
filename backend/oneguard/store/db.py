@@ -21,9 +21,10 @@ from contextlib import contextmanager
 from functools import cache
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import URL, Engine, create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 DATABASE_URL_ENV = "ONEGUARD_DATABASE_URL"
 DEFAULT_DATABASE_URL = "sqlite:///./oneguard.sqlite"
@@ -60,9 +61,13 @@ def _set_postgres_statement_timeout(dbapi_connection: Any, _record: Any) -> None
         dbapi_connection.autocommit = autocommit
 
 
-def make_engine(url: str | None = None) -> Engine:
-    """A new engine for ``url`` (default: ``database_url()``)."""
-    parsed = make_url(normalise_url(url or database_url()))
+def make_engine(url: str | URL | None = None, *, pooled: bool = True) -> Engine:
+    """A new engine for ``url`` (default: ``database_url()``).
+
+    ``pooled=False`` (Postgres only): every connection is opened for its caller and closed
+    with it, outside the process's pool of ``POSTGRES_POOL_SIZE`` (the worker lease).
+    """
+    parsed = url if isinstance(url, URL) else make_url(normalise_url(url or database_url()))
     backend = parsed.get_backend_name()
     if backend == "sqlite":
         engine = create_engine(
@@ -71,11 +76,14 @@ def make_engine(url: str | None = None) -> Engine:
         event.listen(engine, "connect", _enable_sqlite_foreign_keys)
         return engine
     if backend == "postgresql":
+        pool: dict[str, Any] = (
+            {"pool_pre_ping": True, "pool_size": POSTGRES_POOL_SIZE, "max_overflow": 0}
+            if pooled
+            else {"poolclass": NullPool}
+        )
         engine = create_engine(
             parsed,
-            pool_pre_ping=True,
-            pool_size=POSTGRES_POOL_SIZE,
-            max_overflow=0,
+            **pool,
             connect_args={} if "sslmode" in parsed.query else {"sslmode": "require"},
         )
         event.listen(engine, "connect", _set_postgres_statement_timeout)
