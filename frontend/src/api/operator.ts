@@ -1,9 +1,9 @@
-import type { LiveRun } from './types'
+import type { LiveRun, ReplayStatus } from './types'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 
 /**
- * The operator endpoints (`../docs/api-contract.md` §1.1 D1–D6). These exist for
+ * The operator endpoints (`../docs/api-contract.md` §1.2 D1–D7). These exist for
  * the person driving the demo, never for the customer: nothing here is reachable
  * from a customer-facing screen, and the strip that calls them is behind
  * `?demo=1`.
@@ -14,13 +14,21 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
  * mode nothing *is* running — the decisions come from a fixture, not a replay.
  * Inventing counters here would put a number on screen that stands for nothing.
  */
-export async function getCurrentRun(): Promise<LiveRun | null> {
+export type CurrentRun = { kind: 'live'; run: LiveRun } | { kind: 'replay'; run: ReplayStatus }
+
+/**
+ * D7: the newest run, live (D3's `LiveRun`) or offline replay (D2's
+ * `ReplayStatus`), told apart by `run_id`, which only a live run has. 404 means
+ * no run has started, which is `null` here, not an error.
+ */
+export async function getCurrentRun(): Promise<CurrentRun | null> {
   if (import.meta.env.VITE_USE_MOCKS === 'true') return null
 
   const response = await fetch(`${API_BASE_URL}/dev/runs/current`)
   if (response.status === 404) return null
   if (!response.ok) throw new Error(`Failed to read current run (${response.status})`)
-  return (await response.json()) as LiveRun
+  const body = (await response.json()) as LiveRun | ReplayStatus
+  return 'run_id' in body ? { kind: 'live', run: body } : { kind: 'replay', run: body }
 }
 
 /**

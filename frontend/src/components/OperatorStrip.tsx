@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getCurrentRun, setSoftSignals } from '../api/operator'
-import type { LiveRun } from '../api/types'
+import { getCurrentRun, setSoftSignals, type CurrentRun } from '../api/operator'
 import { DECISIONS_POLL_SECONDS } from '../config'
 
 /**
@@ -11,10 +10,11 @@ import { DECISIONS_POLL_SECONDS } from '../config'
  * any screen, and it shows engine plumbing the customer has no reason to see.
  *
  * Reads D7 (`/api/dev/runs/current`), which avoids making the operator supply a
- * run id and exposes the worker's decided and pending counters directly.
+ * run id. A live run shows the worker's decided and pending counters; an offline
+ * replay (D2) only has D1's delivered counter, so that is what it shows.
  */
 export function OperatorStrip() {
-  const [run, setRun] = useState<LiveRun | null>(null)
+  const [run, setRun] = useState<CurrentRun | null>(null)
   const [signalsOn, setSignalsOn] = useState(true)
   const [unreachable, setUnreachable] = useState(false)
 
@@ -62,12 +62,23 @@ export function OperatorStrip() {
       ) : run ? (
         <>
           <span className="tabular-nums">
-            {run.scenario_id} · {run.card_id}
+            {run.run.scenario_id} · {run.run.card_id}
           </span>
-          <span className="tabular-nums">
-            {run.decided}/{run.total} decided · {run.pending_human} pending
-          </span>
-          <span>{run.state}</span>
+          {run.kind === 'live' ? (
+            <>
+              <span className="tabular-nums">
+                {run.run.decided}/{run.run.total} decided · {run.run.pending_human} pending
+              </span>
+              <span>{run.run.state}</span>
+            </>
+          ) : (
+            <>
+              <span className="tabular-nums">
+                {run.run.delivered}/{run.run.total} delivered
+              </span>
+              <span>replay {run.run.running ? 'running' : 'idle'}</span>
+            </>
+          )}
         </>
       ) : (
         <span>no run</span>
