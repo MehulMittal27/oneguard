@@ -282,6 +282,7 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
     api.ReplayRestartRequest: {"scenario_id": "S1", "card_id": "CA0001", "speed_ms": 4000},
     api.CreateRunRequest: {"scenario_id": "S1", "card_id": "CA0001", "force": True},
     api.SoftSignalsToggle: {"enabled": True},
+    api.SoftSignalsState: {"live": True, "replay": False},
     api.ErrorBody: {"code": "lint_failed", "message": "No per-order cap.", "detail": {"missing": ["amount"]}},
     api.ErrorResponse: {"error": {"code": "not_found", "message": "No such card."}},
 }
