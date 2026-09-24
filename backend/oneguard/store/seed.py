@@ -4,6 +4,9 @@ Idempotent: each run replaces the reference tables' contents in one transaction.
 Before loading, every file listed in ``data/metadata.json`` is checked against its
 SHA-256 (and CSV row count) so a changed pack is noticed.
 
+``reseed_history`` replaces only ``authorization_history`` from CSV text, for the Viseca
+worker when the platform serves a history file whose hash differs from the pack's.
+
     python -m oneguard.store.seed            # make seed
     python -m oneguard.store.seed --reset    # make reset-db: drop, create, seed
 
@@ -16,6 +19,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
 import logging
 import os
@@ -102,16 +106,19 @@ def _coerce(column: Any, raw: str) -> Any:
     return raw
 
 
+def _parse_rows(model: type, f: Any, name: str) -> list[dict[str, Any]]:
+    columns = {c.name: c for c in model.__table__.columns}
+    reader = csv.DictReader(f)
+    unexpected = set(reader.fieldnames or ()) - set(columns)
+    if unexpected:
+        raise PackMismatch(f"{name}: unexpected columns {sorted(unexpected)}")
+    return [{k: _coerce(columns[k], v) for k, v in raw.items()} for raw in reader]
+
+
 def _read_table(model: type, data_dir: Path) -> list[dict[str, Any]]:
-    table = model.__table__
-    columns = {c.name: c for c in table.columns}
-    path = data_dir / f"{table.name}.csv"
+    path = data_dir / f"{model.__table__.name}.csv"
     with path.open(newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        unexpected = set(reader.fieldnames or ()) - set(columns)
-        if unexpected:
-            raise PackMismatch(f"{path.name}: unexpected columns {sorted(unexpected)}")
-        rows = [{k: _coerce(columns[k], v) for k, v in raw.items()} for raw in reader]
+        rows = _parse_rows(model, f, path.name)
     if model is Merchant:
         for row in rows:
             row["name_normalised"] = normalise_merchant_name(row["merchant_name"])
@@ -135,6 +142,30 @@ def seed(s: Session, data_dir: Path = DATA_DIR) -> dict[str, int]:
         counts[model.__tablename__] = len(rows)
     s.flush()
     return counts
+
+
+def pack_file_sha256(path: str, data_dir: Path = DATA_DIR) -> str | None:
+    """The SHA-256 ``metadata.json`` records for ``path`` (the seed's stored hash)."""
+    metadata = json.loads((data_dir / "metadata.json").read_text(encoding="utf-8"))
+    for entry in metadata["files"]:
+        if entry["path"] == path:
+            return entry["sha256"]
+    return None
+
+
+def reseed_history(s: Session, csv_text: str) -> int:
+    """Replace every ``authorization_history`` row with ``csv_text``; returns the row count.
+
+    Runs inside the caller's transaction, so a bad file (unknown column, bad value, a
+    foreign key the other reference tables do not have) leaves the old rows in place.
+    """
+    rows = _parse_rows(AuthorizationHistory, io.StringIO(csv_text, newline=""), "authorization-history.csv")
+    if not rows:
+        raise PackMismatch("authorization-history.csv: no rows")
+    s.execute(delete(AuthorizationHistory))
+    s.execute(insert(AuthorizationHistory.__table__), rows)  # Core executemany, as in seed()
+    s.flush()
+    return len(rows)
 
 
 def history_row_count(s: Session) -> int:

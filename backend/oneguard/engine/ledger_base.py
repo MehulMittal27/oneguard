@@ -132,6 +132,17 @@ class Ledger(ABC):
     def flag_merchant(self, run_id: str, merchant_id: str, reason: str, at: datetime) -> None:
         """Remember an A1 injection at this shop for later purchases in the run."""
 
+    def set_deadline(self, authorization_id: str, deadline_at: datetime) -> LedgerEntry:
+        """Replace a pending step-up's ``deadline_at`` and return the stored entry.
+
+        The worker calls this once Viseca has accepted the ``step_up``: the deadline is
+        the accepted time + the ``/v1/bootstrap`` human window (api-contract §3.5),
+        replacing the local default set at record time. Nothing else changes. Raises
+        KeyError if unknown, ValueError if not a pending step-up. Not abstract so an
+        implementation without it still loads; the worker then keeps the local default.
+        """
+        raise NotImplementedError
+
 
 class InMemoryLedger(Ledger):
     """Dict-backed reference ledger for stubs and tests. Not persistent."""
@@ -264,3 +275,12 @@ class InMemoryLedger(Ledger):
     def flag_merchant(self, run_id: str, merchant_id: str, reason: str, at: datetime) -> None:
         with self._lock:
             self.flags.setdefault(run_id, set()).add(merchant_id)
+
+    def set_deadline(self, authorization_id: str, deadline_at: datetime) -> LedgerEntry:
+        with self._lock:
+            entry = self.entries[authorization_id]
+            if entry.outcome != "step_up" or entry.final:
+                raise ValueError(f"{authorization_id} is not awaiting an answer")
+            updated = entry.model_copy(update={"deadline_at": deadline_at})
+            self.entries[authorization_id] = updated
+            return updated
