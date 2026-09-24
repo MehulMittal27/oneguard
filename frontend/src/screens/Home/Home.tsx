@@ -5,7 +5,8 @@ import { AccountMenu } from '../../components/AccountMenu'
 import { CountdownBar } from '../../components/CountdownBar'
 import { DecisionMark } from '../../components/DecisionMark'
 import { OverviewHero } from '../../components/OverviewHero'
-import { AccountsIcon, BackChevronIcon, BellIcon } from '../../components/icons/lucide'
+import { AccountsIcon, BackChevronIcon, BellIcon, PlusIcon } from '../../components/icons/lucide'
+import { formatShortDate } from '../../lib/datetime'
 import { formatChf } from '../../lib/money'
 import { useCustomer } from '../../state/CustomerContext'
 import { useDecisions } from '../../state/DecisionsContext'
@@ -66,7 +67,17 @@ export function Home({
     account.cards.flatMap((card) => {
       const mandate = policiesByCard[card.card_id]
       if (mandate?.status !== 'active') return []
-      return [{ cardId: card.card_id, accountId: account.account_id, mandate }]
+      return [{ cardId: card.card_id, mandate }]
+    }),
+  )
+
+  // A card with no live policy is shut to the agent. Listing only the guarded
+  // ones made an unguarded card invisible on Home.
+  const unguardedCards = accounts.flatMap((account) =>
+    account.cards.flatMap((card) => {
+      const mandate = policiesByCard[card.card_id]
+      if (mandate?.status === 'active') return []
+      return [{ cardId: card.card_id, revoked: mandate?.status === 'revoked' }]
     }),
   )
 
@@ -245,14 +256,19 @@ export function Home({
             </div>
           )}
 
-          {accountsStatus === 'ready' && activePolicies.length === 0 && (
-            <p className="text-[15px] text-ink-muted">No active policies yet.</p>
-          )}
+          {accountsStatus === 'ready' &&
+            activePolicies.length === 0 &&
+            unguardedCards.length === 0 && (
+              <p className="text-[15px] text-ink-muted">No active policies yet.</p>
+            )}
 
           {accountsStatus === 'ready' && activePolicies.length > 0 && (
             <div className="scrollbar-none max-h-72 overflow-y-auto rounded-card border border-hairline bg-surface p-2">
               <div className="flex flex-col gap-1">
-                {activePolicies.map(({ cardId, accountId, mandate }) => (
+                {/* Card and date, then through to Card detail where Manage and
+                    Revoke live. The instruction text used to lead this row — long,
+                    variable, and nothing the customer could act on here. */}
+                {activePolicies.map(({ cardId, mandate }) => (
                   <button
                     key={cardId}
                     type="button"
@@ -263,17 +279,51 @@ export function Home({
                       <AccountsIcon size={20} strokeWidth={1.8} />
                     </span>
                     <span className="min-w-0 flex-1">
-                      {/* The customer's own words, not merchant text — but
-                          still just a display value, never re-parsed. */}
                       <span className="block truncate text-[15px] font-semibold text-ink">
-                        {mandate.instruction || 'Spending policy'}
+                        Card {cardId}
                       </span>
                       <span className="block truncate text-[13px] text-ink-muted">
-                        Card {cardId} · Account {accountId}
+                        Since {formatShortDate(mandate.confirmed_at)}
                       </span>
                     </span>
                     <span className="rotate-180 shrink-0 text-ink-muted">
                       <BackChevronIcon size={18} strokeWidth={2} />
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Their own group, so "active" keeps meaning active. No date — there
+              is no policy to have started — and they lead to writing one. */}
+          {accountsStatus === 'ready' && unguardedCards.length > 0 && (
+            <div className="rounded-card border border-hairline bg-surface p-2">
+              <p className="px-4 pt-2 pb-1 text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
+                Closed to your agent
+              </p>
+              <div className="flex flex-col gap-1">
+                {unguardedCards.map(({ cardId, revoked }) => (
+                  <button
+                    key={cardId}
+                    type="button"
+                    onClick={() => onViewPolicy(cardId)}
+                    className="flex min-h-16 w-full items-center gap-4 rounded-row px-4 py-3 text-left"
+                  >
+                    <span className="flex size-9.5 shrink-0 items-center justify-center rounded-full bg-asked-tint text-asked">
+                      <AccountsIcon size={20} strokeWidth={1.8} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[15px] font-semibold text-ink">
+                        Card {cardId}
+                      </span>
+                      <span className="block truncate text-[13px] text-ink-muted">
+                        {revoked ? 'Policy revoked' : 'No policy yet'}
+                      </span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-1 text-[13px] font-semibold text-ink">
+                      <PlusIcon size={14} strokeWidth={2.4} />
+                      Add policy
                     </span>
                   </button>
                 ))}

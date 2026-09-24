@@ -353,7 +353,8 @@
       ],
       "order_returnable": "true",
       "delivery_by": null,
-      "counterfactual": "Would approve at CHF 400 or less."
+      "counterfactual": "Would approve at CHF 400 or less.",
+      "explanation_source": "template"
     },
     {
       "mock": true,
@@ -555,7 +556,8 @@
         }
       ],
       "order_returnable": "true",
-      "delivery_by": null
+      "delivery_by": null,
+      "explanation_source": "model"
     },
     {
       "mock": true,
@@ -806,7 +808,8 @@
       "related": {
         "authorization_id": "AU0037",
         "relation": "requote_of"
-      }
+      },
+      "explanation_source": "model"
     },
     {
       "mock": true,

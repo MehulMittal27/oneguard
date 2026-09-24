@@ -1,9 +1,30 @@
 import { useEffect, useState } from 'react'
 import { getAccounts } from '../../api/accounts'
 import type { Account } from '../../api/types'
-import { AccountsIcon, BackChevronIcon, PlusIcon } from '../../components/icons/lucide'
+import { BackChevronIcon, PlusIcon } from '../../components/icons/lucide'
+import { limitsFromMandate } from '../../lib/spend'
 import { useCustomer } from '../../state/CustomerContext'
 import { usePolicy } from '../../state/PolicyContext'
+
+/** `mobile_and_online` -> `Mobile and online`, for the card's own subtitle. */
+function humanise(value: string) {
+  const text = value.replace(/_/g, ' ')
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+/** A card chip rather than an icon — ink while guarded, grey while not. */
+function CardChip({ guarded }: { guarded: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`relative h-[34px] w-[52px] shrink-0 rounded-meter ${
+        guarded ? 'bg-ink' : 'bg-card-icon-gray'
+      }`}
+    >
+      <span className="absolute bottom-[7px] left-[7px] h-[3px] w-3.5 rounded-[2px] bg-ground" />
+    </span>
+  )
+}
 
 type Status = 'loading' | 'error' | 'ready'
 
@@ -55,7 +76,9 @@ export function Accounts({
     <div className="flex flex-col gap-7 px-8 pt-9 pb-9 sm:pt-5">
       <div>
         <h1 className="font-display text-[30px] font-bold text-ink">Accounts</h1>
-        <p className="text-[15px] text-ink-muted">Your accounts and the cards on them.</p>
+        <p className="text-[14px] leading-[1.4] text-ink-muted">
+          Policies belong to a card, not to you as a whole. Each card is guarded on its own.
+        </p>
       </div>
 
       {status === 'loading' && (
@@ -88,13 +111,20 @@ export function Accounts({
         accounts.map((account) => (
           <div key={account.account_id} className="rounded-card bg-surface p-5">
             <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="font-display text-[17px] font-bold text-ink capitalize">
-                  {account.account_type} · {account.account_purpose.replace('_', ' ')}
+              <div className="min-w-0">
+                <p className="font-display text-[19px] font-bold text-ink">
+                  {humanise(account.account_purpose)}
                 </p>
-                <p className="text-[13px] text-ink-muted">Account {account.account_id}</p>
+                {/* "N of M cards guarded" is the fact this screen exists to
+                    tell: a policy protects one card, so an account is only
+                    partly covered until every card on it has one. */}
+                <p className="mt-0.5 text-[13px] text-ink-muted">
+                  {humanise(account.account_type)} · {account.account_id} ·{' '}
+                  {account.cards.filter((c) => policiesByCard[c.card_id]?.status === 'active').length}{' '}
+                  of {account.cards.length} {account.cards.length === 1 ? 'card' : 'cards'} guarded
+                </p>
               </div>
-              <span className="shrink-0 rounded-pill bg-approved-tint px-3 py-1 text-[13px] font-medium text-approved">
+              <span className="shrink-0 rounded-pill bg-approved-tint px-2.5 py-1 text-[12px] font-semibold text-approved">
                 Active
               </span>
             </div>
@@ -110,72 +140,64 @@ export function Accounts({
                 const mandate = policiesByCard[card.card_id]
                 const isActive = mandate?.status === 'active'
                 const isRevoked = mandate?.status === 'revoked'
+                const limitCount = mandate
+                  ? [limitsFromMandate(mandate).perOrder, limitsFromMandate(mandate).period].filter(
+                      Boolean,
+                    ).length
+                  : 0
                 return (
                   <button
                     key={card.card_id}
                     type="button"
-                    onClick={() =>
-                      mandate ? onViewCard(card.card_id) : onAddPolicy(card.card_id)
-                    }
-                    className={`flex min-h-16 items-center gap-4 rounded-row px-4 py-3 text-left ${
-                      mandate ? 'border border-ink' : 'border-2 border-dashed border-border-dashed'
+                    onClick={() => (mandate ? onViewCard(card.card_id) : onAddPolicy(card.card_id))}
+                    className={`flex min-h-[72px] items-center gap-3 rounded-[18px] p-3 text-left ${
+                      isActive
+                        ? 'border-2 border-ink'
+                        : 'border-2 border-dashed border-border-dashed'
                     }`}
                   >
-                    <span
-                      className={`flex size-[38px] shrink-0 items-center justify-center rounded-full ${
-                        isActive
-                          ? 'bg-approved-tint text-approved'
-                          : isRevoked
-                            ? // Gray, not stopped-red (D-052) — a revoked
-                              // policy isn't a declined purchase, it's just
-                              // not active, same reasoning as the
-                              // Uncertain-expired gray elsewhere.
-                              'bg-surface-expired text-ink-muted'
-                            : // DESIGN.md's card-icon-gray (#B7B0A0) fails
-                              // contrast against a white card (2.16:1, below
-                              // even the 3:1 icon minimum) — ink-muted
-                              // instead (ROADMAP.md slice 9 accessibility pass).
-                              'text-ink-muted'
-                      }`}
-                    >
-                      <AccountsIcon size={20} strokeWidth={1.8} />
-                    </span>
+                    <CardChip guarded={isActive} />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[15px] font-semibold text-ink capitalize">
-                        Card {card.card_id} · {card.card_purpose}
+                      <span className="block truncate text-[15px] font-semibold text-ink">
+                        {humanise(card.card_purpose)} · {card.card_id}
                       </span>
-                      {/* No caption for "no policy yet" (D-052) — the
-                          trailing "Add policy" label already says it. */}
-                      {isActive && (
-                        <span className="block truncate text-[13px] text-ink-muted">
-                          Policy active
-                        </span>
-                      )}
-                      {/* Just "Policy revoked" (D-053) — the trailing
-                          "Add policy" label already says what's next, no
-                          need to say it twice. */}
-                      {isRevoked && (
-                        <span className="block truncate text-[13px] text-ink-muted">
-                          Policy revoked
-                        </span>
-                      )}
+                      <span className="block truncate text-[13px] leading-[1.35] text-ink-muted">
+                        {isActive
+                          ? `${humanise(card.card_type)} · ${limitCount} ${limitCount === 1 ? 'limit' : 'limits'}`
+                          : isRevoked
+                            ? 'Policy revoked. The agent can’t spend here.'
+                            : 'The agent can’t spend here.'}
+                      </span>
                     </span>
                     {isActive ? (
-                      // A real drill-in to Card detail — the rotated back
-                      // chevron reads correctly as "view more" here.
-                      <span className="rotate-180 shrink-0 text-ink-muted">
-                        <BackChevronIcon size={18} strokeWidth={2} />
+                      <span className="flex shrink-0 items-center gap-1">
+                        <span className="rounded-pill bg-approved-tint px-2.5 py-1 text-[12px] font-semibold text-approved">
+                          Policy active
+                        </span>
+                        {/* A real drill-in to Card detail — the rotated back
+                            chevron reads correctly as "view more" here. */}
+                        <span className="rotate-180 text-ink-muted">
+                          <BackChevronIcon size={18} strokeWidth={2} />
+                        </span>
+                      </span>
+                    ) : isRevoked ? (
+                      // Gray, not stopped-red (D-052) — a revoked policy isn't
+                      // a declined purchase, it's just not active.
+                      <span className="shrink-0 rounded-pill bg-surface-expired px-2.5 py-1 text-[12px] font-semibold text-ink-muted">
+                        Policy revoked
                       </span>
                     ) : (
-                      // Neither a no-policy nor a revoked card is a detail
-                      // view to browse — both need a new policy next, so
-                      // both say that instead of a chevron (D-051, D-052).
-                      // A revoked row still opens Card detail on tap (its
-                      // checks/history stay reachable, D-044), where the
-                      // customer finds the actual "Add policy" button.
-                      <span className="flex shrink-0 items-center gap-1 text-[13px] font-semibold text-ink">
-                        <PlusIcon size={14} strokeWidth={2.4} />
-                        Add policy
+                      // Neither a no-policy nor a revoked card is a detail view
+                      // to browse — both need a new policy next, so both say
+                      // that instead of a chevron (D-051, D-052).
+                      <span className="flex shrink-0 items-center gap-1.5">
+                        <span className="rounded-pill bg-asked-tint px-2.5 py-1 text-[12px] font-semibold text-asked">
+                          No policy
+                        </span>
+                        <span className="flex items-center gap-1 text-[13px] font-semibold text-ink">
+                          <PlusIcon size={14} strokeWidth={2.4} />
+                          Add
+                        </span>
                       </span>
                     )}
                   </button>
@@ -184,6 +206,20 @@ export function Accounts({
             </div>
           </div>
         ))}
+
+      {/* A card with no policy is not "unprotected", it is shut. Without this the
+          dashed rows read as a setup step someone forgot. */}
+      {status === 'ready' && (
+        <div className="flex flex-col gap-1 rounded-row bg-surface-active px-5 py-4">
+          <p className="text-[14px] font-semibold text-ink">
+            A card without a policy is closed to the agent
+          </p>
+          <p className="text-[13px] leading-[1.45] text-ink-soft">
+            Nothing your agent proposes can be paid from it until you write and confirm a policy
+            for that card.
+          </p>
+        </div>
+      )}
 
       <p className="text-[13px] text-ink-muted">
         Bank limits on your accounts and cards are separate from your own spending policy — your

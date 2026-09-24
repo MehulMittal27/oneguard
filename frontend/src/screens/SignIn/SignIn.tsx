@@ -3,6 +3,7 @@ import { getCustomers } from '../../api/customers'
 import type { Customer } from '../../api/types'
 import { BottomSheet } from '../../components/BottomSheet'
 import { DeviceFrame } from '../../components/DeviceFrame'
+import { ShieldIcon } from '../../components/icons/lucide'
 import { StatusBar } from '../../components/StatusBar'
 import { useCustomer } from '../../state/CustomerContext'
 
@@ -11,6 +12,13 @@ const MAX_VISIBLE_CUSTOMERS = 4
 
 type Status = 'loading' | 'error' | 'ready'
 
+/**
+ * DESIGN.md #1 — sign in. A light screen on the page ground, not the ink hero
+ * it used to be: the recalibrated theme has no dark panels, and the mockup
+ * carries the brand with a black logo tile and one accent-coloured step instead.
+ * The three steps are joined by a straight cord rather than the old curve, so
+ * the numbered discs line up with their labels on a 390px screen.
+ */
 export function SignIn() {
   const { continueAs } = useCustomer()
   const [status, setStatus] = useState<Status>('loading')
@@ -46,86 +54,90 @@ export function SignIn() {
   return (
     <main>
       <DeviceFrame>
-        <div className="signin-backdrop flex min-h-0 flex-1 flex-col">
-          <StatusBar tone="on-ink" />
-          <div className="scrollbar-none flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto px-8 pt-14 pb-9 sm:pt-5">
-            <header>
-              <p className="font-sans text-[12px] font-semibold tracking-[0.1em] text-on-ink-muted uppercase">
-                Agent on a
+        <div className="flex min-h-0 flex-1 flex-col bg-ground">
+          <StatusBar tone="ink" />
+          <div className="scrollbar-none flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-8 pt-4 pb-9 sm:pt-5">
+            <header className="flex flex-col gap-4">
+              <div className="flex items-center gap-4">
+                <span className="flex size-[34px] items-center justify-center rounded-tile bg-ink text-on-ink">
+                  <ShieldIcon size={20} strokeWidth={1.8} />
+                </span>
+                <p className="text-[11px] font-semibold tracking-[0.09em] text-ink-soft uppercase">
+                  OneGuard
+                </p>
+              </div>
+              <h1 className="font-display text-[34px] leading-[1.05] font-bold tracking-[-0.02em] text-ink">
+                Your AI agent shops.
+                <br />
+                You hold the leash.
+              </h1>
+              <p className="max-w-[290px] text-[15px] leading-[1.45] text-ink-soft">
+                Every purchase your agent proposes passes through your rules first.
               </p>
-              <p className="font-display text-[40px] leading-[0.95] font-bold text-on-ink">Leash</p>
             </header>
 
-            <p className="text-[14px] leading-5.5 text-on-ink-soft">
-              Your rules decide what your agent can buy. Sign in as a customer to see it in
-              action.
-            </p>
-
-            {/* Cord diagram — not a decision, purely the sign-in "how it works" strip. */}
-            <div>
-              <svg viewBox="0 0 260 60" className="w-full" style={{ height: 60 }} aria-hidden="true">
-                <path
-                  d="M12 46 C 70 4, 120 4, 130 30 S 200 56, 248 14"
-                  fill="none"
-                  strokeWidth={2.5}
-                  strokeLinecap="round"
-                  className="stroke-cord-accent-on-ink"
-                />
-                <circle cx="12" cy="46" r="5" className="fill-on-ink" />
-                <circle cx="130" cy="30" r="7" className="fill-cord-accent-on-ink" />
-                <circle cx="248" cy="14" r="5" className="fill-on-ink" />
-              </svg>
-              <div className="mt-1 flex justify-between">
+            {/* How it works — not a decision, purely the sign-in explainer strip. */}
+            <div className="relative pt-1">
+              <span
+                aria-hidden="true"
+                className="absolute top-[14px] right-[58px] left-[58px] h-1 rounded-pill bg-cord-accent"
+              />
+              <div className="relative grid grid-cols-3 gap-3">
                 {CORD_STEPS.map((label, i) => (
-                  <p
-                    key={label}
-                    className={`max-w-[86px] text-[10px] leading-3.5 font-semibold tracking-[0.06em] uppercase ${
-                      i === 1 ? 'text-center text-cord-accent-on-ink' : 'text-on-ink-muted'
-                    } ${i === 2 ? 'text-right' : ''}`}
-                  >
-                    {label}
-                  </p>
+                  <div key={label} className="flex flex-col items-center gap-3 text-center">
+                    <span
+                      aria-hidden="true"
+                      className={`flex size-8 items-center justify-center rounded-full text-[14px] font-semibold ${
+                        i === 1 ? 'bg-cord-accent text-on-ink' : 'bg-ink text-on-ink'
+                      }`}
+                    >
+                      {i + 1}
+                    </span>
+                    <p className="text-[13px] leading-[1.25] font-semibold text-ink">{label}</p>
+                  </div>
                 ))}
               </div>
             </div>
 
-            <div className="flex flex-col gap-6">
-              <div>
-                <h1 className="mb-3 font-display text-[20px] font-bold text-on-ink">
-                  Continue as
-                </h1>
+            <div className="flex flex-col gap-3">
+              <h2 className="text-[11px] font-semibold tracking-[0.09em] text-ink-muted uppercase">
+                Sign in as · demo, no password
+              </h2>
 
-                <CustomerList
-                  variant="dark"
-                  status={status}
-                  customers={visibleCustomers}
-                  selectedId={selectedId}
-                  onSelect={setSelectedId}
-                  onRetry={() => {
-                    setStatus('loading')
-                    setAttempt((n) => n + 1)
-                  }}
-                />
+              <CustomerList
+                status={status}
+                customers={visibleCustomers}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                onRetry={() => {
+                  setStatus('loading')
+                  setAttempt((n) => n + 1)
+                }}
+              />
 
-                {status === 'ready' && otherCustomers.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setShowOthers(true)}
-                    className="mt-3 min-h-11 text-[15px] font-semibold text-on-ink underline decoration-on-ink-muted underline-offset-4"
-                  >
-                    Select other
-                  </button>
-                )}
-              </div>
+              {status === 'ready' && otherCustomers.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowOthers(true)}
+                  className="min-h-11 self-start text-left text-[13px] text-ink-muted underline decoration-border-quiet underline-offset-4"
+                >
+                  + {otherCustomers.length} more customers in Sandbox mode
+                </button>
+              )}
+            </div>
 
+            <div className="mt-auto flex flex-col gap-4 pt-2">
               <button
                 type="button"
                 disabled={!selected}
                 onClick={() => selected && continueAs(selected)}
-                className="h-14 rounded-row bg-cord-accent-on-ink font-sans text-[16px] font-semibold text-ink transition-opacity disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-on-ink-muted enabled:hover:opacity-90"
+                className="h-14 rounded-row bg-ink font-sans text-[16px] font-semibold text-on-ink transition-opacity disabled:cursor-not-allowed disabled:bg-border-quiet disabled:text-ink-muted enabled:hover:opacity-90"
               >
                 {selected ? `Continue as ${selected.name}` : 'Continue'}
               </button>
+              <p className="text-center text-[12px] text-ink-muted">
+                Demo sign-in · synthetic data · no real money
+              </p>
             </div>
           </div>
         </div>
@@ -145,7 +157,6 @@ export function SignIn() {
             }
           >
             <CustomerList
-              variant="light"
               status="ready"
               customers={otherCustomers}
               selectedId={selectedId}
@@ -159,8 +170,16 @@ export function SignIn() {
   )
 }
 
+/**
+ * One list, one treatment: the screen and the "more customers" sheet are both
+ * light now, so the old dark/light variant split is gone.
+ *
+ * The mockup's secondary line reads "Zurich region · careful". There is no
+ * budget-style field on `Customer` (`../docs/api-contract.md` §2), so the row
+ * shows the region and the customer id — both real — rather than inventing the
+ * missing half.
+ */
 function CustomerList({
-  variant,
   status,
   customers,
   selectedId,
@@ -168,11 +187,6 @@ function CustomerList({
   onRetry,
   ariaLabel = 'Choose a customer',
 }: {
-  // 'dark' renders on SignIn's own ink background; 'light' renders inside
-  // the (always-light) BottomSheet for "Select other" — same component,
-  // same behavior, two color treatments so neither call site has to
-  // reimplement the list.
-  variant: 'dark' | 'light'
   status: Status
   customers: Customer[]
   selectedId: string | null
@@ -180,16 +194,11 @@ function CustomerList({
   onRetry?: () => void
   ariaLabel?: string
 }) {
-  const isDark = variant === 'dark'
-
   if (status === 'loading') {
     return (
       <div className="flex flex-col gap-3" aria-live="polite" aria-busy="true">
         {[0, 1, 2, 3].map((i) => (
-          <div
-            key={i}
-            className={`h-16 animate-pulse rounded-row ${isDark ? 'bg-on-ink-rule' : 'bg-surface-sunken'}`}
-          />
+          <div key={i} className="h-[60px] animate-pulse rounded-row bg-surface-sunken" />
         ))}
         <span className="sr-only">Loading customers</span>
       </div>
@@ -198,20 +207,18 @@ function CustomerList({
 
   if (status === 'error') {
     return (
-      <div
-        className={`flex flex-col items-start gap-4 rounded-row p-5 ${
-          isDark ? 'border border-on-ink-rule bg-white/5' : 'border border-hairline bg-surface'
-        }`}
-      >
-        <p className={`text-[15px] ${isDark ? 'text-on-ink-soft' : 'text-ink-soft'}`}>
-          Couldn&apos;t load your accounts. Check your connection and try again.
+      <div className="flex flex-col items-start gap-4 rounded-row border border-hairline bg-surface p-5">
+        {/* README.md §5.9: every error state says what is safe, not just that
+            something failed. Nobody is signed in yet, so nothing has been
+            decided on anyone's behalf — say that. */}
+        <p className="text-[15px] text-ink-soft">
+          Couldn&apos;t load your accounts. Nothing was approved while we were offline — no
+          purchase is decided until you are signed in and your rules are live.
         </p>
         <button
           type="button"
           onClick={onRetry}
-          className={`h-11.5 rounded-button border-2 px-5 text-[15px] font-semibold ${
-            isDark ? 'border-on-ink text-on-ink' : 'border-ink text-ink'
-          }`}
+          className="h-11.5 rounded-button border-2 border-ink px-5 text-[15px] font-semibold text-ink"
         >
           Try again
         </button>
@@ -226,14 +233,8 @@ function CustomerList({
         return (
           <label
             key={customer.customer_id}
-            className={`flex min-h-16 cursor-pointer items-center gap-4 rounded-row px-5 py-3 transition-colors ${
-              isDark
-                ? isSelected
-                  ? 'border-[1.5px] border-cord-accent-on-ink bg-white/5'
-                  : 'border border-on-ink-rule'
-                : isSelected
-                  ? 'border-2 border-ink'
-                  : 'border border-hairline'
+            className={`flex min-h-[60px] cursor-pointer items-center gap-4 rounded-row border-2 bg-surface px-5 py-3 transition-colors ${
+              isSelected ? 'border-ink' : 'border-transparent'
             }`}
           >
             <input
@@ -242,33 +243,28 @@ function CustomerList({
               value={customer.customer_id}
               checked={isSelected}
               onChange={() => onSelect(customer.customer_id)}
-              className={`size-5 ${isDark ? 'accent-cord-accent-on-ink' : 'accent-ink'}`}
+              className="size-5 shrink-0 accent-ink"
             />
             <span className="min-w-0 flex-1">
-              <span
-                className={`block truncate text-[15px] font-semibold ${isDark ? 'text-on-ink' : 'text-ink'}`}
-              >
+              <span className="block truncate font-display text-[17px] font-bold text-ink">
                 {customer.name}
               </span>
-              <span
-                className={`block truncate text-[13px] ${isDark ? 'text-on-ink-muted' : 'text-ink-muted'}`}
-              >
+              <span className="block truncate text-[13px] text-ink-muted">
                 {customer.home_region}
               </span>
             </span>
-            {customer.live ? (
-              <span
-                className={`shrink-0 rounded-pill px-3 py-1 text-[13px] font-medium ${
-                  isDark ? 'bg-cord-accent-on-ink text-ink' : 'bg-approved-tint text-approved'
-                }`}
-              >
-                Live
+            <span className="flex shrink-0 flex-col items-end gap-1">
+              <span className="text-[12px] tracking-[0.04em] text-ink-muted">
+                {customer.customer_id}
               </span>
-            ) : (
-              <span className={`shrink-0 text-[13px] ${isDark ? 'text-on-ink-muted' : 'text-ink-muted'}`}>
-                No scenario yet
-              </span>
-            )}
+              {customer.live ? (
+                <span className="rounded-pill bg-approved-tint px-[9px] py-[3px] text-[12px] font-semibold text-approved">
+                  Live
+                </span>
+              ) : (
+                <span className="text-[12px] text-ink-muted">No scenario yet</span>
+              )}
+            </span>
           </label>
         )
       })}
