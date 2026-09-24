@@ -75,7 +75,9 @@ oneguard/
   nothing for it and pauses briefly. At the deadline the expiry reads the platform's state
   first and posts the timeout `/resolve` (rules Q2) only if it is still pending; at most one
   `/resolve` per live id. Ledger calls run in short `ScopedStoreLedger` sessions.
-  All ledger and pipeline calls run on one dedicated thread. `VisecaWorker.status()` is the
+  All ledger and pipeline calls run on one dedicated thread. The event feed cursor is
+  stored in `worker_state` once a page is processed and resumed on start (0 only on first
+  boot), so a restart does not re-scan the team-wide feed. `VisecaWorker.status()` is the
   `/healthz` worker block: `state`, `ok`, `last_poll_at`, `events_cursor`,
   `human_window_s`, `pending_step_ups`, `history_reseeded`, `last_error`, `runs`.
 - Every Viseca call is summarised in `viseca_calls` (no key, bodies ≤ 4 KB) by
@@ -89,7 +91,8 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
 - `Dockerfile`: a node stage builds `frontend/dist` (only when `frontend/package.json` is in
   the context) with `VITE_API_BASE_URL=/api` and `VITE_USE_MOCKS=false`; the runtime stage is
   `python:3.12-slim` + `tzdata` (Europe/Zurich rules), the backend installed editable with
-  `data/` beside it and `frontend/dist` copied in, run as a non-root user; `uvicorn
+  its `compiler` extra (the OpenAI and Anthropic SDKs; the `signals` extra, Laya, stays out)
+  and `data/` beside it and `frontend/dist` copied in, run as a non-root user; `uvicorn
   oneguard.api.app:app` listens on `$PORT` (8080); `ONEGUARD_SOFT_SIGNALS=keywords` and
   `ONEGUARD_ENV=prod` are the image defaults.
 - `fly.toml`: region `lhr` (nearest Supabase in eu-west-1), one `shared-cpu-1x` machine with
