@@ -212,7 +212,7 @@ function CustomerList({
             something failed. Nobody is signed in yet, so nothing has been
             decided on anyone's behalf — say that. */}
         <p className="text-[15px] text-ink-soft">
-          Couldn&apos;t load your accounts. Nothing was approved while we were offline — no
+          Couldn&apos;t load your accounts. Nothing was approved while we were offline. No
           purchase is decided until you are signed in and your rules are live.
         </p>
         <button
