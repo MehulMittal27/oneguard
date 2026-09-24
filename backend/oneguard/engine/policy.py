@@ -22,9 +22,11 @@ Every result is pass / fail / unknown, with a readable ``detail`` (what was seen
 for a fail, a ``counterfactual`` (what would have passed). Explanations are built from
 these strings, so they are written for the customer.
 
-Period limits (C2, ``scope == "period"``) need the run's spending memory, which this
-function does not receive. They are skipped here and checked by
-``evaluate_period_rules``, which decide.py calls with the LedgerView numbers (M4, M5).
+Period limits (C2, ``scope == "period"``) and remembered confirmations need the ledger,
+which ``evaluate_rules`` does not receive. ``add_ledger_results(rules, facts, policy,
+ledger)`` adds them: the pipeline calls it after ``evaluate_rules`` (and after tier 2), so
+decide.py and explain.py both see them (P2 request to P1: one line in pipeline.py). Until
+then decide.py treats a period rule with no result as unknown (P3).
 
 Pure function: no I/O, no CSV, no history lookups. Familiarity (C9) is read from
 ``facts.merchant_known``, set by the pipeline from the LedgerView.
@@ -43,6 +45,7 @@ from oneguard.engine.types import (
     Facts,
     FactValue,
     ItemFacts,
+    LedgerView,
     Policy,
     Rule,
     RuleResult,
@@ -50,6 +53,7 @@ from oneguard.engine.types import (
 
 # Marker decide.py uses for M5: a period limit that fails only because of reservations.
 RESERVATION_ONLY = "fails only because of pending reservations"
+CONFIRMED = "You confirmed this"  # detail prefix of a rule passed from a remembered answer
 
 _NUMERIC_FIELDS = {
     "authorization.billing_amount_chf",
@@ -79,6 +83,7 @@ _LABELS = {
     "merchant.merchant_category": "shop type",
     "merchant.merchant_country": "shop country",
     "merchant.familiar_on_card": "shop you have bought from before",
+    "merchant.known_shop": "shop you have bought from before",
     "cart.recurring": "recurring billing",
     "authorization.delivery_by": "delivery date",
     "authorization.weekday": "day of the week",
@@ -173,14 +178,17 @@ def _facts_for(field: str, facts: Facts, policy: Policy) -> tuple[list[FactValue
     """Return (values to check, what they describe) or None if the field is not known."""
     lines = facts.items
     product_lines = _requested_lines(facts, policy)
+    known_shop = FactValue(
+        value=None if facts.merchant_known is None else ("true" if facts.merchant_known else "false"),
+        known=facts.merchant_known is not None, source="history",
+        detail="" if facts.merchant_known is not None else "shop familiarity not available")
     single = {
         "authorization.billing_amount_chf": _fv(facts.billing_amount_chf),
         "merchant.merchant_category": _fv(facts.merchant_category),
         "merchant.merchant_country": _fv(facts.merchant_country),
-        "merchant.familiar_on_card": FactValue(
-            value=None if facts.merchant_known is None else ("true" if facts.merchant_known else "false"),
-            known=facts.merchant_known is not None, source="history",
-            detail="" if facts.merchant_known is not None else "shop familiarity not available"),
+        # api-contract §3.3: customer level (Q7); familiar_on_card is an alias.
+        "merchant.known_shop": known_shop,
+        "merchant.familiar_on_card": known_shop,
         "order.return_window_days": facts.return_window_days,
         "order.order_returnable": _order_term(facts.order_returnable),
         "order.order_cancellable": _order_term(facts.order_cancellable),
@@ -266,10 +274,10 @@ def evaluate_typed_rule(rule: Rule, facts: Facts, policy: Policy) -> RuleResult:
             return RuleResult(rule_id=rule.id, outcome="unknown", source=source,
                               detail=f"{label.capitalize()} changed: {seen}. You asked for {want} "
                                      "and to be asked if anything changed",
-                              counterfactual=f"would pass with {want}")
+                              counterfactual=f"Would approve with {want}")
         return RuleResult(rule_id=rule.id, outcome="fail", source=source,
                           detail=f"{label.capitalize()}: {seen}. You asked for {want}",
-                          counterfactual=f"would pass with {want}")
+                          counterfactual=f"Would approve with {want}")
     if unknown:
         reason = unknown[0].detail or "not stated"
         flag = " (the shop contradicts itself)" if reason.startswith(CONTRADICTORY) else ""
@@ -299,7 +307,7 @@ def _check_allowed_types(facts: Facts, policy: Policy) -> RuleResult:
         names = ", ".join(f"{ln.item_name} ({_human(ln.item_category)})" for ln in bad)
         return RuleResult(rule_id="C3", outcome="fail", source="event",
                           detail=f"Cart includes {names}; you allowed only {allowed}",
-                          counterfactual=f"would pass without {', '.join(ln.item_name for ln in bad)}")
+                          counterfactual=f"Would approve without {', '.join(ln.item_name for ln in bad)}")
     return RuleResult(rule_id="C3", outcome="pass", source="event", detail=f"Every item is {allowed}")
 
 
@@ -309,7 +317,7 @@ def _check_blocked_types(facts: Facts, policy: Policy) -> RuleResult:
         names = ", ".join(f"{ln.item_name} ({_human(ln.item_category)})" for ln in bad)
         return RuleResult(rule_id="C4", outcome="fail", source="event",
                           detail=f"Cart includes {names}, which you excluded",
-                          counterfactual=f"would pass without {', '.join(ln.item_name for ln in bad)}")
+                          counterfactual=f"Would approve without {', '.join(ln.item_name for ln in bad)}")
     return RuleResult(rule_id="C4", outcome="pass", source="event",
                       detail=f"No excluded items ({', '.join(_human(c) for c in policy.blocked_item_categories)})")
 
@@ -321,7 +329,7 @@ def _check_requested_item(facts: Facts, policy: Policy) -> RuleResult:
     names = ", ".join(ln.item_name for ln in facts.items)
     return RuleResult(rule_id="C5", outcome="fail", source="event",
                       detail=f"Cart contains {names}, not the {wanted} you asked for",
-                      counterfactual=f"would pass with the {wanted}")
+                      counterfactual=f"Would approve with the {wanted}")
 
 
 def _check_shop_type(facts: Facts, policy: Policy) -> RuleResult:
@@ -330,7 +338,7 @@ def _check_shop_type(facts: Facts, policy: Policy) -> RuleResult:
         return RuleResult(rule_id="C8", outcome="pass", source="event", detail=f"{facts.merchant_name} is a {_human(want)} shop")
     return RuleResult(rule_id="C8", outcome="fail", source="event",
                       detail=f"{facts.merchant_name} is a {_human(facts.merchant_category)} shop, not {_human(want)}",
-                      counterfactual=f"would pass at a {_human(want)} shop")
+                      counterfactual=f"Would approve at a {_human(want)} shop")
 
 
 def _check_known_shop(facts: Facts) -> RuleResult:
@@ -342,7 +350,7 @@ def _check_known_shop(facts: Facts) -> RuleResult:
                           detail=f"You've bought from {facts.merchant_name} before")
     return RuleResult(rule_id="C9", outcome="fail", source="history",
                       detail=f"You haven't bought from {facts.merchant_name} before",
-                      counterfactual="would pass at a shop you've bought from before")
+                      counterfactual="Would approve at a shop you've bought from before")
 
 
 def _check_nothing_extra(facts: Facts, policy: Policy) -> RuleResult:
@@ -355,7 +363,7 @@ def _check_nothing_extra(facts: Facts, policy: Policy) -> RuleResult:
         names = ", ".join(ln.item_name for ln in extra)
         return RuleResult(rule_id="C10", outcome="fail", source="event",
                           detail=f"Cart includes {names}, which you didn't ask for",
-                          counterfactual=f"would pass without {names}")
+                          counterfactual=f"Would approve without {names}")
     return RuleResult(rule_id="C10", outcome="pass", source="event", detail="Nothing extra in the cart")
 
 
@@ -365,11 +373,11 @@ def step1_results(facts: Facts, policy: Policy) -> list[RuleResult]:
     A fail on any of these is decided first by decide.py (types.STEP1_RULE_IDS)."""
     checks = {
         "policy_status": (policy.status == "active", f"policy is {policy.status}",
-                          "would approve under an active policy"),
+                          "Would approve under an active policy"),
         "authority_status": (facts.authority_status == "active", f"authority is {facts.authority_status}",
-                             "would approve with an active authority"),
+                             "Would approve with an active authority"),
         "card_status": (facts.card_status_at_attempt == "active", f"card is {facts.card_status_at_attempt}",
-                        "would approve on an active card"),
+                        "Would approve on an active card"),
     }
     out = []
     for rule_id in STEP1_RULE_IDS:
@@ -394,7 +402,8 @@ def evaluate_rules(facts: Facts, policy: Policy) -> list[RuleResult]:
         results.append(_check_requested_item(facts, policy))
     if policy.shop_type and not _covered(policy, "merchant.merchant_category", ("=", "in")):
         results.append(_check_shop_type(facts, policy))
-    if policy.requires_known_shop and not _covered(policy, "merchant.familiar_on_card", ("=",)):
+    if policy.requires_known_shop and not (_covered(policy, "merchant.familiar_on_card", ("=",))
+                                           or _covered(policy, "merchant.known_shop", ("=",))):
         results.append(_check_known_shop(facts))
     if policy.nothing_extra:
         results.append(_check_nothing_extra(facts, policy))
@@ -428,10 +437,54 @@ def evaluate_period_rule(rule: Rule, facts: Facts, spent_chf: Any, reserved_chf:
         return RuleResult(rule_id=rule.id, outcome="fail", source="history",
                           detail=(f"{window} total would be {_money(with_reserved)} including {waiting} still "
                                   f"waiting for your answer; {RESERVATION_ONLY}"),
-                          counterfactual=f"would pass if you decline the {waiting} order still waiting")
+                          counterfactual=f"Would approve if you decline the {waiting} order still waiting")
     headroom = limit - spent - reserved
-    counterfactual = (f"would pass at {_money(headroom)} or less in this {window} window"
+    counterfactual = (f"Would approve at {_money(headroom)} or less in this {window} window"
                       if headroom > 0 else f"nothing more fits in this {window} window")
     return RuleResult(rule_id=rule.id, outcome="fail", source="history",
                       detail=f"{window} total would be {_money(with_reserved)}, over your {_money(limit)} limit",
                       counterfactual=counterfactual)
+
+
+def is_unverifiable(rule: Rule, facts: Facts, policy: Policy) -> bool:
+    """A restriction no data can check ("official ticket seller"): no field, or a field
+    outside the vocabulary. Only these can be passed from a remembered answer."""
+    return not rule.field or _facts_for(rule.field, facts, policy) is None
+
+
+def _confirmation_key(rule_id: str, merchant_id: str, item_id: str) -> str:
+    return f"{rule_id}|{merchant_id}|{item_id}"  # same format as ledger.confirmation_key
+
+
+def add_ledger_results(
+    rules: list[RuleResult], facts: Facts, policy: Policy, ledger: LedgerView
+) -> list[RuleResult]:
+    """The rule results that need the ledger, added to ``evaluate_rules``' output.
+
+    - C2: one result per period rule, from the LedgerView's spent and reserved amounts
+      (M4, M5). The view covers one window (the shortest period); a period rule with a
+      different window is unknown rather than checked against the wrong numbers (P3).
+    - Ask once, then remember: an unknown restriction no data can check passes when the
+      customer already approved it for this shop and every item in the cart.
+    """
+    by_id = {r.id: r for r in policy.rules}
+    confirmed: set[str] = set(getattr(ledger, "confirmed_keys", set()) or set())
+    out: list[RuleResult] = []
+    for res in rules:
+        rule = by_id.get(res.rule_id)
+        if (res.outcome == "unknown" and rule is not None and confirmed
+                and is_unverifiable(rule, facts, policy)
+                and all(_confirmation_key(rule.id, facts.merchant_id, ln.item_id) in confirmed
+                        for ln in facts.items)):
+            res = RuleResult(rule_id=res.rule_id, outcome="pass", source="history",
+                             detail=f'{CONFIRMED} for this shop and item earlier: "{rule.text or rule.id}"')
+        out.append(res)
+
+    view_days = (facts.timestamp - ledger.period_window_start).total_seconds() / 86400
+    for rule in period_rules(policy):
+        if rule.period_days and abs(rule.period_days - view_days) < 1e-9:
+            out.append(evaluate_period_rule(rule, facts, ledger.period_spent_chf, ledger.period_reserved_chf))
+        else:
+            out.append(RuleResult(rule_id=rule.id, outcome="unknown", source="history",
+                                  detail=f'Spending for "{rule.text or rule.id}" could not be totalled'))
+    return out

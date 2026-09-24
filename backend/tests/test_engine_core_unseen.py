@@ -4,8 +4,9 @@ Each instruction is given as the policy we expect the compiler to produce, then 
 purchases with (a) the expected result of every rule and (b) the expected final outcome.
 
 (a) is asserted now against facts.py + policy.py.
-(b) is recorded for decide.py / ledger.py (next PR). It includes the protections (A3) and
-    the "ask once, then remember" memory for restrictions we can't check from data.
+(b) is asserted against the whole engine core: each instruction's purchases run in order
+    through facts, policy, a StoreLedger and decide, with the customer's scripted answers.
+    It includes the protections (A3, injected: P5's lane) and "ask once, then remember".
 
 PM decisions baked in (24 Sep):
 - "two tickets" = total across the cart (1 line x 2 or 2 lines x 1).
@@ -26,11 +27,13 @@ import pytest
 
 from oneguard.engine.facts import build_facts
 from oneguard.engine.policy import evaluate_rules
-from oneguard.engine.types import STEP1_RULE_IDS, Policy, Rule
+from oneguard.engine.types import STEP1_RULE_IDS, LedgerView, Policy, Rule
 
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri"]
 # "ask me if anything changed" needs Rule.on_fail (P2 contract request).
 HAS_ON_FAIL = "on_fail" in Rule.model_fields
+# "ask once, then remember" needs LedgerView.confirmed_keys (P2 contract request).
+HAS_CONFIRMED_KEYS = "confirmed_keys" in LedgerView.model_fields
 ASK = {"on_fail": "ask"} if HAS_ON_FAIL else {}
 
 
@@ -317,3 +320,63 @@ def test_every_ask_says_why():
         for r in _rules(c):
             if r.outcome == "unknown":
                 assert r.detail, f"{c.id} {r.rule_id} unknown without a reason"
+
+
+# --- (b) final outcomes: the whole engine core, in order, with the customer's answers -----
+
+def _final_expected(case: Case) -> str | None:
+    """The expected outcome, adjusted while the contract PR is not merged (None = skip)."""
+    if _needs_on_fail(case) and not HAS_ON_FAIL:
+        return None  # "ask me if anything changed" needs Rule.on_fail
+    if case.memory and case.final == "approve" and not HAS_CONFIRMED_KEYS:
+        return "step_up"  # without LedgerView.confirmed_keys nothing is remembered: ask again
+    return case.final
+
+
+@pytest.mark.parametrize("instruction", sorted(POLICIES))
+def test_final_outcomes(instruction, tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy.orm import sessionmaker
+
+    from oneguard.engine.decide import decide
+    from oneguard.engine.ledger import StoreLedger
+    from oneguard.engine.ledger_base import LedgerEntry
+    from oneguard.engine.policy import add_ledger_results
+    from oneguard.engine.types import EvidenceRow, Signal
+    from oneguard.store.db import init_db, make_engine
+
+    engine = make_engine(f"sqlite:///{tmp_path / 'unseen.sqlite'}")
+    init_db(engine)
+    policy = POLICIES[instruction]
+    now = datetime(2026, 9, 25, 12, tzinfo=UTC)
+    with sessionmaker(bind=engine, expire_on_commit=False)() as session:
+        ledger = StoreLedger(session)
+        for case in [c for c in CASES if c.instruction == instruction]:
+            facts = build_facts(_event(case))
+            if case.known_shop is not None:
+                facts = facts.model_copy(update={"merchant_known": case.known_shop})
+            view = ledger.view(run_id="unseen", customer_id="CU", card_id="CA", at=facts.timestamp,
+                               period_days=None)
+            rules = add_ledger_results(evaluate_rules(facts, policy), facts, policy, view)
+            duplicate = "duplicate order (A3)" in case.why  # P5 detects it; decide combines
+            prot = [Signal(id="A3", triggered=True, strength="protection", outcome_if_triggered="ask",
+                           detail="same shop and item within 24 h", source="ledger")] if duplicate else []
+            d = decide(rules, prot, [], [], policy, view)
+            expected = _final_expected(case)
+            if expected is not None:
+                assert d.outcome == expected, f"{case.id}: {case.why} -> {d}"
+            pending = d.outcome == "step_up"
+            ledger.record(LedgerEntry(
+                live_authorization_id=f"UNSEEN_{case.id}", run_id="unseen", mandate_id=policy.mandate_id,
+                card_id="CA", customer_id="CU", ts_sim=facts.timestamp, outcome=d.outcome, final=not pending,
+                uncertain_outcome="pending" if pending else None, merchant_id=facts.merchant_id,
+                item_ids=[ln.item_id for ln in facts.items], billing_amount_chf=facts.billing_amount_chf,
+                session_trust=d.session_trust, step=d.step, deciding_ids=d.deciding_ids,
+                reason_codes=d.reason_codes, evidence=[EvidenceRow(rule="x", outcome="info", detail="x")],
+                message="m", engine_version="test", latency_ms=0.0, signals_enabled=False, decided_at=now,
+                deadline_at=now + timedelta(minutes=2) if pending else None,
+            ))
+            if pending and case.customer:
+                ledger.resolve(f"UNSEEN_{case.id}", case.customer, "customer", now)
+    engine.dispose()
