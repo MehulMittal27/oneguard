@@ -177,6 +177,27 @@ CURATION = {
             {"rule": "Per-order limit", "outcome": "pass", "detail": "CHF 248.00 is CHF 2.00 under your CHF 250 per-order limit."},
         ],
     },
+    # SCEN0003 is the session-integrity scenario, and AU0027-AU0030 is its burst:
+    # four orders on this card between 02:14 and 02:24. This one is the step-up
+    # the freeze produces, so a frozen session is reachable in mock mode.
+    "AU0029": {
+        "decision": "uncertain",
+        "uncertain_outcome": "pending",
+        "status": "pending_human",
+        "reason_codes": ["session_risk", "night_purchase", "velocity_burst"],
+        "message": "Third order on this card in seven minutes, at 02:21. Within your limit, but the pace and hour don't look like you.",
+        "uncertainty": {"note": "Whether you are the one driving this session, or something else is using your agent."},
+        "injection_flag": None,
+        "evidence": [
+            {"rule": "Per-order limit", "outcome": "pass", "detail": "CHF 219.00 is within your CHF 250 per-order limit."},
+            {"rule": "Session", "outcome": "fail", "detail": "Three orders in seven minutes, between 02:14 and 02:21.", "source": "ledger"},
+            {"rule": "Time of day", "outcome": "uncertain", "detail": "02:21 Europe/Zurich, outside this card's usual hours.", "source": "history"},
+        ],
+        "session": {
+            "trust": "frozen",
+            "note": "We're double-checking after unusual activity on your card",
+        },
+    },
     "AU0034": {
         "decision": "stopped",
         "status": "final",
