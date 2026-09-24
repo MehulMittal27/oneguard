@@ -197,7 +197,7 @@ def lint_accepted(rules: list[Rule], accepted_ids: list[str]) -> tuple[list[str]
     if not any(
         r.id in kept
         and r.field == "authorization.billing_amount_chf"
-        and r.operator in ("<", "<=")
+        and r.operator in ("<", "<=", "=")
         and r.scope != "period"
         for r in rules
     ):

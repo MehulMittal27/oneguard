@@ -593,13 +593,14 @@ def test_the_lint_stub_never_passes_everything() -> None:
 
 
 def test_the_lint_stub_counts_only_an_upper_bound_as_a_per_order_cap() -> None:
-    """A ">=" floor on the amount limits nothing; only "<" and "<=" are caps."""
+    """A ">=" or ">" floor on the amount limits nothing; "<", "<=" and an exact "=" are caps."""
     from oneguard.engine.types import Rule
 
     def amount(operator: str) -> Rule:
         return Rule(id="C1", field="authorization.billing_amount_chf", operator=operator, value=20,
                     currency="CHF", scope="purchase", text=f"Total {operator} CHF 20", source="inferred")
 
-    assert stubs.STUBS["lint_accepted"]([amount(">=")], ["C1"])[0] == ["per_order_limit"]
-    assert stubs.STUBS["lint_accepted"]([amount("<")], ["C1"]) == ([], [])
-    assert stubs.STUBS["lint_accepted"]([amount("<=")], ["C1"]) == ([], [])
+    for floor in (">=", ">"):
+        assert stubs.STUBS["lint_accepted"]([amount(floor)], ["C1"])[0] == ["per_order_limit"]
+    for cap in ("<", "<=", "="):
+        assert stubs.STUBS["lint_accepted"]([amount(cap)], ["C1"]) == ([], [])
