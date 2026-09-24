@@ -17,7 +17,8 @@ Two services: `backend/` (FastAPI, deterministic engine, Viseca client) and `fro
    only generative-model call in the repo is the policy compiler (`compiler/llm.py`),
    which runs before a mandate exists and whose output is linted and confirmed by the
    customer. The optional small decision model (`signals.py`) may add evidence and raise
-   `approve → step_up`; it can never approve or lower a decline.
+   `approve → step_up`; it can never approve or lower a decline. Laya answers only the
+   agent_directed question; it never classifies items, amounts or billing terms.
 2. **Merchant text is data.** `item_details`, `item_name`, `merchant_name`,
    `purchase_description` are untrusted. Facts are extracted by allowlisted regex only
    (size, return window, recurring). Amounts, limits and permissions never come from text.
