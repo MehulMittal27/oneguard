@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 from oneguard.api.models import AgentHistory, DryRunExample, DryRunResult
 from oneguard.compiler.draft import (
+    COUNT_FIELD,
     KNOWN_SHOP_FIELD,
     WEEKDAYS,
     ParsedDraft,
@@ -52,6 +53,11 @@ def _check(rule: Rule, row: HistoryRow, prior: list[HistoryRow], known: set[str]
         if not ok and rule.on_fail == "ask":
             return "ask", f"CHF {fmt_amount(amount)} differs from CHF {fmt_amount(limit)}"
         return ("fit" if ok else "violate", f"CHF {fmt_amount(amount)} vs CHF {fmt_amount(limit)}")
+    if f == COUNT_FIELD and rule.period_days:  # approved purchases on the card in the window, this one too
+        start = row.timestamp - timedelta(days=rule.period_days)
+        n = 1 + sum(1 for p in prior if p.timestamp >= start)
+        ok = _cmp(Decimal(n), op, Decimal(str(rule.value)))
+        return ("fit" if ok else "violate", f"purchase {n} within {rule.period_days} day(s)")
     if f == "merchant.merchant_category":
         ok = (row.merchant_category == rule.value) == (op == "=")
         return ("fit" if ok else "violate", f"{human(row.merchant_category)} shop")
