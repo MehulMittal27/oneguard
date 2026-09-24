@@ -171,6 +171,8 @@ Rules:
   must decline.
 - "same price as last time": authorization.billing_amount_chf "=", value_from "last_price",
   value_number null; the price is looked up from the customer's history, never guessed.
+- "Renew …" together with "ask me if anything changed" also means the same shop as before:
+  merchant.familiar_on_card "true", source "inferred", on_fail "ask".
 - words: the customer's phrase for this rule, copied verbatim from the instruction.
 - source "exact" when the customer said it directly, "inferred" when you mapped it (lunch -> dining).
 - open_questions: short questions only for what is missing, above all when no per-order amount

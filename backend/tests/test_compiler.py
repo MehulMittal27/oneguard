@@ -113,6 +113,7 @@ UNSEEN_EXPECTED: dict[str, dict[str, Any]] = {
         "rules": [
             ("items[].item_category", "in", ["membership"], None, None, None),
             ("authorization.billing_amount_chf", "=", 59, "CHF", "purchase", None),
+            ("merchant.familiar_on_card", "=", "true", None, None, None),  # "renew": same gym, ask if not
         ],
         "requested_item": "gym membership",
         "questions": [],
@@ -193,6 +194,7 @@ MODEL_READINGS: dict[str, dict[str, Any]] = {
         _r("items[].item_category", "in", "gym membership", lst=["membership"], source="inferred"),
         _r(BILL, "=", "same price as last time", value_from="last_price", currency="CHF", scope="purchase",
            source="inferred", on_fail="ask"),
+        _r("merchant.familiar_on_card", "=", "Renew", text="true", source="inferred", on_fail="ask"),
     ], item="gym membership"),
 }
 

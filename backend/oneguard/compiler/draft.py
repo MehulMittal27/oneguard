@@ -262,7 +262,10 @@ def _kind(spec: RuleSpec) -> RuleKind:
 
 
 def to_rule(spec: RuleSpec, taken: set[str], requested_item: str | None = None) -> Rule:
-    rule_id = _unique(_base_id(spec), taken)
+    base = _base_id(spec)
+    if spec.on_fail == "ask":  # "…ask me if anything changed": C1-same, C9-same (P2 answer key)
+        base = f"{base}-same"
+    rule_id = _unique(base, taken)
     taken.add(rule_id)
     uncertainty = None
     if spec.field == "unverifiable":
@@ -323,7 +326,9 @@ def finalize(
         requested_item=requested_item,
         allowed_item_categories=values("items[].item_category", "in"),
         blocked_item_categories=values("items[].item_category", "not_in"),
-        requires_known_shop=any(r.field == KNOWN_SHOP_FIELD for r in rules),
+        # A known-shop rule that asks rather than declines ("renew", ask if it changed) is
+        # not C9: a lookalike or new shop must stay a question (A7), not a decline.
+        requires_known_shop=any(r.field == KNOWN_SHOP_FIELD and r.on_fail == "decline" for r in rules),
         nothing_extra=nothing_extra,
         shop_type=shop[0] if shop else None,
         resolved=resolved,

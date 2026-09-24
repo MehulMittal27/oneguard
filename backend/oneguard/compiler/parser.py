@@ -395,6 +395,15 @@ def _same_price(reading: _Reading, text: str, history, card_id: str) -> None:
         value_from=f"history: last approved price at {row.merchant_id}"))
 
 
+def _renew(reading: _Reading, text: str) -> None:
+    """"Renew my X …, ask me if anything changed": the same shop as before, and a
+    different one is a change to ask about (on_fail ask), never a decline."""
+    m = re.search(r"\brenew\b", text, re.IGNORECASE)
+    if m and ASK_IF_CHANGED.search(text) and not any(s.field == KNOWN_SHOP_FIELD for s in reading.specs):
+        reading.specs.append(RuleSpec(field=KNOWN_SHOP_FIELD, operator="=", value="true", words=m.group(0),
+                                      source="inferred", on_fail="ask", note="the same shop as before"))
+
+
 def _amount_question(reading: _Reading) -> None:
     has_cap = any(s.field == "authorization.billing_amount_chf" and s.scope == "purchase" for s in reading.specs)
     if has_cap:
@@ -435,6 +444,7 @@ def parse(instruction: str, history=None, card_id: str = "", today: date | None 
     _shops(reading, text)
     if history is not None:
         _same_price(reading, text, history, card_id)
+    _renew(reading, text)
     reading.uncertainty, extra = uncertainty_setting(text)
     reading.questions += extra
     _amount_question(reading)
