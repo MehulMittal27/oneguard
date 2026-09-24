@@ -33,6 +33,7 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
 from oneguard.api import models as api
+from oneguard.engine.explain import expired_message
 from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import LedgerEntry
 from oneguard.engine.types import HistoryIndex, Policy
@@ -300,7 +301,10 @@ class OfflineRunner:
             entry = await self._call(_fresh, ledger, live_id)
             if entry is None or entry.outcome != "step_up" or entry.final:
                 return False
-            resolved = await self._call(ledger.resolve, live_id, "decline", "timeout", self._now())
+            resolved = await self._call(
+                ledger.resolve, live_id, "decline", "timeout", self._now(),
+                message=expired_message(self.human_window_s),
+            )
         self._cancel_expiry(live_id)
         self._mark(live_id, resolved)
         log.info("step-up %s expired unanswered; declined, reservation released", live_id)

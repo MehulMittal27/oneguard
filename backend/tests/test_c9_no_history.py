@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import Session
 
+from oneguard.engine.explain import REASON_TEMPLATES
 from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import InMemoryLedger, Ledger
 from oneguard.engine.policy import (
@@ -27,11 +28,12 @@ from oneguard.engine.policy import (
     add_ledger_results,
     evaluate_rules,
 )
-from oneguard.engine.types import HistoryRow, Policy, Rule
+from oneguard.engine.types import HistoryRow, Policy, Rule, RuleResult
 from oneguard.pipeline import PipelineContext, decide_event
 from oneguard.store.db import init_db, make_engine
 from oneguard.store.history import StoreHistoryIndex
 from oneguard.store.schema import Run
+from tests import test_engine_core_decide as decide_helpers
 
 T0 = datetime(2026, 8, 10, 10, 0, tzinfo=UTC)  # simulated time of the first purchase
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)  # real clock
@@ -134,9 +136,10 @@ def test_first_purchase_follows_the_uncertainty_setting(tmp_path, kind, typed, s
     with make_ledger(kind, tmp_path) as ledger:
         engine, explanation, _ = decide_event(event(), ctx(ledger, pol))
     assert (engine.outcome, engine.step) == (outcome, 4)
-    assert engine.deciding_ids == ["C9"] and engine.reason_codes == ["unevaluable"]
+    assert engine.deciding_ids == ["C9"] and engine.reason_codes == ["no_purchase_history"]
     # No baseline yet: W1, W3, W4 are info only, so the message names C9 alone.
-    assert explanation.message == f"{lead} CHF 30.00: {NO_HISTORY}."
+    reason = NO_HISTORY if setting == "ask" else REASON_TEMPLATES["no_purchase_history"]
+    assert explanation.message == f"{lead} CHF 30.00: {reason}."
     row = c9_row(explanation, pol)
     assert (row.outcome, row.detail, row.source) == ("uncertain", NO_HISTORY, "history")
     assert "no purchase history yet" in NO_HISTORY
@@ -250,3 +253,22 @@ def test_next_live_session_remembers_the_shop(tmp_path):
         row = c9_row(same_shop, pol)
         assert (row.outcome, row.detail) == ("pass", f"{CONFIRMED} shop earlier")
         assert engine.outcome == "approve" and "customer_confirmation" in engine.reason_codes
+
+
+# --- the reason code: only C9 with no history is no_purchase_history ---------------------
+
+
+@pytest.mark.parametrize("setting", ["ask", "decline", "approve"])
+def test_only_the_no_history_unknown_gets_no_purchase_history(setting):
+    no_history = RuleResult(rule_id="C9", outcome="unknown", detail=NO_HISTORY, source="history")
+    other_c9 = RuleResult(rule_id="C9", outcome="unknown", source="history",
+                          detail="Couldn't check whether you've bought from Pixel Harbor before")  # fmt: skip
+    unverifiable = RuleResult(rule_id="U1", outcome="unknown", detail='No data to check "official seller"', source="event")
+    pol = decide_helpers.P(setting)
+    codes = {
+        name: decide_helpers.D([*decide_helpers.clean(), result], policy=pol).reason_codes
+        for name, result in (("no_history", no_history), ("other_c9", other_c9), ("unverifiable", unverifiable))
+    }
+    assert "no_purchase_history" in codes["no_history"] and "unevaluable" not in codes["no_history"]
+    assert "unevaluable" in codes["other_c9"] and "unevaluable" in codes["unverifiable"]
+    assert not any("no_purchase_history" in c for name, c in codes.items() if name != "no_history")
