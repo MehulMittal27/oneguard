@@ -22,7 +22,7 @@ reset-db:
 	cd backend && . .venv/bin/activate && python -m oneguard.store.seed --reset
 
 replay:
-	cd backend && . .venv/bin/activate && python -m oneguard.replay.runner --scenario $(SCEN)
+	cd backend && . .venv/bin/activate && python -m oneguard.replay.runner --scenario $(SCEN) --policy tests/fixtures/policies/$(SCEN).yaml
 
 replay-all:
 	cd backend && . .venv/bin/activate && python -m oneguard.replay.runner --all

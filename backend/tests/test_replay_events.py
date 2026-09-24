@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -144,3 +145,17 @@ def test_unknown_scenario_is_an_error(pack):
 def test_runner_exits_clean_for_all_scenarios(capsys):
     assert runner_main(["--all"]) == 0
     assert "SCEN0004" in capsys.readouterr().out
+
+
+def test_runner_decides_a_scenario_through_the_real_pipeline(capsys):
+    """`make replay SCEN=SCEN0004`: every event decided and explained, declines with their counterfactual."""
+    fixture = Path(__file__).parent / "fixtures" / "policies" / "SCEN0004.yaml"
+    assert runner_main(["--scenario", "SCEN0004", "--policy", str(fixture)]) == 0
+    table = capsys.readouterr().out.split("### Decisions", 1)[1]
+    rows = [row.split(" | ") for row in table.splitlines() if row.startswith("| AU")]
+    assert len(rows) == 11
+    for source_id, outcome, message, counterfactual in rows:
+        assert message.startswith(("Approved CHF", "Declined CHF", "Waiting for you CHF")), source_id
+        assert "[instructions removed]" not in message + counterfactual, source_id
+        if outcome == "decline":
+            assert counterfactual.strip(" |") and message.endswith(f"{counterfactual.strip(' |')[1:]}"), source_id

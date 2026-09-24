@@ -42,6 +42,8 @@ SPLIT_WINDOW = timedelta(minutes=10)
 LOOKALIKE_MAX_DISTANCE = 2
 RECURRING_CATEGORIES = frozenset({"subscriptions", "membership"})
 _LIMIT_FIELD = "authorization.billing_amount_chf"
+FLAGGED_SHOP_DETAIL = "An earlier purchase at this shop contained instructions aimed at the agent; this one does not."
+INSTRUCTIONS_IGNORED = "The shop's text contains instructions aimed at the agent; they were ignored."
 
 # A1: imperatives aimed at the agent or the payment system (rules.md §7 examples plus
 # common variants). Reused by signals.KeywordSignals. Matching is case-insensitive.
@@ -66,7 +68,8 @@ def agent_directed_spans(text: str) -> list[str]:
     return [m.group(0) for p in AGENT_DIRECTED_PATTERNS if (m := p.search(text or ""))]
 
 
-def _shop_texts(facts: Facts) -> list[tuple[str, str]]:
+def shop_texts(facts: Facts) -> list[tuple[str, str]]:
+    """Every piece of text the shop wrote on this order, labelled (A1; explain.py E5)."""
     texts = [("merchant name", facts.merchant_name)]
     for line in facts.items:
         texts.append((f"line {line.line_no} name", line.item_name))
@@ -76,7 +79,7 @@ def _shop_texts(facts: Facts) -> list[tuple[str, str]]:
 
 def _a1(facts: Facts, ledger: LedgerView) -> Signal:
     where = []
-    for label, text in _shop_texts(facts):
+    for label, text in shop_texts(facts):
         spans = agent_directed_spans(text)
         if spans:
             where.append(label)
@@ -88,7 +91,7 @@ def _a1(facts: Facts, ledger: LedgerView) -> Signal:
             source="merchant_text",
         )  # fmt: skip
     if facts.merchant_id in ledger.flagged_merchant_ids:
-        detail = "An earlier purchase at this shop contained instructions aimed at the agent; this one does not."
+        detail = FLAGGED_SHOP_DETAIL
     else:
         detail = "No instructions aimed at the agent in the shop's text."
     return Signal(
@@ -154,13 +157,14 @@ def _a3(facts: Facts, ledger: LedgerView, requoted: str | None) -> Signal:
         gap = abs(facts.billing_amount_chf - prior.billing_amount_chf) / prior.billing_amount_chf
         if gap > DUPLICATE_AMOUNT_BAND:
             continue
-        hours = (facts.timestamp - prior.timestamp).total_seconds() / 3600
+        minutes = (facts.timestamp - prior.timestamp).total_seconds() / 60
+        ago = f"{minutes:.0f} min" if minutes < 120 else f"{minutes / 60:.1f} h"
         if requoted:
             break
         return Signal(
             id="A3", triggered=True, strength="protection", outcome_if_triggered="ask",
             detail=(
-                f"Same shop and items as {prior.authorization_id} {hours:.1f} h earlier "
+                f"Same shop and items as {prior.authorization_id} {ago} earlier "
                 f"(CHF {prior.billing_amount_chf:.2f} then, CHF {facts.billing_amount_chf:.2f} now)."
             ),
             source="ledger", related=(prior.authorization_id, "duplicate_of"),
@@ -288,11 +292,13 @@ def _a7(facts: Facts, policy: Policy, known_names: Mapping[str, str] | None) -> 
     match = lookalike(facts, known_names)
     if match:
         merchant_id, distance = match
+        known = known_names[merchant_id]  # a catalogue name is shop text too: never quote an instruction
+        known = "a shop you know" if agent_directed_spans(known) else f"{known}, a shop you know"
         return Signal(
             id="A7", triggered=True, strength="protection", outcome_if_triggered=outcome,
             detail=(
-                f"This shop's name is {distance} letter(s) away from a shop you know "
-                f"({merchant_id}), but it is a different shop."
+                f"This shop's name is {distance} letter{'s' * (distance != 1)} away from {known}, "
+                "but it is a different shop."
             ),
             source="ledger",
         )  # fmt: skip
