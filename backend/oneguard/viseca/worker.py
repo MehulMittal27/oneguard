@@ -13,6 +13,8 @@ loop, never blocked by a human:
   file is downloaded from ``/v1/reference-data/authorization-history.csv`` and hashed; if
   it differs from the one the seed checked (``data/metadata.json``),
   ``authorization_history`` is re-seeded from it and that is logged loudly. The served
+  ``tables.fx_rates`` must equal ``facts.FX_TO_CHF`` (the rates every CHF amount is
+  converted with); a mismatch is logged loudly and keeps ``ok`` false (``/healthz`` degraded). The served
   scenario ids go to ``worker_state`` (``served_scenarios``, C12 ``live``).
 - the reference sync runs again while the worker polls (``_sync_reference``; lease holder
   only, concurrent triggers join the sync in flight, a failure is logged and never stops a
@@ -115,6 +117,7 @@ from sqlalchemy.orm import Session
 from oneguard import __version__
 from oneguard.api import models as api
 from oneguard.engine.explain import expired_message
+from oneguard.engine.facts import FX_TO_CHF
 from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import Ledger, LedgerEntry
 from oneguard.engine.types import (
@@ -436,6 +439,56 @@ def find_history_metadata(reference: Any) -> dict[str, Any] | None:
     return None
 
 
+def _decimal(value: Any) -> Decimal | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = Decimal(str(value).strip())
+    except ArithmeticError:
+        return None
+    return number if number.is_finite() else None
+
+
+def fx_rate_mismatches(reference: Any, expected: Mapping[str, Decimal] = FX_TO_CHF) -> list[str]:
+    """How the served ``tables.fx_rates`` differ from ``expected``; empty when they agree.
+
+    Rows are ``{from_currency, to_currency, rate, ...}`` as in ``data/fx_rates.csv``. A rate
+    served as a number or a string is read as a decimal and compared exactly (``0.95`` equals
+    ``0.950000``); no tolerance. A table that is missing or unreadable is a mismatch.
+    """
+    tables = reference.get("tables") if isinstance(reference, dict) else None
+    rows = tables.get("fx_rates") if isinstance(tables, dict) else None
+    if not isinstance(rows, list):
+        return ["no fx_rates table served"]
+    problems: list[str] = []
+    served: dict[str, Decimal] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            problems.append(f"unreadable row {row!r}")
+            continue
+        currency, target, raw = row.get("from_currency"), row.get("to_currency"), row.get("rate")
+        if target != "CHF":
+            problems.append(f"{currency}: converts to {target!r}, not CHF")
+            continue
+        rate = _decimal(raw)
+        if rate is None:
+            problems.append(f"{currency}: unreadable rate {raw!r}")
+            continue
+        if currency in served:
+            problems.append(f"{currency}: served twice")
+        served[str(currency)] = rate
+    for currency in sorted(set(expected) | set(served)):
+        want, got = expected.get(currency), served.get(currency)
+        if want is None:
+            problems.append(f"{currency}: served {got}, the engine has no rate")
+        elif got is None:
+            if not any(p.startswith(f"{currency}:") for p in problems):
+                problems.append(f"{currency}: not served, the engine uses {want}")
+        elif got != want:
+            problems.append(f"{currency}: served {got}, the engine uses {want}")
+    return problems
+
+
 @dataclass(frozen=True)
 class ReferenceShape:
     """What tells served reference data changed without syncing it: the pack version, the
@@ -718,6 +771,9 @@ class RunStatus(BaseModel):
     total: int
     redeliveries: int
     last_error: str | None
+    recorded_state: Literal["starting", "running", "done", "error"] | None = None
+    """``state`` of the committed ``runs`` row (None before the first write); lags ``state``
+    until the write that follows a change has committed."""
 
 
 class WorkerStatus(BaseModel):
@@ -734,6 +790,10 @@ class WorkerStatus(BaseModel):
     decision_deadline_s: float | None
     pending_step_ups: int
     history_reseeded: bool
+    fx_rates_match: bool | None
+    """Served ``tables.fx_rates`` equal ``facts.FX_TO_CHF``; None until checked. False keeps
+    ``ok`` false (``state`` stays the loop's own)."""
+    fx_rates_mismatch: list[str]
     last_error: str | None
     runs: list[RunStatus]
 
@@ -766,6 +826,10 @@ class RunState:
     platform_done: bool = False
     finished_at: datetime | None = None
     last_error: str | None = None
+    recorded_state: Literal["starting", "running", "done", "error"] | None = None
+    """``state`` as last committed to the ``runs`` row."""
+    recorded_final: asyncio.Event = field(default_factory=asyncio.Event)
+    """Set once a ``runs`` row with state done or error has committed."""
     stored: RunCounts | None = None
     """The counters as last recomputed from the store (``_save_run``): they include what
     other processes, or this one before a restart, delivered and decided."""
@@ -786,10 +850,12 @@ class RunState:
             total=max(self.total, delivered),
             redeliveries=self.redeliveries,
             last_error=self.last_error,
+            recorded_state=self.recorded_state,
         )
 
 
 DecisionListener = Callable[[api.Decision], Any]
+HandledListener = Callable[[str], Any]
 
 
 # The worker --------------------------------------------------------------------------------
@@ -859,6 +925,8 @@ class VisecaWorker:
         """What the last reference sync did to each served reference table."""
         self.served_history_sha256: str | None = None
         """SHA-256 of the history file Viseca serves, once checked."""
+        self.fx_rates_mismatch: list[str] | None = None
+        """How the served fx rates differ from ``FX_TO_CHF`` (empty: equal); None until checked."""
         self.served_scenarios: list[str] | None = None
         """The scenario ids the platform serves now, as of the last reference sync."""
         self.reference_syncs = 0
@@ -901,6 +969,7 @@ class VisecaWorker:
         self._feed_mismatches: list[EvidenceRow] = []
         self._feed_seen: set[tuple[str, str]] = set()
         self._listeners: list[DecisionListener] = []
+        self._handled_listeners: list[HandledListener] = []
         self._warned_no_set_deadline = False
         self.source_ids: dict[str, str] = {}
         """live authorization id → source ``AU…`` id (offline parity)."""
@@ -935,6 +1004,16 @@ class VisecaWorker:
     def add_listener(self, listener: DecisionListener) -> None:
         """Called with the API ``Decision`` after every posted decision and resolution."""
         self._listeners.append(listener)
+
+    def add_handled_listener(self, listener: HandledListener) -> None:
+        """Called with the live authorization id once a delivered request is fully handled.
+
+        At that point its decision is posted and in the ledger (the ledger's unit of work
+        closed), and its ``events_raw`` and ``runs`` rows have committed; only call summaries
+        (``viseca_calls``) may still be on their way (``client.drain``). Not called for a
+        request that failed to be handled.
+        """
+        self._handled_listeners.append(listener)
 
     def bind_policy(self, viseca_mandate_id: str, policy: Policy) -> None:
         """The confirmed policy (typed rules) behind a Viseca ``TM…`` mandate."""
@@ -975,6 +1054,16 @@ class VisecaWorker:
         run.total = max(run.total, total or 0)
         return run.status()
 
+    async def wait_run_recorded(self, viseca_run_id: str) -> RunStatus:
+        """Wait until the run's final ``runs`` row (done or error) has committed.
+
+        ``status().runs[].state`` flips in memory before that write; readers of the
+        ``runs`` table wait here instead. Raises KeyError for an untracked run.
+        """
+        run = self._runs[viseca_run_id]
+        await run.recorded_final.wait()
+        return run.status()
+
     def run_status(self, viseca_run_id: str) -> RunStatus | None:
         run = self._runs.get(viseca_run_id)
         return run.status() if run else None
@@ -1001,15 +1090,18 @@ class VisecaWorker:
 
     def status(self) -> WorkerStatus:
         running = self._task is not None and not self._task.done()
+        fx_ok = not self.fx_rates_mismatch  # the loop still polls; ok says it is not healthy
         return WorkerStatus(
             state=self._state if running or self._state == "stopped" else "degraded",
-            ok=running and self._state == "polling" and self._failures == 0,
+            ok=running and self._state == "polling" and self._failures == 0 and fx_ok,
             last_poll_at=self._last_poll_at,
             events_cursor=self._cursor,
             human_window_s=self.human_window_s,
             decision_deadline_s=self.decision_deadline_s,
             pending_step_ups=len(self._expiry),
             history_reseeded=self.history_reseeded,
+            fx_rates_match=None if self.fx_rates_mismatch is None else fx_ok,
+            fx_rates_mismatch=self.fx_rates_mismatch or [],
             last_error=self._last_error,
             runs=[run.status() for run in self._runs.values()],
         )
@@ -1067,6 +1159,9 @@ class VisecaWorker:
             log.warning("the engine thread is still busy after %s s; closing its ledger session", STOP_DRAIN_S)
         if leading:
             await asyncio.to_thread(self._save_runs_while_held)
+            for run in self._runs.values():
+                if run.recorded_state in ("done", "error"):
+                    run.recorded_final.set()
         close = getattr(self._ledger, "close", None)
         if callable(close):
             close()
@@ -1503,6 +1598,7 @@ class VisecaWorker:
                 self._note_error(f"reference data unavailable, keeping the stored reference data: {exc}")
                 return False
         self.reference_data = reference
+        self._check_fx_rates()
         seen, shape = self._reference_seen, reference_shape(reference)
         changed = await self._sync_served_tables()
         if seen is not None and (seen.pack_version, seen.history) == (shape.pack_version, shape.history):
@@ -1563,6 +1659,21 @@ class VisecaWorker:
             banner,
         )
         return True, True
+
+    def _check_fx_rates(self) -> None:
+        self.fx_rates_mismatch = fx_rate_mismatches(self.reference_data)
+        if not self.fx_rates_mismatch:
+            log.info("Viseca fx rates match the engine's FX_TO_CHF")
+            return
+        banner = "!" * 72
+        log.error(
+            "%s\nVISECA SERVES DIFFERENT FX RATES FROM THE ENGINE'S FX_TO_CHF:\n%s\n"
+            "Every CHF amount may be converted wrongly; /healthz stays degraded.\n%s",
+            banner,
+            "\n".join(self.fx_rates_mismatch),
+            banner,
+        )
+        self._last_error = "fx rates differ from FX_TO_CHF: " + "; ".join(self.fx_rates_mismatch)
 
     async def _sync_served_tables(self) -> bool | None:
         """Upsert the served reference tables before the history check, so a served history
@@ -1673,25 +1784,38 @@ class VisecaWorker:
                         self._note_error(f"timeout resolve of {live_id} at start failed: {exc}")
 
     async def _recover_pending(self) -> None:
+        """Re-arm the expiry of every pending step-up from a live run.
+
+        Only ``runs.kind = live``: a replay step-up was never posted to Viseca, so a timeout
+        ``/resolve`` for it would only be refused (404); a run with no row is a replay, as
+        in the ledger.
+        """
         rows = await asyncio.to_thread(self._load_events)
-        for live_id, source_id, event in rows:
+        for live_id, source_id, event, kind in rows:
             self._events[live_id] = event
             self.source_ids[live_id] = source_id
             related = event.get("authorization", {}).get("related_authorization_id")
             if related:
                 self.related_ids[live_id] = related
+            if kind != "live":
+                continue
             entry = await self._engine(self.ledger.get, live_id)
             if entry is not None and entry.outcome == "step_up" and not entry.final:
                 deadline = entry.deadline_at or self._now()
                 log.info("recovered pending step-up %s, closes at %s", live_id, deadline)
                 self._schedule_expiry(live_id, deadline)
 
-    def _load_events(self) -> list[tuple[str, str, dict[str, Any]]]:
+    def _load_events(self) -> list[tuple[str, str, dict[str, Any], str | None]]:
         with session(self._db_engine) as s:
             rows = s.execute(
-                select(EventRaw.live_authorization_id, EventRaw.source_authorization_id, EventRaw.event)
+                select(
+                    EventRaw.live_authorization_id,
+                    EventRaw.source_authorization_id,
+                    EventRaw.event,
+                    Run.kind,
+                ).outerjoin(Run, Run.run_id == EventRaw.run_id)
             ).all()
-        return [(r[0], r[1], r[2]) for r in rows]
+        return [(r[0], r[1], r[2], r[3]) for r in rows]
 
     # The loop ----------------------------------------------------------------------------
 
@@ -1710,6 +1834,7 @@ class VisecaWorker:
                     raise VisecaError(200, "invalid_response", "decision request is not an object")
                 else:
                     await self._handle(envelope)
+                    self._after_handled(envelope)
                 if time.monotonic() - self._feed_synced_at >= self._feed_sync_s:
                     await self._sync_events()
                 if time.monotonic() - self._reference_checked_at >= self._reference_check_s:
@@ -1752,7 +1877,7 @@ class VisecaWorker:
             else:
                 self._apply_progress(run, progress)
                 await self.remember_profiles(progress, "run")
-            await asyncio.to_thread(self._save_run, run)
+            await self._persist_run(run)
 
     async def _track_unfinished_runs(self) -> None:
         """Follow the live runs the store still shows as unfinished, so their state is read
@@ -1829,7 +1954,7 @@ class VisecaWorker:
             # The ledger reads runs.kind (live) to carry the session watch and remembered
             # answers over from earlier live runs, so the row is written before the first
             # decision; a run with no row is treated as a replay.
-            await asyncio.to_thread(self._save_run, run)
+            await self._persist_run(run)
             await self.remember_profiles(auth, "authorization")
         self._run_of[live_id] = run
         self._events[live_id] = data
@@ -1866,7 +1991,7 @@ class VisecaWorker:
             log.exception("events_raw write failed")
             self._note_error(f"events_raw write for {live_id} failed: {exc}")
         await self._sync_events()
-        await asyncio.to_thread(self._save_run, run)
+        await self._persist_run(run)
 
     def _log_extras(self, live_id: str, extras: list[str]) -> None:
         """Properties the event schema does not list are passed on unread: logged loudly the
@@ -2348,7 +2473,7 @@ class VisecaWorker:
         if run is not None:
             run.pending.discard(live_id)
             self._maybe_done(run)
-            await asyncio.to_thread(self._save_run, run)
+            await self._persist_run(run)
         event = self._events.get(live_id)
         if event is None or run is None or run.ctx is None:
             return
@@ -2453,11 +2578,23 @@ class VisecaWorker:
                 )
             )
 
+    async def _persist_run(self, run: RunState) -> None:
+        await asyncio.to_thread(self._save_run, run)
+        if run.recorded_state in ("done", "error"):
+            run.recorded_final.set()
+
     def _save_run(self, run: RunState) -> None:
         """Write the run's row. Its counters are recomputed from the store (``events_raw``
         and the ledger) and ``started_at`` keeps its first write, so a restart or a second
-        process never resets them; ``run.stored`` takes the recomputed counters."""
-        with self._run_write_lock, session(self._db_engine) as s:
+        process never resets them; ``run.stored`` takes the recomputed counters, and
+        ``run.recorded_state`` the state once the row has committed."""
+        with self._run_write_lock:
+            run.recorded_state = self._write_run_row(run)
+
+    def _write_run_row(self, run: RunState) -> Literal["starting", "running", "done", "error"]:
+        """The run's row, committed on return; returns the state it wrote."""
+        written = run.state
+        with session(self._db_engine) as s:
             counts = self._run_counts(s, run.run_id)
             run.stored = counts
             status = run.status()
@@ -2471,7 +2608,7 @@ class VisecaWorker:
                         scenario_id=run.scenario_id,
                         mandate_id=run.mandate_id or run.viseca_mandate_id or "",
                         card_id=run.card_id or "",
-                        state=run.state,
+                        state=written,
                         delivered=counts.delivered,
                         decided=counts.decided,
                         pending_human=counts.pending_human,
@@ -2482,12 +2619,12 @@ class VisecaWorker:
                         last_error=run.last_error,
                     )
                 )
-                return
+                return written
             row.viseca_run_id = row.viseca_run_id or run.viseca_run_id
             row.scenario_id = row.scenario_id or run.scenario_id
             row.mandate_id = run.mandate_id or run.viseca_mandate_id or row.mandate_id
             row.card_id = run.card_id or row.card_id
-            row.state = run.state
+            row.state = written
             row.delivered = counts.delivered
             row.decided = counts.decided
             row.pending_human = counts.pending_human
@@ -2495,6 +2632,7 @@ class VisecaWorker:
             row.finished_at = run.finished_at
             row.worker_last_poll_at = self._last_poll_at or row.worker_last_poll_at
             row.last_error = run.last_error
+        return written
 
     def _save_runs_while_held(self) -> None:
         """At stop: write every run's row once more. The loop writes a row a step after it
@@ -2583,6 +2721,14 @@ class VisecaWorker:
                     mandate.revoked_at = self._now()
 
     # Helpers -----------------------------------------------------------------------------
+
+    def _after_handled(self, envelope: dict[str, Any]) -> None:
+        live_id = str(envelope.get("authorization_id") or "")
+        for listener in self._handled_listeners:
+            try:
+                listener(live_id)
+            except Exception:
+                log.exception("handled listener failed")
 
     def _notify(self, decision: api.Decision) -> None:
         for listener in self._listeners:
