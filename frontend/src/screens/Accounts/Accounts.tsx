@@ -158,10 +158,10 @@ export function Accounts({
                   >
                     <CardChip guarded={isActive} />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[15px] font-semibold text-ink">
+                      <span className="block text-[15px] font-semibold text-balance text-ink">
                         {humanise(card.card_purpose)} · {card.card_id}
                       </span>
-                      <span className="block truncate text-[13px] leading-[1.35] text-ink-muted">
+                      <span className="block text-[13px] leading-[1.35] text-ink-muted">
                         {isActive
                           ? `${humanise(card.card_type)} · ${limitCount} ${limitCount === 1 ? 'limit' : 'limits'}`
                           : isRevoked
