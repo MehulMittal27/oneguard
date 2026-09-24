@@ -9,9 +9,10 @@ the purchase is sent. Every answer is checked before it is used:
 - grounded: the number must be in that line's text (digits, a number word, "N weeks",
   "a month"; 0 days only with no-returns wording), so a model cannot invent a fact and
   an instruction hidden in the text cannot supply one;
-- a fact the shop contradicts stays unknown (the shop said two things; the customer
-  decides, not a model), and so does a return window the shop itself says it does not
-  state ("return policy not stated"); neither is ever sent (issue #17 R2). A fact the
+- which facts may be asked is P2's rule, ``facts.tier2_candidates`` /
+  ``facts.tier2_may_resolve``: a contradiction, a seller statement that the policy is
+  not stated, and exchange/store-credit-only terms stay unknown and are never sent
+  (issue #17 R2), nor is a line whose text is aimed at the agent (A1). A fact the
   English regex merely missed ("EU size not stated") is what tier 2 is for.
 
 Accepted values are ``FactValue(known=True, source="model")``. Amounts, merchant,
@@ -31,7 +32,11 @@ import re
 from decimal import Decimal
 from typing import Any
 
-from oneguard.engine.facts import CONTRADICTORY, order_return_window
+from oneguard.engine.facts import (
+    order_return_window,
+    tier2_candidates,
+    tier2_may_resolve,
+)
 from oneguard.engine.interfaces import register
 from oneguard.engine.types import Facts, FactValue, ItemFacts, RuleResult
 from oneguard.llm.provider import Provider, ProviderUnavailable
@@ -41,8 +46,6 @@ log = logging.getLogger(__name__)
 MIN_BUDGET_S = 0.05
 SIZE_LETTERS = ("XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL")
 MODEL_DETAIL = "read from the shop's product text by the model"
-# facts.py's detail when the shop's own text says its return policy is not stated.
-SHOP_SAYS_NOT_STATED = "return policy not stated by seller"
 
 _NUMBER_WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
@@ -109,25 +112,20 @@ def _relevant(rules: list[RuleResult]) -> set[str]:
     return out or set(_FACTS)
 
 
-def _settled_unknown(fv: FactValue) -> bool:
-    """Unknown because of what the shop said, not because the regex missed it (R2)."""
-    return fv.detail.startswith(CONTRADICTORY) or fv.detail == SHOP_SAYS_NOT_STATED
-
-
-def _wanted(line: ItemFacts, relevant: set[str]) -> list[str]:
-    """The unknown facts on this line worth asking for. Nothing about size is asked when
-    the shop contradicts itself on size; a contradicted or shop-declared unknown is
-    never asked."""
-    if not line.item_details.strip():
-        return []
-    settled = {n for n in _FACTS if _settled_unknown(getattr(line, n))}
-    if settled & set(_SIZES):
-        settled |= set(_SIZES)
-    out = []
-    for name in _FACTS:
-        fv: FactValue = getattr(line, name)
-        if name in relevant and not fv.known and name not in settled:
-            out.append(name)
+def _asks(facts: Facts, relevant: set[str]) -> dict[int, list[str]]:
+    """line_no -> the unknown facts worth asking for on that line. Only facts P2's
+    ``tier2_candidates`` allows; nothing about size is asked when the shop settled one
+    size fact as unknown (contradiction), since the other would pick a side."""
+    allowed = {(n, f) for n, f, _ in tier2_candidates(facts)}
+    out: dict[int, list[str]] = {}
+    for ln in facts.items:
+        settled = {n for n in _FACTS
+                   if not getattr(ln, n).known and not tier2_may_resolve(n, getattr(ln, n))}
+        if settled & set(_SIZES):
+            settled |= set(_SIZES)
+        wanted = [n for n in _FACTS if n in relevant and (ln.line_no, n) in allowed and n not in settled]
+        if wanted:
+            out[ln.line_no] = wanted
     return out
 
 
@@ -190,8 +188,7 @@ def resolve_unknowns(facts: Facts, rules: list[RuleResult], provider: Provider, 
     if not any(r.outcome == "unknown" for r in rules) or budget_s < MIN_BUDGET_S:
         return facts
     relevant = _relevant(rules)
-    asks = {ln.line_no: _wanted(ln, relevant) for ln in facts.items}
-    asks = {n: w for n, w in asks.items() if w}
+    asks = _asks(facts, relevant)
     if not asks:
         return facts
 
