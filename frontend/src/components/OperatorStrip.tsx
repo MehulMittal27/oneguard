@@ -11,8 +11,9 @@ import { DECISIONS_POLL_SECONDS } from '../config'
  * any screen, and it shows engine plumbing the customer has no reason to see.
  *
  * Reads D1, not D4. D4 (`/api/dev/runs/{run_id}`) is the richer live view but
- * needs a `run_id` only D3 produces out of band (`TASKS.md` Q5). D1 needs none,
- * so the strip works today and gains live counters once Q5 is settled.
+ * needs a `run_id` only D3 produces out of band, and who creates that run is
+ * still open with P1. D1 needs no id, so the strip works today and gains the
+ * live counters once that is settled.
  */
 export function OperatorStrip() {
   const [replay, setReplay] = useState<ReplayStatus | null>(null)
