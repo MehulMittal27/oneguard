@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import type { Decision } from '../../api/types'
 import { DecisionMark } from '../../components/DecisionMark'
+import { EarlierRuns } from '../../components/EarlierRuns'
 import { dateKey, formatShortDate } from '../../lib/datetime'
+import { splitByRun } from '../../lib/runs'
 import { useDecisions } from '../../state/DecisionsContext'
 import { DecisionDetail } from '../DecisionDetail/DecisionDetail'
 
@@ -61,16 +63,23 @@ export function Activity({
   const [filter, setFilter] = useState<FilterId>(initialFilter ?? 'all')
   const [viewingId, setViewingId] = useState<string | null>(null)
 
+  // Each card's newest run is the list; older runs fold under "Earlier runs"
+  // (lib/runs.ts). Counts are of what the list shows.
+  const { current, earlier } = splitByRun(decisions)
+  const matches = (d: Decision) => filter === 'all' || d.decision === filter
+  const byNewest = (a: Decision, b: Decision) => b.occurred_at.localeCompare(a.occurred_at)
+
   const counts = {
-    all: decisions.length,
-    approved: decisions.filter((d) => d.decision === 'approved').length,
-    stopped: decisions.filter((d) => d.decision === 'stopped').length,
-    uncertain: decisions.filter((d) => d.decision === 'uncertain').length,
+    all: current.length,
+    approved: current.filter((d) => d.decision === 'approved').length,
+    stopped: current.filter((d) => d.decision === 'stopped').length,
+    uncertain: current.filter((d) => d.decision === 'uncertain').length,
   }
 
-  const filtered = decisions
-    .filter((d) => filter === 'all' || d.decision === filter)
-    .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))
+  const filtered = current.filter(matches).sort(byNewest)
+  const earlierRuns = earlier
+    .map((run) => ({ ...run, decisions: run.decisions.filter(matches).sort(byNewest) }))
+    .filter((run) => run.decisions.length > 0)
 
   const groups: { key: string; label: string; rows: Decision[] }[] = []
   for (const decision of filtered) {
@@ -122,7 +131,7 @@ export function Activity({
         chips and pushes them off-screen instead of overflowing inside itself.
       */}
       <div
-        className="scrollbar-none -mx-8 flex min-w-0 max-w-full gap-2 overflow-x-auto px-8"
+        className="scrollbar-none -mx-8 flex min-w-0 gap-2 overflow-x-auto px-8"
         role="tablist"
         aria-label="Filter by decision"
       >
@@ -173,7 +182,9 @@ export function Activity({
       )}
 
       {status === 'ready' && groups.length === 0 && (
-        <p className="text-[15px] text-ink-muted">Nothing here yet.</p>
+        <p className="text-[15px] text-ink-muted">
+          {earlierRuns.length > 0 ? 'Nothing here in the latest run.' : 'Nothing here yet.'}
+        </p>
       )}
 
       {status === 'ready' &&
@@ -193,6 +204,8 @@ export function Activity({
             </div>
           </div>
         ))}
+
+      {status === 'ready' && <EarlierRuns runs={earlierRuns} onSelect={selectDecision} />}
     </div>
   )
 }

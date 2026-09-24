@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { getReplayStatus, setSoftSignals } from '../api/operator'
-import type { ReplayStatus } from '../api/types'
+import { getReplayStatus, getSoftSignals, setSoftSignals } from '../api/operator'
+import type { ReplayStatus, SoftSignalsState } from '../api/types'
 import { DECISIONS_POLL_SECONDS } from '../config'
+import { nextSoftSignals, softSignalsLabel } from '../lib/softSignals'
 
 /**
  * P3-2's demo affordance: a thin operator strip behind `?demo=1`, showing the
@@ -17,16 +18,20 @@ import { DECISIONS_POLL_SECONDS } from '../config'
  */
 export function OperatorStrip() {
   const [replay, setReplay] = useState<ReplayStatus | null>(null)
-  const [signalsOn, setSignalsOn] = useState(true)
+  // Null until D5 answers: the strip never shows a state it has not read.
+  const [signals, setSignals] = useState<SoftSignalsState | null>(null)
   const [unreachable, setUnreachable] = useState(false)
 
   useEffect(() => {
     let cancelled = false
+    // D5 is read on every poll too, so the label follows a toggle made from
+    // another tab or `make` target instead of keeping this tab's last press.
     const read = () => {
-      getReplayStatus()
-        .then((status) => {
+      Promise.all([getReplayStatus(), getSoftSignals()])
+        .then(([status, state]) => {
           if (cancelled) return
           setReplay(status)
+          setSignals(state)
           setUnreachable(false)
         })
         .catch(() => {
@@ -43,14 +48,17 @@ export function OperatorStrip() {
   }, [])
 
   async function toggleSignals() {
-    const next = !signalsOn
-    // Optimistic, then corrected by what the backend reports it actually did —
-    // a toggle that lies about engine state is worse than one that lags.
-    setSignalsOn(next)
+    const previous = signals
+    const next = nextSoftSignals(signals)
+    // Optimistic, then corrected by what the backend reports it actually did:
+    // a toggle that lies about engine state is worse than one that lags. D5
+    // switches live and replay together.
+    setSignals({ live: next, replay: next })
     try {
-      setSignalsOn(await setSoftSignals(next))
+      const enabled = await setSoftSignals(next)
+      setSignals({ live: enabled, replay: enabled })
     } catch {
-      setSignalsOn(!next)
+      setSignals(previous)
       setUnreachable(true)
     }
   }
@@ -72,16 +80,17 @@ export function OperatorStrip() {
           <span>{replay.running ? 'running' : 'idle'}</span>
         </>
       ) : (
-        <span>no replay running</span>
+        <span>no replay yet</span>
       )}
 
       <button
         type="button"
         onClick={toggleSignals}
-        aria-pressed={signalsOn}
+        disabled={!signals}
+        aria-pressed={Boolean(signals?.live && signals.replay)}
         className="ml-auto min-h-8 rounded-pill border border-on-ink-rule px-3 py-1 font-semibold text-on-ink"
       >
-        Soft signals: {signalsOn ? 'on' : 'off'}
+        Soft signals: {softSignalsLabel(signals)}
       </button>
     </div>
   )

@@ -12,8 +12,9 @@
 **/.ruff_cache
 **/*.egg-info
 **/*.sqlite
+**/*.sqlite-wal
+**/*.sqlite-shm
 frontend/dist
 vendor
 docs
 backend/tests
-backend/scripts

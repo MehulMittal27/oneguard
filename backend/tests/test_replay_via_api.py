@@ -96,10 +96,22 @@ def test_every_engine_lane_is_real(api_run):
     assert versions and not any("stubs=" in v for v in versions), versions
 
 
+# Where the compiled reading of an instruction deliberately decides differently from the
+# oracle's hand-built policy (docs/decisions.md, 2026-09-24, "A requested product gets its
+# catalogue item type"): SCEN0002 compiles "Only sporting goods", so the shoes plus a monthly
+# protection plan decline on the category (Q10's named alternative) instead of asking.
+COMPILED = {"AU0018": ("decline", "item_mismatch")}
+
+
 @pytest.mark.parametrize("scenario_id", sorted(ORACLE["scenarios"]))
 def test_c6_outcomes_equal_the_oracle(api_run, scenario_id):
     actual = {source: OUTCOME[row["decision"]] for source, row in api_run[scenario_id].items()}
-    assert actual == unanswered_outcomes(scenario_id)
+    expected = unanswered_outcomes(scenario_id)
+    for source, (outcome, reason) in COMPILED.items():
+        if source in expected:
+            assert reason in api_run[scenario_id][source]["reason_codes"], source
+            expected[source] = outcome
+    assert actual == expected
 
 
 def test_all_45_purchases_are_in_the_customer_feed(api_run):

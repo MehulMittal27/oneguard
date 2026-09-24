@@ -68,9 +68,13 @@ cp frontend/.env.example frontend/.env   # VITE_USE_MOCKS=true serves fixtures, 
 cd frontend && npm install && npm run dev
 ```
 
-Live run (event day): `make demo-live SCEN=SCEN0135` creates the mandate from the
-scenario instruction, starts the Viseca run and streams progress (default `SCEN0101`).
-The scenarios the sandbox serves are in `docs/judging-pack.md`.
+Live run (event day): `make demo-live SCEN=SCEN0135` has the cloud app
+(`https://oneguard.fly.dev`; another with `ONEGUARD_API=http://localhost:8000`) compile and
+confirm the scenario's instruction, start the Viseca run and decide it; the terminal prints
+`Sign in as <name> (<customer id>, card <card id>)` and follows the decisions (default
+`SCEN0101`). The scenarios the sandbox serves, and their customers, are in
+`docs/judging-pack.md`. The 6-minute demo (offline replay on stage, live runs recorded
+beforehand) is `docs/demo-script.md`.
 
 ## Layout
 
