@@ -314,3 +314,25 @@ def test_the_store_ledger_run_is_durable(pack, history, tmp_path):
         outcomes = _run_scenario(pack, history, "SCEN0001", None, False, ledger)
         stored = [ledger.get(source_id) for source_id in outcomes]
     assert all(entry is not None for entry in stored) and len(stored) == 10
+
+
+MESSAGE = re.compile(r"^(Approved|Declined|Waiting for you) CHF \d+\.\d{2}: (?P<clause>[^—]+)\.$")
+
+
+def test_every_message_is_one_clause_and_never_the_counterfactual(pack, history, tmp_path):
+    """rules.md §9: "{Outcome} CHF {amount}: {clause}." for all 45 purchases; the clause is
+    at most 15 words (an amount is one word) and "Would approve …" is only ever the
+    counterfactual, which every decline has."""
+    for scenario_id in sorted(ORACLE["scenarios"]):
+        policy = to_policy(scenario_id)
+        with fresh_ledger("store", history, tmp_path) as ledger:
+            ctx = PipelineContext(policy=policy, ledger=ledger, history=history, run_id=f"messages-{scenario_id}")
+            for event in build_events(pack, scenario_id, mandate_id=policy.mandate_id, now=NOW):
+                engine, explanation, _ = decide_event(event, ctx)
+                source_id = event["authorization"]["source_authorization_id"]
+                m = MESSAGE.match(explanation.message)
+                assert m, (source_id, explanation.message)
+                assert len(re.sub(r"CHF [\d.]+", "CHF", m["clause"]).split()) <= 15, (source_id, explanation.message)
+                assert "Would approve" not in explanation.message, source_id
+                if engine.outcome == "decline":
+                    assert (explanation.counterfactual or "").startswith("Would approve"), source_id

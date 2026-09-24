@@ -405,8 +405,9 @@ def test_scen0113_declines_a_second_dinner_the_same_day(path):
     assert first.outcome == "approve", first
     second, explanation, _ = decide_event(dinner("IT_DINNER_2", 7 * 60), ctx)  # 19:00 the same day
     assert (second.outcome, second.reason_codes) == ("decline", ["period_count_exceeded"])
-    assert explanation.message == ("Declined CHF 30.00: you allowed one order per day; one was already "
-                                   "approved today at 12:00. Would approve from tomorrow at 12:00.")
+    assert explanation.message == ("Declined CHF 30.00: You allowed one order per day; one was already "
+                                   "approved today at 12:00.")
+    assert explanation.counterfactual == "Would approve from tomorrow at 12:00."
 
 
 def test_one_item_reads_in_the_singular():
