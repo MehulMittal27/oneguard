@@ -13,6 +13,7 @@ import { SessionBanner } from '../../components/SessionBanner'
 import { formatShortDate, formatTime } from '../../lib/datetime'
 import { getInitials } from '../../lib/initials'
 import { formatChf } from '../../lib/money'
+import { reasonLabel } from '../../lib/reasonCodes'
 import { useCustomer } from '../../state/CustomerContext'
 import { useDecisions } from '../../state/DecisionsContext'
 import { usePolicy } from '../../state/PolicyContext'
@@ -237,6 +238,21 @@ export function DecisionDetail({
           </div>
           {decision.counterfactual && (
             <p className="mt-2 text-[14px] font-medium text-ink-soft">{decision.counterfactual}</p>
+          )}
+          {/* The codes the engine actually emitted, in the customer's words. One
+              label map for the whole app (hard rule 9); an unknown code gets the
+              neutral line rather than its own id. */}
+          {decision.reason_codes.length > 0 && (
+            <ul className="mt-3 flex flex-wrap gap-1.5">
+              {decision.reason_codes.map((code) => (
+                <li
+                  key={code}
+                  className="rounded-pill bg-surface-sunken px-2.5 py-1 text-[12px] text-ink-soft"
+                >
+                  {reasonLabel(code)}
+                </li>
+              ))}
+            </ul>
           )}
         </div>
 
