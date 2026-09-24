@@ -19,7 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
 compiler = ["anthropic"]
-signals = ["laya"]
+signals = ["laya==0.3.20"]
 
 [tool.setuptools.packages.find]
 include = ["oneguard*"]
