@@ -22,13 +22,13 @@ is unknown, and an unknown step-1 check never approves. The most restrictive res
 or while the session watch is on; ``elevated`` for any other strong sign.
 
 Pure function: no I/O. Reason codes use api-contract §4 (new codes requested there:
-``rule_not_met``, ``unusual_activity``, ``session_watch``).
+``rule_not_met``, ``unusual_activity``, ``session_watch``, ``no_purchase_history``).
 """
 from __future__ import annotations
 
 from oneguard.engine.facts import CONTRADICTORY
 from oneguard.engine.interfaces import register
-from oneguard.engine.policy import CONFIRMED, RESERVATION_ONLY
+from oneguard.engine.policy import CONFIRMED, NO_HISTORY, RESERVATION_ONLY
 from oneguard.engine.types import (
     STEP1_RULE_IDS,
     EngineDecision,
@@ -99,6 +99,8 @@ def _fail_code(result: RuleResult, rule: Rule | None) -> str:
 def _unknown_code(result: RuleResult, rule: Rule | None) -> str:
     if CONTRADICTORY in result.detail:
         return "shop_terms_contradictory"
+    if result.detail == NO_HISTORY:  # C9 with no purchase history yet (policy.add_ledger_results)
+        return "no_purchase_history"
     return _UNKNOWN_CODE_BY_FIELD.get(rule.field or "", "unevaluable") if rule is not None else "unevaluable"
 
 

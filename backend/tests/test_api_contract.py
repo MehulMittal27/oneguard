@@ -521,6 +521,9 @@ def test_decisions_across_their_lifecycle(db_url: str) -> None:
             for lapsed in (c, e):
                 row = final[lapsed["authorization_id"]]
                 assert (row["uncertain_outcome"], row["status"], row["resolved_by"]) == ("expired", "final", "timeout")
+                # rules.md Q2, with the platform's 60 s window
+                assert row["message"] == "Expired: no answer within 60 s; nothing was approved."
+                assert row["counterfactual"] is None and row["explanation_source"] == lapsed["explanation_source"]
             for d in final.values():
                 assert (d["decision"], d["uncertain_outcome"], d["status"]) in MATRIX
                 assert ("deadline_at" in d) == (d["status"] == "pending_human")
@@ -693,6 +696,9 @@ def test_a_lapsed_step_up_reads_as_expired_after_a_restart(db_url: str) -> None:
             rows = {d["authorization_id"]: d for d in await run.decisions()}
             for live_id in pending:
                 assert (rows[live_id]["uncertain_outcome"], rows[live_id]["resolved_by"]) == ("expired", "timeout")
+                # the offline expiry re-renders the message too (rules.md Q2, default 120 s window)
+                assert rows[live_id]["message"] == "Expired: no answer within 120 s; nothing was approved."
+                assert rows[live_id]["counterfactual"] is None
         async with running(db_url, clock=clock) as run:
             rows = {d["authorization_id"]: d for d in await run.decisions()}
             assert all(rows[i]["uncertain_outcome"] == "expired" for i in pending)

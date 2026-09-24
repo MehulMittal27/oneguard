@@ -8,9 +8,21 @@ from pathlib import Path
 import pytest
 
 from oneguard.engine import protections as P
-from oneguard.engine.explain import REASON_TEMPLATES, REMOVED, explain
-from oneguard.engine.policy import RESERVATION_ONLY
-from oneguard.engine.types import EngineDecision, RuleResult, Signal
+from oneguard.engine.explain import (
+    EXPIRED_MESSAGE,
+    REASON_TEMPLATES,
+    REMOVED,
+    expired_message,
+    explain,
+)
+from oneguard.engine.policy import (
+    NO_HISTORY,
+    RESERVATION_ONLY,
+    evaluate_rules,
+    evaluate_typed_rule,
+    step1_results,
+)
+from oneguard.engine.types import EngineDecision, Rule, RuleResult, Signal
 from tests.test_protections import facts, line, policy, view
 
 CONTRACT = Path(__file__).resolve().parents[2] / "docs" / "api-contract.md"
@@ -71,13 +83,107 @@ def test_message_leads_with_the_outcome_and_names_the_amount(outcome, lead):
     assert e.source == "template"
 
 
+def typed(rule_id, field, op, value, text="rule", **kw) -> Rule:
+    return Rule(id=rule_id, field=field, operator=op, value=value, text=text, source="exact", **kw)
+
+
+def decline_on(rules: list[Rule], f=None):
+    """Decline a purchase on its failing typed rules, with the rule results policy.py writes."""
+    f = f or facts()
+    p = policy(rules)
+    results = [evaluate_typed_rule(r, f, p) for r in rules]
+    failed = [r.rule_id for r in results if r.outcome == "fail"]
+    assert failed, "the purchase breaks a rule"
+    return explain(decision("decline", failed), f, p, results, [])
+
+
 def test_decline_names_the_rule_and_the_fact_and_what_would_change_it():
-    failed = rule(outcome="fail", detail="Order total: CHF 126.00. You asked for order total at or below CHF 120.00",
-                  counterfactual="would pass with order total at or below CHF 120.00")  # fmt: skip
-    e = explain(decision("decline", ["C1"]), facts(amount=126.0), policy(), [failed], [])
-    assert "CHF 126.00" in e.message and "CHF 120.00" in e.message  # E2
-    assert "; you asked for" in e.message
-    assert e.counterfactual == "Would pass with order total at or below CHF 120.00."  # E3
+    e = decline_on([typed("C1", "authorization.billing_amount_chf", "<=", 20)],
+                   facts(amount=38.9, items=[line(price=38.9)]))  # fmt: skip
+    assert e.message == "Declined CHF 38.90: over your CHF 20.00 per-order limit. Would approve at CHF 20.00 or less."
+    assert e.counterfactual == "Would approve at CHF 20.00 or less."  # E3: the field stays populated
+
+
+# Every decline template (c): "Declined CHF <amount>: <short reason>. Would approve <counterfactual>."
+# with the amount once and the suggestion once.
+DECLINE_CASES = [
+    ([typed("C1", "authorization.billing_amount_chf", "<", 20)], {},
+     "Declined CHF 100.00: not under your CHF 20.00 per-order limit. Would approve under CHF 20.00."),
+    ([typed("C1", "authorization.billing_amount_chf", "<=", 80, currency="EUR")], {},
+     "Declined CHF 100.00: over your CHF 76.00 per-order limit. Would approve at CHF 76.00 or less."),
+    ([typed("C12", "items[].unit_price_chf", "<=", 50)], {},
+     ("Declined CHF 100.00: an item is over your CHF 50.00 per-item limit. "
+     "Would approve with every item at CHF 50.00 or less.")),
+    ([typed("C3", "items[].item_category", "in", ["groceries", "household"])], {},
+     "Declined CHF 100.00: the item type is electronics. Would approve with only groceries or household."),
+    ([typed("C4", "items[].item_category", "not_in", ["electronics"])], {},
+     "Declined CHF 100.00: the item type is electronics. Would approve without electronics."),
+    ([typed("C8", "merchant.merchant_category", "=", "sporting_goods")], {},
+     "Declined CHF 100.00: the shop is an electronics shop. Would approve at a sporting goods shop."),
+    ([typed("C9", "merchant.known_shop", "=", "true")], {"merchant_known": False},
+     ("Declined CHF 100.00: you haven't bought from this shop before. "
+     "Would approve at a shop you've bought from before.")),
+    ([typed("C10", "cart.recurring", "=", "false")], {"items": [line(category="subscriptions")]},
+     "Declined CHF 100.00: it adds a recurring charge you did not ask for. Would approve without the recurring charge."),
+    ([typed("C6", "order.order_returnable", "=", "true")], {"order_returnable": "false"},
+     "Declined CHF 100.00: the order cannot be returned. Would approve if the order can be returned."),
+    ([typed("C6", "order.order_cancellable", "=", "true")], {"order_cancellable": "false"},
+     "Declined CHF 100.00: the order cannot be cancelled. Would approve if the order can be cancelled."),
+    ([typed("C12", "merchant.merchant_country", "=", "DE")], {},
+     "Declined CHF 100.00: the shop country is CH. Would approve with shop country DE."),
+    ([typed("C12", "items[].quantity", "<=", 1)], {"items": [line(qty=2, price=50.0)]},
+     "Declined CHF 100.00: the quantity is 2. Would approve with quantity at or below 1."),
+    ([typed("C1", "authorization.billing_amount_chf", "<=", 80),
+      typed("C3", "items[].item_category", "in", ["groceries"])], {},
+     ("Declined CHF 100.00: over your CHF 80.00 per-order limit; the item type is electronics. "
+     "Would approve at CHF 80.00 or less and with only groceries.")),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("rules", "fact_kw", "message"), DECLINE_CASES)
+def test_every_decline_says_the_amount_and_the_suggestion_once(rules, fact_kw, message):
+    e = decline_on(rules, facts(**fact_kw))
+    assert e.message == message
+    reason, would = e.message.split(". Would approve ", 1)
+    assert e.counterfactual == f"Would approve {would}"
+    assert e.message.count("CHF 100.00") == 1 and "Would approve" not in reason and "you asked for" not in reason
+
+
+def test_a_decline_on_flags_keeps_their_words_without_repeating_the_suggestion():
+    f = facts(items=[line(name="Digital gift voucher", category="gift_cards")], name="EcoStore")
+    p = policy(requested_item="27-inch monitor", nothing_extra=True, shop_type="sporting_goods",
+               allowed_item_categories=["electronics"])  # fmt: skip
+    results = [r for r in evaluate_rules(f, p) if r.rule_id in ("C3", "C5", "C8", "C10")]
+    e = explain(decision("decline", [r.rule_id for r in results]), f, p, results, [])
+    assert e.message == ("Declined CHF 100.00: the cart includes Digital gift voucher (gift cards); you allowed only "
+                         "electronics; the cart has Digital gift voucher, not what you asked for; EcoStore is an "
+                         "electronics shop. Would approve without Digital gift voucher, with the 27-inch monitor and at a "
+                         "sporting goods shop.")  # fmt: skip
+
+
+def test_a_decline_on_step_one_names_what_is_not_active():
+    f = facts(card_status_at_attempt="blocked")
+    e = explain(decision("decline", ["card_status"], ["card_or_authority_inactive"]), f, policy(),
+                step1_results(f, policy()), [])  # fmt: skip
+    assert e.message == "Declined CHF 100.00: the card is blocked. Would approve on an active card."
+
+
+def test_a_decline_when_unsure_has_no_suggestion():
+    unknown = rule("C9", "unknown", NO_HISTORY)
+    e = explain(decision("decline", ["C9"], ["no_purchase_history"]), facts(), policy(), [unknown], [])
+    assert e.message == f"Declined CHF 100.00: {REASON_TEMPLATES['no_purchase_history']}."
+    assert e.counterfactual is None
+
+
+def test_a_sign_that_opens_with_the_amount_does_not_repeat_it():
+    signs = [sig("W4", strength="weak", detail="CHF 100.00 is more than your largest approved purchase (CHF 90.00)."),
+             sig("W5", strength="weak", detail="Made at night (04:xx Zurich time).")]  # fmt: skip
+    c9 = rule("C9", "fail", "You haven't bought from this shop before",
+              counterfactual="Would approve at a shop you've bought from before")  # fmt: skip
+    for outcome in ("decline", "step_up"):
+        e = explain(decision(outcome, ["C9"] if outcome == "decline" else ["W4", "W5"]), facts(), policy(), [c9], signs)
+        assert e.message.count("CHF 100.00") == 1, e.message
+        assert "it is more than your largest approved purchase" in e.message
 
 
 def test_step_up_on_an_unknown_rule_says_what_is_uncertain():
@@ -259,14 +365,16 @@ def test_only_a_step_up_invites_the_customer_to_decide():
     for ids in (["C5", "A1"], ["A1", "C5"]):
         declined = explain(decision("decline", ids), f, p, [c5], signals)
         assert "you decide" not in declined.message, ids
-        assert declined.message.endswith("; would approve with the road-running shoes."), ids
+        assert declined.message.endswith(". Would approve with the road-running shoes."), ids
+
+
+AU0041_LIMIT = typed("C1", "authorization.billing_amount_chf", "<=", 400)
 
 
 def _au0041():
     """AU0041's shape: over the per-order limit and an unrequested protection plan (C1, C10),
     A6 on the plan's line (decline), W4 weak evidence."""
-    c1 = rule("C1", "fail", "Order total: CHF 459.00. You asked for order total at or below CHF 400.00",
-              counterfactual="Would approve with total at or below CHF 400.00")  # fmt: skip
+    c1 = evaluate_typed_rule(AU0041_LIMIT, facts(amount=459.0), policy([AU0041_LIMIT]))
     c10 = rule("C10", "fail", "Cart includes Extended protection plan, which you didn't ask for",
                counterfactual="Would approve without Extended protection plan")  # fmt: skip
     a6 = sig("A6", strength="protection", outcome="decline",
@@ -278,11 +386,12 @@ def _au0041():
 def test_a_decline_counterfactual_joins_every_failing_rule():
     rules, signals = _au0041()
     e = explain(decision("decline", ["C1", "C10"], ["per_order_limit_exceeded", "unrequested_item"]),
-                facts(amount=459.0), policy(), rules, signals)  # fmt: skip
-    cf = "Would approve with total at or below CHF 400.00 and without Extended protection plan"
+                facts(amount=459.0), policy([AU0041_LIMIT]), rules, signals)  # fmt: skip
+    cf = "Would approve at CHF 400.00 or less and without Extended protection plan"
     assert e.counterfactual == f"{cf}."
-    assert e.message.startswith("Declined CHF 459.00: Order total: CHF 459.00; you asked for")
-    assert e.message.endswith(f"; {cf[0].lower()}{cf[1:]}.")
+    assert e.message == ("Declined CHF 459.00: over your CHF 400.00 per-order limit; the cart includes Extended "
+                         "protection plan, which you didn't ask for; also recurring charge you did not ask for: "
+                         f"line 2 (CHF 79.00). {cf}.")  # fmt: skip
     assert "also recurring charge you did not ask for: line 2 (CHF 79.00)" in e.message
     assert "largest approved" not in e.message, "one weak sign alone is evidence, not a reason"
 
@@ -302,7 +411,9 @@ def test_a_decline_by_a_protection_alone_uses_its_counterfactual():
              detail="This shop's name is 1 letter away from PixelHarbor, a shop you know, but it is a different shop.")
     e = explain(decision("decline", ["A7"], ["lookalike_merchant"]), facts(), policy(), [rule()], [a7, sig("W1")])
     assert e.counterfactual == "Would approve at the shop you know."
-    assert e.message.endswith("; would approve at the shop you know.")
+    assert e.message == ("Declined CHF 100.00: this shop's name is 1 letter away from PixelHarbor, a shop you know, "
+                         "but it is a different shop; also made from a device you have not used before. "
+                         "Would approve at the shop you know.")  # fmt: skip
 
 
 # --- the deciding reason leads ------------------------------------------------------------
@@ -325,9 +436,9 @@ def test_supporting_signs_follow_the_deciding_rule():
     c9 = rule("C9", "fail", "You haven't bought from this shop before", counterfactual="Would approve at a shop you know")
     signs = [sig("W1"), sig("W2", detail="3 other purchase attempts in the 10 minutes before this one.")]
     e = explain(decision("decline", ["C9"]), facts(), policy(), [c9], signs)
-    assert e.message == ("Declined CHF 100.00: You haven't bought from this shop before; also made from a device you "
-                         "have not used before and 3 other purchase attempts in the 10 minutes before this one; "
-                         "would approve at a shop you know.")  # fmt: skip
+    assert e.message == ("Declined CHF 100.00: you haven't bought from this shop before; also made from a device you "
+                         "have not used before and 3 other purchase attempts in the 10 minutes before this one. "
+                         "Would approve at a shop you know.")  # fmt: skip
 
 
 def test_a_session_watch_step_up_never_leads_with_a_sign_that_did_not_decide():
@@ -353,3 +464,12 @@ def test_the_engines_own_wording_survives_an_injected_order():
     e = explain(decision("decline", ["C1"]), f, p, [c1], signals)
     assert e.counterfactual == "Would approve with order total at or below CHF 400.00."
     assert REMOVED not in e.message + e.counterfactual
+
+
+# --- expiry (rules.md Q2) -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("window", "text"), [(120, "120"), (120.0, "120"), (1.5, "1.5")])
+def test_the_expired_message_names_the_configured_window(window, text):
+    assert expired_message(window) == f"Expired: no answer within {text} s; nothing was approved."
+    assert EXPIRED_MESSAGE.format(seconds=120) == "Expired: no answer within 120 s; nothing was approved."

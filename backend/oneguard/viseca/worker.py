@@ -78,6 +78,7 @@ from sqlalchemy.orm import Session
 
 from oneguard import __version__
 from oneguard.api import models as api
+from oneguard.engine.explain import expired_message
 from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import Ledger, LedgerEntry
 from oneguard.engine.types import (
@@ -866,7 +867,11 @@ class VisecaWorker:
             # still pending after an answer that was already sent: the platform's own
             # expiry will decline it, so the timeout decline is recorded
             decision, by = result or ("decline", "timeout")
-            resolved = await self._engine(self.ledger.resolve, authorization_id, decision, by, self._now())
+            expired = expired_message(self.human_window_s) if by == "timeout" else None
+            resolved = await self._engine(
+                partial(self.ledger.resolve, message=expired),
+                authorization_id, decision, by, self._now(),
+            )
         log.info("step-up %s closed at its window: %s (%s)", authorization_id, resolved.uncertain_outcome, by)
         await self._after_resolution(authorization_id, resolved)
         return True

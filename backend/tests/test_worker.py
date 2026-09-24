@@ -24,6 +24,9 @@ from sqlalchemy import Engine, func, select
 
 from oneguard.api import models as api
 from oneguard.engine import stubs
+from oneguard.engine.explain import (
+    expired_message,
+)
 from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import InMemoryLedger
 from oneguard.engine.types import Policy
@@ -424,6 +427,11 @@ def test_an_unanswered_step_up_is_declined_at_the_window(db: Engine, history: St
             assert entry.reserved_chf == 0.0 and entry.spent_chf == 0.0
             assert (closed.decision, closed.uncertain_outcome, closed.status) == ("uncertain", "expired", "final")
             assert closed.resolved_by == "timeout" and closed.deadline_at is None
+            # rules.md Q2: the stored and served message is re-rendered with the configured window
+            assert pending.message != closed.message
+            assert entry.message == closed.message == "Expired: no answer within 1 s; nothing was approved."
+            assert entry.counterfactual is None and closed.counterfactual is None
+            assert entry.explanation_source == closed.explanation_source == pending.explanation_source
             # served again on every poll while it waited: nothing more posted, nothing counted
             assert auth.step_up_serves > 0 and len(auth.decisions) == 1
             assert worker.run_status(run_id).redeliveries == 0  # type: ignore[union-attr]
@@ -443,6 +451,8 @@ async def closed_by_the_window(
     assert (entry.final, entry.uncertain_outcome, entry.resolved_by) == (True, "expired", "timeout")
     assert entry.reserved_chf == 0.0 and entry.spent_chf == 0.0
     assert (seen[1].uncertain_outcome, seen[1].resolved_by) == ("expired", "timeout")
+    assert entry.message == seen[1].message == expired_message(1.0) and seen[1].counterfactual is None
+    assert seen[1].explanation_source == seen[0].explanation_source
     assert auth.status == "declined" and auth.platform_expired
     assert worker.status().last_error is None and worker.status().pending_step_ups == 0
     return auth, entry
