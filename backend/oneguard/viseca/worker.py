@@ -37,7 +37,9 @@ loop, never blocked by a human:
   anything delivered afterwards is declined with ``card_or_authority_inactive``
   (rules.md T6, Q6; pipeline step 3).
 - after each decision the feed ``GET /v1/events?since=<cursor>`` is compared with the
-  ledger; a mismatch becomes an ``info`` evidence row on the next decision.
+  ledger; a mismatch becomes an ``info`` evidence row on the next decision. Once a page is
+  processed its ``next_cursor`` is stored (``worker_state``); ``start`` resumes from the
+  stored cursor, so a restart never re-scans the team-wide feed (0 only on first boot).
 - tier 3 (rules.md §4a, E8): once an engine decision is posted with its template message
   and a provider is configured for the run, ``rewrite_explanation`` runs in a background
   task, off the engine thread and outside the decision budget, so the poll loop never
@@ -101,7 +103,7 @@ from oneguard.pipeline import (
 from oneguard.store import seed as seed_module
 from oneguard.store.db import get_engine, session
 from oneguard.store.history import StoreHistoryIndex
-from oneguard.store.schema import EventRaw, Mandate, Run
+from oneguard.store.schema import EventRaw, Mandate, Run, WorkerState
 from oneguard.viseca.client import VisecaClient, VisecaError, cap
 from oneguard.viseca.schema import event_errors
 
@@ -129,6 +131,7 @@ TIER3_THREADS = 4
 take the default executor the worker's store writes (``asyncio.to_thread``) run on."""
 RECONCILE_TOLERANCE_CHF = Decimal("0.005")
 HISTORY_FILE = "authorization_history.csv"
+EVENTS_CURSOR_KEY = "events_cursor"
 
 TIMEOUT_MESSAGE = "No answer within {seconds} s; nothing was approved"
 """rules.md Q2 / api-contract §3.1, §3.5, with the human window from /v1/bootstrap."""
@@ -730,6 +733,7 @@ class VisecaWorker:
         if self._ledger is None:
             self._ledger = default_ledger(self._db_engine, self._history)
         await self._recover_pending()
+        self._cursor = await asyncio.to_thread(self._load_cursor)
         self._task = asyncio.create_task(self._loop(), name="viseca-worker")
 
     async def stop(self) -> None:
@@ -1673,7 +1677,8 @@ class VisecaWorker:
             for item in items:
                 if isinstance(item, dict):
                     await self._check_feed_item(item)
-        if next_cursor is not None:
+        if next_cursor is not None and next_cursor != self._cursor:
+            await asyncio.to_thread(self._save_cursor, next_cursor)
             self._cursor = next_cursor
 
     async def _check_feed_item(self, item: dict[str, Any]) -> None:
@@ -1741,6 +1746,19 @@ class VisecaWorker:
                     last_error=run.last_error,
                 )
             )
+
+    def _load_cursor(self) -> int | str:
+        with session(self._db_engine) as s:
+            row = s.get(WorkerState, EVENTS_CURSOR_KEY)
+        if row is None or not isinstance(row.value, int | str) or isinstance(row.value, bool):
+            log.info("no stored event feed cursor; reading the feed from 0")
+            return 0
+        log.info("event feed cursor resumed at %s", row.value)
+        return row.value
+
+    def _save_cursor(self, cursor: int | str) -> None:
+        with session(self._db_engine) as s:
+            s.merge(WorkerState(key=EVENTS_CURSOR_KEY, value=cursor, updated_at=self._now()))
 
     def _mark_mandate_revoked(self, viseca_mandate_id: str) -> None:
         with session(self._db_engine) as s:

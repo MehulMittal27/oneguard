@@ -32,7 +32,7 @@ from oneguard.llm.provider import NullProvider, ProviderUnavailable
 from oneguard.store import seed as seed_module
 from oneguard.store.db import make_engine, session
 from oneguard.store.history import StoreHistoryIndex
-from oneguard.store.schema import AuthorizationHistory, EventRaw, Run
+from oneguard.store.schema import AuthorizationHistory, EventRaw, Run, WorkerState
 from oneguard.viseca import worker as worker_module
 from oneguard.viseca.client import VisecaClient, VisecaError, store_sink
 from oneguard.viseca.worker import (
@@ -312,6 +312,80 @@ def test_the_live_run_row_is_written_before_its_first_decision(
             await wait_until(lambda: len(rows_at_decision) == 1)
         kind, mandate_id, card_id = rows_at_decision[0] or ("", "", "")
         assert kind == "live" and mandate_id and card_id
+
+    asyncio.run(scenario())
+
+
+def spy_on_feed(client: VisecaClient) -> list[tuple[int | str, dict[str, Any]]]:
+    """Every ``GET /v1/events`` the worker makes through ``client``: (since, reply)."""
+    calls: list[tuple[int | str, dict[str, Any]]] = []
+    read = client.events
+
+    async def events(since: int | str = 0) -> dict[str, Any]:
+        reply = await read(since=since)
+        calls.append((since, reply))
+        return reply
+
+    client.events = events  # type: ignore[method-assign]
+    return calls
+
+
+def stored_cursor(db: Engine) -> Any:
+    with session(db) as s:
+        row = s.get(WorkerState, worker_module.EVENTS_CURSOR_KEY)
+        return row and row.value
+
+
+def test_the_first_boot_reads_the_event_feed_from_0_and_stores_the_cursor(
+    db: Engine, history: StoreHistoryIndex
+) -> None:
+    async def scenario() -> None:
+        async with harness(db, fast(), history=history) as (fake, client, worker):
+            feed = spy_on_feed(client)
+            await worker.start()
+            assert worker.events_cursor == 0 and stored_cursor(db) is None
+            _, run_id = await start_run(client, worker, "SCEN0001")
+            await wait_until(lambda: all(a.decisions for a in fake.runs[run_id].auths))
+            await wait_until(lambda: stored_cursor(db) == len(fake.feed) >= 10)
+            assert feed[0][0] == 0
+            assert worker.events_cursor == stored_cursor(db)
+
+    asyncio.run(scenario())
+
+
+def test_a_restart_resumes_the_event_feed_from_the_stored_cursor(
+    db: Engine, history: StoreHistoryIndex
+) -> None:
+    """The cursor is stored once a page is processed; a restarted worker starts there and
+    never reads an earlier feed item again (the team-wide feed is not re-scanned)."""
+
+    async def scenario() -> None:
+        config = fast(feed_status_override={"AU0002": "approved"})
+        async with harness(db, config, history=history) as (fake, client, worker):
+            await worker.start()
+            _, run_id = await start_run(client, worker, "SCEN0001")
+            auths = fake.runs[run_id].auths
+            await wait_until(lambda: all(a.decisions for a in auths))
+            await wait_until(lambda: stored_cursor(db) == len(fake.feed))
+            await worker.stop()
+            cursor = stored_cursor(db)
+            assert isinstance(cursor, int) and cursor >= 10
+
+            feed = spy_on_feed(client)
+            options = {**ALL_STUBS, "poll_wait_s": 0.2, "waiting_step_up_pause_s": 0.05}
+            restarted = VisecaWorker(client, db=db, history=history, **options)
+            try:
+                await restarted.start()
+                assert restarted.events_cursor == cursor
+                _, next_run = await start_run(client, restarted, "SCEN0000")
+                await wait_until(lambda: all(a.decisions for a in fake.runs[next_run].auths))
+                await wait_until(lambda: stored_cursor(db) == len(fake.feed) > cursor)
+            finally:
+                await restarted.stop()
+            assert feed[0][0] == cursor
+            assert all(since >= cursor for since, _ in feed)
+            items = [item["event_id"] for _, reply in feed for item in reply["events"]]
+            assert items and min(items) == cursor + 1
 
     asyncio.run(scenario())
 
