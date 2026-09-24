@@ -22,10 +22,14 @@ const UNKNOWN_EXAMPLE_OUTCOME = { label: 'Checked', className: 'text-ink-muted' 
 
 /**
  * Contract §6 item 9's agent-history line names its customer-wide scope. The
- * dry-run counters above remain card-scoped, while this line covers every card.
+ * dry-run counters above remain card-scoped (and say "on this card"), while
+ * this line covers every card. Zero attempts is worth saying: it means this
+ * would be the first agent purchase on any of the customer's cards.
  */
 function agentHistoryLine({ attempts, approved }: { attempts: number; approved: number }): string {
-  return `You've let an agent buy ${attempts} times before across your cards, ${approved} approved.`
+  if (attempts === 0) return "You haven't let an agent buy before across your cards."
+  const times = attempts === 1 ? 'once' : `${attempts} times`
+  return `You've let an agent buy ${times} before across your cards, ${approved} approved.`
 }
 
 /** DESIGN.md #7: step-2 review — checks, uncertainty choice, dry run, confirm. */
@@ -131,10 +135,11 @@ export function NewPolicyCheck({
               )}
             </div>
             <span
-              className={`shrink-0 rounded-pill px-2.5 py-1 text-[11px] font-semibold ${check.source === 'exact'
+              className={`shrink-0 rounded-pill px-2.5 py-1 text-[11px] font-semibold ${
+                check.source === 'exact'
                   ? 'bg-approved-tint text-approved'
                   : 'bg-asked-tint text-asked'
-                }`}
+              }`}
             >
               {check.source === 'exact' ? 'Exact' : 'My reading'}
             </span>
@@ -166,10 +171,11 @@ export function NewPolicyCheck({
               type="button"
               aria-pressed={uncertaintyPolicy === option.value}
               onClick={() => onChangeUncertaintyPolicy(option.value)}
-              className={`min-h-11 rounded-row border-2 px-4 py-3 text-[15px] font-semibold ${uncertaintyPolicy === option.value
+              className={`min-h-11 rounded-row border-2 px-4 py-3 text-[15px] font-semibold ${
+                uncertaintyPolicy === option.value
                   ? 'border-ink bg-surface-sunken text-ink'
                   : 'border-border-quiet text-ink-soft'
-                }`}
+              }`}
             >
               {option.label}
             </button>
@@ -179,7 +185,7 @@ export function NewPolicyCheck({
 
       <section className="rounded-hero border border-hairline bg-surface p-5">
         <p className="text-[11px] font-semibold tracking-[0.08em] text-cord-accent uppercase">
-          Dry run on your history
+          Dry run on this card&apos;s history
         </p>
         <div className="mt-3 grid grid-cols-3 gap-3 text-center">
           <div>
