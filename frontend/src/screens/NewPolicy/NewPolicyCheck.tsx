@@ -80,7 +80,11 @@ export function NewPolicyCheck({
             type="button"
             onClick={onConfirm}
             disabled={confirming || !canConfirm}
-            className="h-14 rounded-row bg-ink text-[16px] font-semibold text-on-ink transition-opacity disabled:cursor-not-allowed disabled:opacity-70 enabled:hover:opacity-90"
+            // Nothing to confirm reads as inert, like the sign-in screen's
+            // Continue; a busy "Confirming…" stays dark, only dimmed.
+            className={`h-14 rounded-row text-[16px] font-semibold transition-opacity disabled:cursor-not-allowed enabled:hover:opacity-90 ${
+              canConfirm ? 'bg-ink text-on-ink disabled:opacity-70' : 'bg-border-quiet text-ink-muted'
+            }`}
           >
             {confirming ? 'Confirming…' : 'Confirm policy'}
           </button>
