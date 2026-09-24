@@ -212,6 +212,31 @@ def test_the_bearer_key_never_leaves_the_authorization_header(
         assert SECRET not in text
 
 
+def test_demo_refuses_to_start_a_run_while_runs_are_switched_off(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("VISECA_API_KEY", "some-key")
+    monkeypatch.setenv("ONEGUARD_ALLOW_RUNS", "false")
+    monkeypatch.setattr(demo, "get_engine", lambda: pytest.fail("nothing may start"))
+    assert demo.main(["--scenario", "SCEN0000"]) == 2
+    err = capsys.readouterr().err
+    assert "ONEGUARD_ALLOW_RUNS=false" in err and "nothing was started" in err
+
+
+@pytest.mark.parametrize("value", [None, "true", "1"])
+def test_demo_runs_are_allowed_unless_the_flag_is_false(
+    value: str | None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    if value is None:
+        monkeypatch.delenv("ONEGUARD_ALLOW_RUNS", raising=False)
+    else:
+        monkeypatch.setenv("ONEGUARD_ALLOW_RUNS", value)
+    monkeypatch.delenv("VISECA_API_KEY", raising=False)
+    assert demo.main(["--scenario", "SCEN0000"]) == 2
+    err = capsys.readouterr().err
+    assert "VISECA_API_KEY is not set" in err and "ONEGUARD_ALLOW_RUNS" not in err  # past the flag
+
+
 def test_demo_without_a_key_exits_with_a_clear_message(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
