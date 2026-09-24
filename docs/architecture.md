@@ -129,3 +129,5 @@ Fact build < 5 ms · rules + protections + signs < 5 ms · ledger transaction < 
 signals ≤ 500 ms (parallel, optional) · tier 2 ≤ 1.5 s (only when a rule is `unknown`),
 inside the 2 s budget · Viseca POST ~100–300 ms. Internal budget 2 s; platform deadline
 8 s from queueing. Tier 3 runs after posting, not in the budget.
+Measured (docs/benchmark.md, `backend/scripts/bench_engine.py`): end-to-end P95 5.6 ms on
+SQLite with signals off; Laya agent_directed P95 99 ms per purchase on the laptop.
