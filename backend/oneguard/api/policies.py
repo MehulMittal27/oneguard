@@ -30,6 +30,10 @@ PERIOD_OPERATORS = ("<", "<=")
 DRY_RUN_DAYS = 90
 ALL_HISTORY_DAYS = 36500
 NO_CAP_QUESTION = "No amount stated: what is the most one purchase may cost?"
+NO_CHECKS_QUESTION = "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'"
+"""C1's open question when no check at all was read; it stands in for ``NO_CAP_QUESTION``."""
+NO_CHECKS_REASON = "no restriction could be read"
+"""C2's ``lint_failed`` reason for a draft with no checks."""
 
 FX_TO_CHF = {"CHF": Decimal(1), "EUR": Decimal("0.95"), "GBP": Decimal("1.12"), "USD": Decimal("0.87")}
 """rules.md M1: the fixed conversion rates."""

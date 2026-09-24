@@ -115,7 +115,8 @@ DryRunResult { sample_size, would_violate, would_fit, would_ask, insight,
                                               // customer-level (all the customer's cards); the rest of the dry run is card-scoped
 
 PolicyDraft  { draft_id, card_id, instruction, checks: RuleCheck[],
-               uncertainty_policy: 'ask'|'decline', open_questions: string[],
+               uncertainty_policy: 'ask'|'decline', open_questions: string[],  // no checks read: the first entry is
+                                              // "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'"
                dry_run: DryRunResult,
                compiler?: 'llm' | 'form' | 'fallback' }               // NEW: 'fallback' = LLM unavailable, rule-based parse used
 
@@ -220,12 +221,17 @@ expire — that is a broken state, not a degraded one.
   lint → typed rules → `RuleCheck` text → dry-run against the card's history → draft.
   If the LLM fails or times out, the backend falls back to the rule-based parser and sets
   `compiler: 'fallback'`; if even that yields no amount cap, C1 returns the draft with an
-  `open_questions` entry rather than failing.
+  `open_questions` entry rather than failing. If no check at all was read (e.g. "buy
+  something nice"), that entry is "I couldn't read a spending limit or item type - try
+  'groceries, max CHF 120 per order'", first, in place of the no-amount question.
 - C1 with `form`: no LLM; rules built directly.
 - The backend stores, per `RuleCheck.id`, the typed rule
   (`field`, `operator`, `value`, `currency?`, `scope?`, `period_days?`) in Viseca's rule
   format. **The UI only ever sees `text`; `checks` sent back in C2 are treated as accepted
   ids.** Unknown id → 422. Edited text is ignored.
+- C2 refuses a draft with no checks before anything else: 409 `lint_failed`, message
+  "Not confirmed: no restriction could be read.", `detail: { missing: ['per_order_limit'] }`.
+  Nothing is sent to Viseca and no mandate is stored.
 - C2 re-lints the accepted subset. If the result has no per-purchase amount cap, or drops a
   check whose `source` is `exact`, C2 returns 409 with the §3.8 envelope
   `{ error: { code: 'lint_failed', message: <reason>, detail: { missing: [...] } } }`.

@@ -31,7 +31,7 @@ from sqlalchemy import select
 
 from oneguard.api import queries
 from oneguard.api.app import AppConfig, create_app, sanitise
-from oneguard.api.policies import NO_CAP_QUESTION, per_order_cap
+from oneguard.api.policies import NO_CAP_QUESTION, NO_CHECKS_QUESTION, per_order_cap
 from oneguard.api.services import Services
 from oneguard.engine import stubs
 from oneguard.engine.interfaces import load_implementations
@@ -865,14 +865,14 @@ def test_policy_drafts_and_the_viseca_dance(db_url: str) -> None:
             assert r.status_code == 200
             compiled = r.json()
             assert compiled["instruction"] == instruction and compiled["compiler"] == "fallback"
-            assert NO_CAP_QUESTION in compiled["open_questions"]
+            assert compiled["checks"] == [] and compiled["open_questions"][0] == NO_CHECKS_QUESTION
             r = await run.post(
                 f"/api/policy-drafts/{compiled['draft_id']}/confirm",
                 json={"checks": [], "uncertainty_policy": "ask", "open_questions": []},
             )
             assert r.status_code == 409 and r.json()["error"] == {
                 "code": "lint_failed",
-                "message": "Not confirmed: the policy needs a limit on what one purchase may cost.",
+                "message": "Not confirmed: no restriction could be read.",
                 "detail": {"missing": ["per_order_limit"]},
             }
 
@@ -913,6 +913,39 @@ def test_policy_drafts_and_the_viseca_dance(db_url: str) -> None:
             second = await confirm_form(run, per_order_limit_chf=80)
             assert (await run.get("/api/cards/CA0001/policy")).json()["mandate"]["mandate_id"] == second["mandate_id"]
             assert run.fake.mandates[tm]["status"] == "revoked"
+
+    asyncio.run(scenario())
+
+
+def test_a_draft_with_no_checks_asks_and_is_never_confirmed(db_url: str) -> None:
+    """C1 with nothing readable asks for a limit or item type; C2 refuses it (409 lint_failed),
+    sends nothing to Viseca and stores no mandate. A normal draft still confirms."""
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast())) as run:
+            r = await run.post("/api/cards/CA0001/policy-drafts", json={"instruction": "buy something nice"})
+            assert r.status_code == 200
+            draft = r.json()
+            assert draft["checks"] == []
+            assert draft["open_questions"][0] == NO_CHECKS_QUESTION
+            assert NO_CHECKS_QUESTION == "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'"
+            assert NO_CAP_QUESTION not in draft["open_questions"]
+            r = await run.post(
+                f"/api/policy-drafts/{draft['draft_id']}/confirm",
+                json={"checks": [], "uncertainty_policy": "ask", "open_questions": []},
+            )
+            assert r.status_code == 409 and r.json()["error"] == {
+                "code": "lint_failed",
+                "message": "Not confirmed: no restriction could be read.",
+                "detail": {"missing": ["per_order_limit"]},
+            }
+            assert run.fake.mandates == {}
+            with session(run.services.db_engine) as s:
+                assert s.scalar(select(Mandate)) is None
+            assert (await run.get("/api/cards/CA0001/policy")).json()["mandate"] is None
+
+            confirmed = await confirm_form(run)
+            assert confirmed["status"] == "active" and len(run.fake.mandates) == 1
 
     asyncio.run(scenario())
 
