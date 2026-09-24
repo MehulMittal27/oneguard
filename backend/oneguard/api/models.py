@@ -485,6 +485,14 @@ class SoftSignalsToggle(ApiModel):
     enabled: bool
 
 
+class SoftSignalsState(ApiModel):
+    """D5 GET: whether the models run now, for live runs and for the offline replay. The
+    two differ until an operator sets D5 (api-contract §3.7)."""
+
+    live: bool
+    replay: bool
+
+
 # §3.8 errors --------------------------------------------------------------------------
 
 ErrorCode = Literal[

@@ -1199,10 +1199,14 @@ def test_operator_endpoints(db_url: str) -> None:
             await until(done)
             assert (await run.get("/api/dev/runs/run_nope")).status_code == 404
 
+            state = (await run.get("/api/dev/soft-signals")).json()
+            assert state == {"live": run.services.live_models(), "replay": False}
             assert (await run.post("/api/dev/soft-signals", json={"enabled": True})).json() == {"enabled": True}
             assert run.services.worker._signals_enabled is True
+            assert (await run.get("/api/dev/soft-signals")).json() == {"live": True, "replay": True}
             assert (await run.post("/api/dev/soft-signals", json={"enabled": False})).json() == {"enabled": False}
             assert run.services.worker._signals_enabled is False and run.services.live_models() is False
+            assert (await run.get("/api/dev/soft-signals")).json() == {"live": False, "replay": False}
 
             rows = await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
             assert len(rows) == 11  # the live one and the replay's ten

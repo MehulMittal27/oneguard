@@ -65,6 +65,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
         (KNOWN, "=", "true", None, None, None, "decline"),               # "retailer I already know"
         ("merchant.merchant_country", "=", "AT", None, None, None, "decline"),
         ("merchant.merchant_category", "=", "sporting_goods", None, None, None, "decline"),  # "outdoor"
+        (CAT, "in", ("sporting_goods",), None, None, None, "decline"),  # hiking boots, in the catalogue
     ]},
     "SCEN0106": {"rules": [
         (BILL, "<=", 300, "CHF", "purchase", None, "decline"),          # "purchases up to CHF 300 each"
@@ -88,6 +89,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
     "SCEN0122": {"item": "camera lens", "extra": True, "rules": [
         (BILL, "<=", 900, "CHF", "purchase", None, "decline"),
         (KNOWN, "=", "true", None, None, None, "decline"),
+        (CAT, "in", ("photography",), None, None, None, "decline"),  # the catalogue's camera lens
     ]},
     "SCEN0124": {"rules": [
         ("items[].unit_price_chf", "<=", 200, "CHF", "purchase", None, "decline"),  # "per night"
@@ -102,6 +104,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
         ("items[].size_eu", "=", 42, None, None, None, "decline"),
         ("order.return_window_days", ">=", 14, None, None, None, "decline"),
         ("merchant.merchant_category", "=", "sporting_goods", None, None, None, "decline"),
+        (CAT, "in", ("sporting_goods",), None, None, None, "decline"),  # hiking boots, in the catalogue
     ]},
     "SCEN0135": {"rules": [
         (BILL, "<=", 100, "CHF", "purchase", None, "decline"),
