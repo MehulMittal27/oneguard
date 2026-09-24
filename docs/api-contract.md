@@ -357,6 +357,10 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 - `DELETE /v1/mandates/{TM}` at Viseca; our mandate flips to `status: 'revoked'`, never
   deleted. Pending step-ups are shown as cancelled **only** after Viseca confirms their
   state. A revoked card can receive a new policy (new draft → new mandate).
+- Viseca keeps one active mandate per team, so a policy confirmed on any card supersedes
+  the others there. A DELETE answered 404 or 409 (already revoked or superseded) is done:
+  C5 still answers `204` and logs the platform's status. Only another platform failure is
+  a `503 upstream_unavailable` (our policy stays revoked; the customer may try again).
 - Session freeze (`session.trust = 'frozen'`) is engine state, not a mandate change: after a
   burst the engine step-ups the next otherwise-clean purchase once (`session_watch`;
   `session_recovered` on approval), then relaxes; a no or a timeout keeps the watch on. The
