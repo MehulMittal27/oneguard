@@ -16,6 +16,7 @@ from decimal import Decimal
 from oneguard.compiler.draft import (
     COUNTRY_NAMES,
     KNOWN_SHOP_FIELD,
+    MONEY_FIELDS,
     WEEKDAYS,
     ParsedDraft,
     RuleSpec,
@@ -373,6 +374,7 @@ ASK_IF_CHANGED = re.compile(
     r",?\s+(?:then\s+)?ask me\b",
     re.IGNORECASE,
 )
+_PRICE_SUBJECT = re.compile(r"\bthe price\b", re.IGNORECASE)
 
 
 def _same_price(reading: _Reading, text: str, history, card_id: str) -> None:
@@ -381,7 +383,6 @@ def _same_price(reading: _Reading, text: str, history, card_id: str) -> None:
     m = re.search(r"\bsame (?:price|amount) as (?:last time|before|usual|last)\b", text, re.IGNORECASE)
     if not m:
         return
-    ask = bool(ASK_IF_CHANGED.search(text))
     found = last_price(history, card_id, reading.requested_item or text)
     if found is None:
         reading.questions.append(
@@ -390,7 +391,7 @@ def _same_price(reading: _Reading, text: str, history, card_id: str) -> None:
     price, row = found
     reading.specs.append(RuleSpec(
         field="authorization.billing_amount_chf", operator="=", value=number(price), currency="CHF",
-        scope="purchase", words=m.group(0), source="inferred", on_fail="ask" if ask else "decline",
+        scope="purchase", words=m.group(0), source="inferred",
         note=f"last paid at {row.merchant_name} on {row.timestamp:%d %b %Y}",
         value_from=f"history: last approved price at {row.merchant_id}"))
 
@@ -399,9 +400,36 @@ def _renew(reading: _Reading, text: str) -> None:
     """"Renew my X …, ask me if anything changed": the same shop as before, and a
     different one is a change to ask about (on_fail ask), never a decline."""
     m = re.search(r"\brenew\b", text, re.IGNORECASE)
-    if m and ASK_IF_CHANGED.search(text) and not any(s.field == KNOWN_SHOP_FIELD for s in reading.specs):
+    ask = ASK_IF_CHANGED.search(text)
+    if m and ask and not any(s.field == KNOWN_SHOP_FIELD for s in reading.specs):
         reading.specs.append(RuleSpec(field=KNOWN_SHOP_FIELD, operator="=", value="true", words=m.group(0),
-                                      source="inferred", on_fail="ask", note="the same shop as before"))
+                                      source="inferred", on_fail="ask", note="the same shop as before",
+                                      ask_clause=f"{m.group(0)} … {ask.group(0)}"))
+
+
+def _ask_if_changed(reading: _Reading, text: str) -> None:
+    """"…, ask me if anything changed" covers one rule: the one compiled from the clause
+    just before it ("same price as last time"). That rule is recorded as asked about, so
+    lint rejects ``on_fail: ask`` on any other rule, from either reading. When the clause
+    holds no rule, or several ("buy groceries up to CHF 50"), none is: they decline.
+    The parser itself asks only on a price taken from history; the renew rule records
+    its own words (``_renew``)."""
+    m = ASK_IF_CHANGED.search(text)
+    before = [c for c in _clauses(text[: m.start()]) if c.lower() not in ("and", "but", "then")] if m else []
+    if not m or not before:
+        return
+    clause = before[-1]
+    candidates = [
+        i for i, s in enumerate(reading.specs)
+        if s.words and s.words.lower() in clause.lower()
+        and (s.field in MONEY_FIELDS or not _PRICE_SUBJECT.search(m.group(0)))
+    ]
+    if len(candidates) != 1 or reading.specs[candidates[0]].ask_clause:
+        return
+    spec = reading.specs[candidates[0]]
+    ask = spec.value_from is not None and spec.value_from.startswith("history")
+    reading.specs[candidates[0]] = spec.model_copy(update={
+        "ask_clause": f"{clause}, {m.group(0)}", "on_fail": "ask" if ask else spec.on_fail})
 
 
 def _amount_question(reading: _Reading) -> None:
@@ -445,6 +473,7 @@ def parse(instruction: str, history=None, card_id: str = "", today: date | None 
     if history is not None:
         _same_price(reading, text, history, card_id)
     _renew(reading, text)
+    _ask_if_changed(reading, text)
     reading.uncertainty, extra = uncertainty_setting(text)
     reading.questions += extra
     _amount_question(reading)

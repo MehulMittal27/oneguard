@@ -107,7 +107,7 @@ EXAMPLES: list[tuple[str, dict[str, Any]]] = [
     ),
     (
         (
-            "Top up my phone plan at the same price as last time, only on weekdays, and if the price "
+            "Top up my phone plan only on weekdays, at the same price as last time, and if the price "
             "differs, ask me."
         ),
         {
@@ -166,7 +166,9 @@ Rules:
 - uncertainty_policy is what to do when a fact is UNKNOWN: "Ask me when uncertain" -> "ask";
   "decline if unsure" -> "decline"; not stated -> "ask". It never changes on_fail.
 - on_fail is "decline" on every rule, EXCEPT "ask" on the one rule the customer explicitly said to
-  be asked about if it changes or differs ("same price as last time, ask me if anything changed").
+  be asked about if it changes or differs: the rule stated in the clause just before "ask me if
+  anything changed" / "if it differs, ask me" ("same price as last time, ask me if anything changed").
+  Never on any other rule: an item type or a limit stated elsewhere still declines.
   "Ask me when uncertain" is NOT such a phrase: a CHF 252 order against "no more than CHF 200"
   must decline.
 - "same price as last time": authorization.billing_amount_chf "=", value_from "last_price",

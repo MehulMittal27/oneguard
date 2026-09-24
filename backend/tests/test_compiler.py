@@ -20,6 +20,7 @@ import yaml
 from oneguard.compiler import compile_instruction
 from oneguard.compiler.draft import ParsedDraft
 from oneguard.compiler.lint import lint, lint_accepted
+from oneguard.compiler.llm import read_with_llm
 from oneguard.compiler.parser import parse
 from oneguard.engine.interfaces import IMPLEMENTATIONS, load_implementations
 from oneguard.engine.types import HistoryRow, Rule
@@ -252,6 +253,58 @@ def test_same_price_comes_from_history_and_asks_when_it_changes(history):
     rule = next(r for r in draft.rules if r.field == BILL)
     assert rule.value == 59.0 and rule.on_fail == "ask" and rule.source == "inferred"
     assert "Alpine Fitness Club" in rule.text and "ask me if it changed" in rule.text
+
+
+# --- on_fail ask: one rule, the one before "ask me if anything changed" ------------------
+def _gym_reading(ask_on: set[str]) -> dict[str, Any]:
+    """The model's gym reading with on_fail ask on exactly the given fields."""
+    reading = MODEL_READINGS[GYM]
+    return reading | {"rules": [r | {"on_fail": "ask" if r["field"] in ask_on else "decline"}
+                                for r in reading["rules"]]}
+
+
+def test_the_parser_records_which_rule_the_ask_clause_covers(history):
+    draft = parse(GYM, history, CARD)
+    assert draft.asked_about == {"C1-same": "same price as last time, ask me if anything changed",
+                                 "C9-same": "Renew … ask me if anything changed"}
+    assert {r.id for r in draft.rules if r.on_fail == "ask"} == {"C1-same", "C9-same"}
+    # The clause before the ask holds two rules: neither is covered, both decline.
+    both = parse("Buy groceries up to CHF 50, ask me if anything changed")
+    assert both.asked_about == {} and {r.on_fail for r in both.rules} == {"decline"}
+
+
+def test_gym_with_ask_on_the_item_type_is_rejected_and_falls_back(history):
+    reading = _gym_reading({"items[].item_category", BILL, "merchant.familiar_on_card"})
+    floor = parse(GYM, history, CARD)
+    read = read_with_llm(GYM, ScriptedProvider({GYM: reading}), history, CARD, date(2026, 8, 10))
+    issues = lint(read, floor.asked_about).issues
+    assert [(i.code, i.rule_id) for i in issues] == [("on_fail_not_stated", "C3-same")]
+    assert "same price as last time" in issues[0].message
+
+    draft = compile_instruction(GYM, history, CARD, ScriptedProvider({GYM: reading}))
+    assert draft.compiler == "fallback"
+    assert {r.id: r.on_fail for r in draft.rules} == {"C3": "decline", "C1-same": "ask", "C9-same": "ask"}
+
+
+def test_gym_with_ask_on_the_price_rule_passes(history):
+    floor = parse(GYM, history, CARD)
+    read = read_with_llm(GYM, ScriptedProvider(MODEL_READINGS), history, CARD, date(2026, 8, 10))
+    assert lint(read, floor.asked_about).ok
+    draft = compile_instruction(GYM, history, CARD, ScriptedProvider(MODEL_READINGS))
+    assert draft.compiler == "llm"
+    assert {r.id: r.on_fail for r in draft.rules} == {"C3": "decline", "C1-same": "ask", "C9-same": "ask"}
+
+
+def test_ask_on_a_rule_the_clause_does_not_cover_is_rejected(history):
+    """No ask phrase: nothing is covered. Two rules from one clause asking: one too many."""
+    plain = "Renew my gym membership, same price as last time"
+    assert parse(plain, history, CARD).asked_about == {}
+    read = read_with_llm(plain, ScriptedProvider({plain: _gym_reading({BILL})}), history, CARD)
+    assert [i.rule_id for i in lint(read, {}).issues] == ["C1-same"]
+    twice = read.model_copy(update={"instruction": GYM, "rules": read.rules + [
+        read.rules[1].model_copy(update={"id": "C1-same-2", "value": 60})]})
+    assert [i.rule_id for i in lint(twice, {"C1-same": "same price as last time"}).issues
+            if i.code == "on_fail_not_stated"] == ["C1-same-2"]
 
 
 def test_model_values_outside_the_vocabulary_become_questions(history):

@@ -55,7 +55,7 @@ def compile_instruction(
     if provider_available(provider):
         try:
             read = read_with_llm(text, provider, history, card_id, today, preferences)
-            rejected = lint(read).issues + lint_against_floor(read, fallback)
+            rejected = lint(read, fallback.asked_about).issues + lint_against_floor(read, fallback)
             if not rejected:
                 chosen, chosen_lint, compiler = read, LintResult(issues=[]), "llm"
             else:

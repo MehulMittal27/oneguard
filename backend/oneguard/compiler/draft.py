@@ -92,6 +92,10 @@ class RuleSpec(_Model):
     on_fail: Literal["decline", "ask"] = "decline"
     note: str | None = None  # extra wording for the check text (e.g. where a value came from)
     value_from: str | None = None  # set when the value is resolved, not stated (history, a date)
+    # The customer's words that allow ``on_fail: ask`` on this rule ("ask me if anything
+    # changed" and the clause it follows). Set by the parser only; lint holds every
+    # reading's ask rules to these (compiler/lint.py).
+    ask_clause: str | None = None
 
 
 class ParsedDraft(_Model):
@@ -108,6 +112,7 @@ class ParsedDraft(_Model):
     nothing_extra: bool = False
     shop_type: str | None = None
     resolved: dict[str, str] = Field(default_factory=dict)  # rule id -> where its value came from
+    asked_about: dict[str, str] = Field(default_factory=dict)  # rule id -> the words that allow on_fail ask
 
 
 # --- Money ---------------------------------------------------------------------------
@@ -308,6 +313,7 @@ def finalize(
     taken: set[str] = set()
     rules = [to_rule(s, taken, requested_item) for s in unique]
     resolved = {r.id: s.value_from for r, s in zip(rules, unique, strict=True) if s.value_from}
+    asked_about = {r.id: s.ask_clause for r, s in zip(rules, unique, strict=True) if s.ask_clause}
 
     def values(field: str, op: str) -> list[str] | None:
         out: list[str] = []
@@ -332,4 +338,5 @@ def finalize(
         nothing_extra=nothing_extra,
         shop_type=shop[0] if shop else None,
         resolved=resolved,
+        asked_about=asked_about,
     )

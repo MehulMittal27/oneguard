@@ -87,8 +87,12 @@ def _with_on_fail_ask(instruction: str):
 def test_on_fail_ask_needs_the_customer_to_say_so():
     uncertain = _with_on_fail_ask("Buy groceries up to CHF 50. Ask me when uncertain.")
     assert {i.code for i in lint(uncertain).issues} == {"on_fail_not_stated"}  # one per rule
+    # "if the price differs" covers the price rule in the clause before it, not the item type.
     changed = _with_on_fail_ask("Buy groceries up to CHF 50, and if the price differs, ask me.")
-    assert lint(changed).ok
+    assert [(i.code, i.rule_id) for i in lint(changed).issues] == [("on_fail_not_stated", "C3")]
+    price_only = changed.model_copy(update={"rules": [
+        r.model_copy(update={"on_fail": "ask" if r.id == "C1" else "decline"}) for r in changed.rules]})
+    assert lint(price_only).ok
 
 
 def test_the_floor_reports_every_lost_kind():

@@ -8,8 +8,10 @@
 - T5 a per-order amount cap is present, or an open question asks for one;
 - contradictions: rules on the same field that no purchase could satisfy together;
 - ``on_fail: ask`` only where the customer said to be asked about a change ("ask me if
-  anything changed"); "ask me when uncertain" is the uncertainty setting (C11), and a
-  broken limit under it still declines (D1).
+  anything changed"), and only on the rule the parser compiled from the clause just
+  before it (``ParsedDraft.asked_about``; "renew" adds the same-shop rule), once each.
+  An LLM reading is held to the parser's record. "Ask me when uncertain" is the
+  uncertainty setting (C11), and a broken limit under it still declines (D1).
 
 ``lint_against_floor`` holds an LLM reading to the fallback parser's (T1): it must keep
 every kind of restriction the parser found. ``lint_accepted`` is the C2 re-lint of the
@@ -182,14 +184,27 @@ def _bounds_conflict(rules: list[Rule]) -> list[LintIssue]:
     return issues
 
 
-def _check_on_fail(draft: ParsedDraft) -> list[LintIssue]:
-    if ASK_IF_CHANGED.search(draft.instruction):
-        return []
-    return [
-        LintIssue(code="on_fail_not_stated", rule_id=r.id,
-                  message=f"{r.text}: you did not ask to be asked instead of declining")
-        for r in draft.rules if r.on_fail == "ask"
-    ]
+def _stem(rule_id: str) -> str:
+    """C1-same -> C1: a rule's id gains "-same" when it asks (draft.to_rule), so a reading
+    that asks on the parser's declining rule still names the same rule. A second rule of
+    the kind keeps its number (C1-same-2 -> C1-2): it is a different rule, not covered."""
+    return re.sub(r"-same(?=-|$)", "", rule_id)
+
+
+def _check_on_fail(draft: ParsedDraft, asked_about: dict[str, str]) -> list[LintIssue]:
+    stated = bool(ASK_IF_CHANGED.search(draft.instruction))
+    covered_ids = {_stem(rule_id) for rule_id in asked_about}
+    issues = []
+    for r in draft.rules:
+        if r.on_fail != "ask" or _stem(r.id) in covered_ids:
+            continue
+        if not stated:
+            message = f"{r.text}: you did not ask to be asked instead of declining"
+        else:
+            covered = "; ".join(f'"{w}"' for w in asked_about.values()) or "no single check"
+            message = f"{r.text}: you asked to be asked about {covered}, not this"
+        issues.append(LintIssue(code="on_fail_not_stated", rule_id=r.id, message=message))
+    return issues
 
 
 def coverage(draft: ParsedDraft) -> set[str]:
@@ -223,9 +238,11 @@ def lint_against_floor(read: ParsedDraft, floor: ParsedDraft) -> list[LintIssue]
     ]
 
 
-def lint(draft: ParsedDraft) -> LintResult:
+def lint(draft: ParsedDraft, asked_about: dict[str, str] | None = None) -> LintResult:
+    """``asked_about``: the rules ``on_fail: ask`` may sit on; the parser's record
+    (``floor.asked_about``) when linting an LLM reading, else the draft's own."""
     issues = _check_amounts_used(draft) + _check_boundaries(draft) + _check_numbers(draft)
-    issues += _check_on_fail(draft)
+    issues += _check_on_fail(draft, draft.asked_about if asked_about is None else asked_about)
     if not _has_amount_cap(draft.rules) and not any(_AMOUNT_QUESTION.search(q) for q in draft.open_questions):
         issues.append(LintIssue(code="no_amount_cap",
                                 message="No per-order amount limit, and no question asking for one"))
