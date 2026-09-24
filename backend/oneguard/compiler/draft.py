@@ -46,7 +46,6 @@ COUNTRY_NAMES: dict[str, str] = {
 SIZE_LETTERS: tuple[str, ...] = ("XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL")
 
 ValueType = Literal["number", "text", "list", "date", "none"]
-PURCHASE_COUNT_FIELD = "cart.purchases_in_period"
 
 # field -> (value type, allowed operators, kind)
 FIELDS: dict[str, tuple[ValueType, tuple[str, ...], RuleKind]] = {
@@ -67,9 +66,6 @@ FIELDS: dict[str, tuple[ValueType, tuple[str, ...], RuleKind]] = {
     "authorization.delivery_by": ("date", ("<=",), "terms"),
     "authorization.weekday": ("list", ("in", "not_in"), "other"),
     "authorization.local_hour": ("number", ("<", "<=", ">=", ">"), "other"),
-    # Engine gap: purchases in a rolling window ("one delivery a day"). The field P1
-    # announces for it; until the engine reads it the rule is unknown, so C11 asks.
-    PURCHASE_COUNT_FIELD: ("number", ("<", "<="), "period"),
     "unverifiable": ("text", ("=",), "other"),
 }
 MONEY_FIELDS = frozenset({"authorization.billing_amount_chf", "items[].unit_price_chf"})
@@ -174,7 +170,7 @@ def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
     elif f == "items[].unit_price_chf":
         text = _limit_text(spec, "Each item", "")
     elif f in ("cart.quantity", "items[].quantity"):
-        what = requested_item or "items"
+        what = requested_item or ("item" if v == 1 else "items")
         bound = {"=": "Exactly", "<=": "At most", "<": "Fewer than", ">=": "At least", ">": "More than"}[op]
         text = f"{bound} {fmt_amount(v)} {what}" + (" per cart line" if f == "items[].quantity" else "")
     elif f == "items[].item_category":
@@ -218,10 +214,6 @@ def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
         text = {"<": f"Only before {hour:02d}:00", "<=": f"Only until {hour:02d}:59",
                 ">=": f"Only from {hour:02d}:00", ">": f"Only after {hour:02d}:59"}[op]
         text += " (Swiss time)"
-    elif f == PURCHASE_COUNT_FIELD:
-        n, days = int(v), spec.period_days or 1
-        window = {1: "a day", 7: "any 7 days", 30: "any 30 days"}.get(days, f"any {days} days")
-        text = f"At most {n} purchase{'s' if n != 1 else ''} in {window}" if op == "<="             else f"Fewer than {n} purchases in {window}"
     elif f == "unverifiable":
         text = f'"{spec.words}" (no data can check this; you will be asked)'
     else:  # pragma: no cover - FIELDS is closed
@@ -255,7 +247,6 @@ def _base_id(spec: RuleSpec) -> str:
         "items[].unit_price_chf": "C12-price", "merchant.merchant_country": "C12-country",
         "authorization.delivery_by": "C12-delivery", "authorization.weekday": "C12-day",
         "authorization.local_hour": "C12-hour", "cart.recurring": "C12-recurring",
-        PURCHASE_COUNT_FIELD: "C12-count",
     }[f]
 
 

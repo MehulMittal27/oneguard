@@ -1,6 +1,6 @@
 """OpenAI provider (P4): structured outputs in JSON-schema mode.
 
-Model from ``ONEGUARD_OPENAI_MODEL`` (default ``gpt-4o-mini``), key from
+Model from ``ONEGUARD_OPENAI_MODEL`` (default ``gpt-4.1``, docs/decisions.md), key from
 ``OPENAI_API_KEY`` (server-side only; never logged). Every failure — missing package,
 missing key, timeout, refusal, truncation, API error, output off-schema — raises
 ProviderUnavailable, so callers take their deterministic path.
@@ -15,7 +15,7 @@ from oneguard.llm.provider import ProviderUnavailable
 from oneguard.llm.validate import parse_and_validate, with_deadline
 
 MODEL_ENV = "ONEGUARD_OPENAI_MODEL"
-DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_MODEL = "gpt-4.1"
 KEY_ENV = "OPENAI_API_KEY"
 
 

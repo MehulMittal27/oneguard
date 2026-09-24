@@ -17,7 +17,6 @@ from oneguard.compiler.draft import (
     COUNTRY_NAMES,
     KNOWN_SHOP_FIELD,
     MONEY_FIELDS,
-    PURCHASE_COUNT_FIELD,
     WEEKDAYS,
     ParsedDraft,
     RuleSpec,
@@ -43,6 +42,19 @@ _AMOUNT = re.compile(
     r"|(?P<num2>\d[\d,']*(?:\.\d+)?)\s?(?P<cur2>CHF\b|EUR\b|GBP\b|USD\b|francs?\b|euros?\b|pounds\b|dollars\b)",
     re.IGNORECASE,
 )
+# "max CHF 120 per order and 300 a week": a bare number joined to an amount by "and" /
+# "or" and followed by its own scope ("a week", "per order") is an amount in the same
+# currency. ``with_shared_currency`` writes the currency in, for the parser and lint alike.
+_SHARED_CURRENCY = re.compile(
+    r"(?:(?P<cur>\bCHF|\bEUR|\bGBP|\bUSD|\bFr\.?|€|£|\$)\s?\d[\d,']*(?:\.\d+)?"
+    r"|\d[\d,']*(?:\.\d+)?\s?(?P<cur2>CHF\b|EUR\b|GBP\b|USD\b|francs?\b|euros?\b|pounds\b|dollars\b))"
+    r"[^.;!?\d]*?(?:,\s*|\s(?:and|or)\s+)"
+    r"(?:(?:up to|max(?:imum)?|at most|under|below|less than|no more than)\s+)?"
+    r"(?P<num>\d[\d,']*(?:\.\d+)?)"
+    r"(?=\s+(?:a|per|each|every|in|over|within|across)\s+(?:any\s+|a\s+|the\s+)?(?:rolling\s+)?"
+    r"(?:\d+[\s-]+days?|day|week|month|fortnight|order|purchase)\b)",
+    re.IGNORECASE,
+)
 _INCLUSIVE_BEFORE = re.compile(
     r"((?:never|not|don't|do not) (?:spend|pay|go) (?:more|over) than|"
     r"at or below|at or under|at most|no more than|not more than|no higher than|max(?:imum)?\.?|"
@@ -63,8 +75,14 @@ _PER_ITEM_AFTER = re.compile(
     re.IGNORECASE)
 _PER_ITEM_BEFORE = re.compile(r"\beach (?:item|ticket|piece|one|night)\b|\bper (?:item|ticket|piece|unit|night)\b",
                               re.IGNORECASE)
-# "purchases up to CHF 300 each": "each" is each purchase, a per-order cap.
+# "purchases up to CHF 300 each", "electronics up to CHF 300 each": "each" is each
+# purchase, a per-order cap, unless items are counted ("two tickets, max CHF 90 each").
 _EACH_ORDER = re.compile(r"\b(?:purchases?|orders?|bookings?|deliveries|payments?|baskets?)\b", re.IGNORECASE)
+_COUNTED = re.compile(
+    rf"\b(?<!size )(?:{'|'.join(w for w in NUMBER_WORDS if w != 'one')}|[2-9]|\d\d+)\s+"
+    r"(?:[a-z-]+\s+){0,2}?(?!(?:days|nights|hours|weeks|months|years)\b)[a-z-]+s\b",
+    re.IGNORECASE,
+)
 
 # Words for item types (C3). Value: (categories, source when the word is used).
 ITEM_WORDS: list[tuple[re.Pattern[str], list[str]]] = [
@@ -124,7 +142,7 @@ _SHOP_NOUNS = r"shops?|sellers?|stores?|merchants?|places?|retailers?|supermarke
 _KNOWN_SHOP = re.compile(
     rf"\b(?:{_SHOP_NOUNS})\s+(?:that\s+)?(?:I|we)\s+"
     r"(?:have\s+|'ve\s+|already\s+)*(?:use|used|bought from|shopped at|ordered from|know|trust)\b"
-    rf"|\b(?:known|familiar) (?:shops?|sellers?|stores?)\b|\bmy (?:usual|regular) (?:{_SHOP_NOUNS})\b"
+    rf"|\b(?:known|familiar) (?:{_SHOP_NOUNS})\b|\bmy (?:usual|regular) (?:{_SHOP_NOUNS})\b"
     r"|\bmy (?:current|existing) subscriptions\b",
     re.IGNORECASE,
 )
@@ -135,7 +153,9 @@ _SHOP_PHRASE = re.compile(
 )
 _ITEM_VERB = re.compile(
     r"(?<!per )(?<!each )(?<!an )(?<!the )(?<!a )(?<!one )(?<!two )"  # "per order", "one order": a noun
-    r"\b(?:buy|order|replace|renew|get|purchase|book|need|want|top up)\s+(?:me\s+|us\s+|for me\s+)?"
+    r"\b(?:buy|order|replace|renew|get|purchase|book|need|want|top up)"
+    r"(?!\s+(?:a|per|each|every)\s+(?:day|week|month|night)\b)"  # "one lunch order a day": a noun
+    r"\s+(?:me\s+|us\s+|for me\s+)?"
     r"(?P<det>(?:(?:the|my|our|a|an|some|one|two|three|four|five|six|\d+)\s+)*)"
     r"(?P<phrase>[\w'-]+(?:\s+[\w'-]+){0,4}?)"
     r"(?=\s+(?:I|we)\s+(?:chose|picked|selected|want|like|need)|\s+in size|\s+size\b|\s+from\b|\s+for\b|"
@@ -163,17 +183,47 @@ def _clauses(text: str) -> list[str]:
     return [p.strip() for p in parts if p and p.strip()]
 
 
+def with_shared_currency(text: str) -> str:
+    """The instruction with the currency written in front of each bare follow-on amount
+    ("max CHF 120 per order and 300 a week" -> "... and CHF 300 a week")."""
+    for _ in range(8):  # "CHF 50 per order, 200 a week and 500 a month": one per pass
+        m = _SHARED_CURRENCY.search(text)
+        if not m:
+            break
+        key = (m.group("cur") or m.group("cur2")).lower()
+        cur = _CURRENCY.get(key) or _CURRENCY.get(key.rstrip("s")) or "CHF"
+        text = f"{text[: m.start('num')]}{cur} {text[m.start('num'):]}"
+    return text
+
+
+def _counted(money: str) -> bool:
+    """The instruction counts its items ("two tickets"): "X each" is then per item."""
+    return bool(_COUNTED.search(_AMOUNT.sub(" ", money)))
+
+
+def each_is_per_purchase(instruction: str, words: str) -> bool:
+    """"up to CHF 300 each" with no counted items: each purchase, a per-order cap. The
+    LLM path reads a per-item limit through this, so both readings agree."""
+    m = _AMOUNT.search(words)
+    if not m:
+        return False
+    per_item = _PER_ITEM_AFTER.search(words[m.end():]) or _PER_ITEM_BEFORE.search(words[: m.start()])
+    each = bool(per_item) and per_item.group(0).strip(" ,;:-").lower() == "each"
+    return each and not _counted(with_shared_currency(" ".join(instruction.split())))
+
+
 def _num(word: str) -> int | None:
     word = word.lower()
     return int(word) if word.isdigit() else NUMBER_WORDS.get(word)
 
 
 # --- Money (C1, C2, C12 per-item) ----------------------------------------------------
-def _amounts(reading: _Reading, clause: str) -> None:
+def _amounts(reading: _Reading, clause: str, counted: bool = False) -> None:
     """Each amount is read in its own stretch of the clause, from the end of the amount
     before it to the start of the one after it: "never spend more than CHF 100 per order
     or CHF 250 in any 7-day window" is a per-order cap and a 7-day cap. An amount with no
-    boundary word of its own shares the one before it ("more than X or Y")."""
+    boundary word of its own shares the one before it ("more than X or Y"). ``counted``:
+    the instruction counts its items ("two tickets"), so "X each" is per item."""
     found = list(_AMOUNT.finditer(clause))
     shared: tuple[str, str] | None = None
     for i, m in enumerate(found):
@@ -200,8 +250,9 @@ def _amounts(reading: _Reading, clause: str) -> None:
         local = f"{before} {clause[m.start(): m.end()]} {after}"
         period = _PERIOD.search(after) or (_PERIOD.search(before) if i == 0 else None)
         per_item = _PER_ITEM_AFTER.search(after) or _PER_ITEM_BEFORE.search(before)
-        if per_item and per_item.group(0).strip(" ,;:-").lower() == "each" and _EACH_ORDER.search(clause[: m.start()]):
-            per_item = None  # "purchases up to CHF 300 each": each purchase
+        if per_item and per_item.group(0).strip(" ,;:-").lower() == "each" \
+                and (_EACH_ORDER.search(clause[: m.start()]) or not counted):
+            per_item = None  # "purchases up to CHF 300 each", "electronics up to CHF 300 each": each purchase
         if period:
             days = _period_days(period)
             reading.specs.append(RuleSpec(
@@ -396,6 +447,8 @@ def _shops(reading: _Reading, text: str) -> None:
         kind = m.group("kind").strip()
         if re.fullmatch(r"(?:a|an|the|shops?|sellers?|stores?)", kind, re.IGNORECASE):
             continue
+        if re.fullmatch(r"(?:(?:my|our|known|familiar|usual|regular)\s*)+", kind, re.IGNORECASE):
+            continue  # "at known retailers", "from my usual shops": the known-shop rule (C9)
         said = text[m.start(): m.end()].strip()
         country = next((c for w, c in COUNTRY_WORDS.items() if re.search(rf"\b{w}\b", kind, re.IGNORECASE)), None)
         category = next((c for p, c in SHOP_KIND if p.search(kind)), None)
@@ -508,22 +561,18 @@ def _ask_if_changed(reading: _Reading, text: str) -> None:
 
 
 _COUNT_PER_PERIOD = re.compile(
-    rf"\b(?P<n>{_NUM})\s+(?:deliver(?:y|ies)|orders?|purchases?|bookings?|payments?)\s+(?:a|per|each|every)\s+"
-    r"(?P<p>day|week|month)\b",
+    rf"\b(?:at most\s+|no more than\s+|up to\s+|max(?:imum)?\s+)?{_NUM}\s+(?:[\w-]+\s+){{0,2}}?"
+    r"(?:deliver(?:y|ies)|orders?|purchases?|bookings?|payments?)\s+(?:a|per|each|every)\s+(?:day|week|month)\b",
     re.IGNORECASE,
 )
 
 
 def _count_per_period(reading: _Reading, text: str) -> None:
-    """"one delivery a day": a purchase count in a rolling window. Engine gap: compiled
-    against the field P1 announces (``cart.purchases_in_period``, scope period); until the
-    engine reads it the rule is unknown and the customer is asked."""
+    """"one delivery a day", "one meal delivery a day": a purchase count in a rolling
+    window. Engine gap: no field counts purchases yet, so it is an unverifiable rule the
+    customer is asked about (a period rule would be read as a CHF limit, P3)."""
     if m := _COUNT_PER_PERIOD.search(text):
-        n = _num(m.group("n"))
-        if n:
-            reading.specs.append(RuleSpec(field=PURCHASE_COUNT_FIELD, operator="<=", value=n, scope="period",
-                                          period_days={"day": 1, "week": 7, "month": 30}[m.group("p").lower()],
-                                          words=m.group(0)))
+        reading.specs.append(RuleSpec(field="unverifiable", operator="=", value=m.group(0), words=m.group(0)))
 
 
 _MONTHS = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
@@ -597,8 +646,10 @@ def parse(instruction: str, history=None, card_id: str = "", today: date | None 
 
     text = " ".join(instruction.split())
     reading = _Reading()
-    for clause in _clauses(text):
-        _amounts(reading, clause)
+    money = with_shared_currency(text)
+    counted = _counted(money)
+    for clause in _clauses(money):
+        _amounts(reading, clause, counted)
     _item(reading, text)
     _blocked(reading, text)
     _details(reading, text)

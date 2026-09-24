@@ -22,7 +22,6 @@ from oneguard.compiler.draft import (
     ITEM_CATEGORIES,
     KNOWN_SHOP_FIELD,
     MERCHANT_CATEGORIES,
-    PURCHASE_COUNT_FIELD,
     SIZE_LETTERS,
     WEEKDAYS,
     ParsedDraft,
@@ -31,6 +30,8 @@ from oneguard.compiler.draft import (
     next_weekday,
     number,
 )
+from oneguard.compiler.lint import stated_boundary
+from oneguard.compiler.parser import each_is_per_purchase
 from oneguard.compiler.resolve import last_price
 from oneguard.engine.types import HistoryIndex
 from oneguard.llm.provider import Provider
@@ -152,9 +153,9 @@ EXAMPLES: list[tuple[str, dict[str, Any]]] = [
         },
     ),
     (
-        # weekday wording, a purchase count per period, usual services
+        # weekday wording, a purchase count per period (with the item types inside it), usual services
         (
-            "Lunch on weekdays only, at most one order a day, CHF 30 maximum, from my usual services. "
+            "At most one lunch delivery a day on weekdays, CHF 30 maximum, from my usual services. "
             "Never at the weekend."
         ),
         {
@@ -162,12 +163,12 @@ EXAMPLES: list[tuple[str, dict[str, Any]]] = [
             "requested_item": None,
             "nothing_extra": False,
             "rules": [
-                _example_rule("items[].item_category", "in", "Lunch", value_list=["dining", "food_delivery"],
+                _example_rule("unverifiable", "=", "At most one lunch delivery a day",
+                              value_text="At most one lunch delivery a day"),
+                _example_rule("items[].item_category", "in", "lunch", value_list=["dining", "food_delivery"],
                               source="inferred"),
-                _example_rule("authorization.weekday", "in", "on weekdays only",
+                _example_rule("authorization.weekday", "in", "on weekdays",
                               value_list=["mon", "tue", "wed", "thu", "fri"]),
-                _example_rule(PURCHASE_COUNT_FIELD, "<=", "one order a day", value_number=1, scope="period",
-                              period_days=1),
                 _example_rule("authorization.billing_amount_chf", "<=", "CHF 30 maximum", value_number=30,
                               currency="CHF", scope="purchase"),
                 _example_rule(KNOWN_SHOP_FIELD, "=", "my usual services", value_text="true"),
@@ -291,7 +292,6 @@ Use ONLY these fields (docs/api-contract.md §3.3):
 | authorization.delivery_by | "<=" a date: value_text YYYY-MM-DD, or value_from "next_weekday" with value_text "fri" for "by Friday" |
 | authorization.weekday | purchase day in Swiss time, in / not_in of {", ".join(WEEKDAYS)} |
 | authorization.local_hour | purchase hour in Swiss time, 0-23 |
-| {PURCHASE_COUNT_FIELD} | "<=" N purchases in a rolling window, scope "period", period_days (1 = a day): "one delivery a day" |
 | unverifiable | a stated restriction no field can check ("from the official ticket seller", "the present I picked"); value_text = the customer's words |
 
 Rules:
@@ -309,28 +309,42 @@ Rules:
   be asked about if it changes or differs: the rule stated in the clause just before "ask me if
   anything changed" / "if it differs, ask me" ("same price as last time, ask me if anything changed").
   Never on any other rule: an item type or a limit stated elsewhere still declines.
-  "Ask me when uncertain" is NOT such a phrase: a CHF 252 order against "no more than CHF 200"
-  must decline.
+  "Ask me when uncertain", "if unsure, ask", "ask me if something doesn't fit" and "ask me if
+  anything is unclear" are NOT such phrases: they are uncertainty_policy "ask" and leave every
+  on_fail "decline". A CHF 252 order against "no more than CHF 200" must decline.
 - "same price as last time": authorization.billing_amount_chf "=", value_from "last_price",
   value_number null; the price is looked up from the customer's history, never guessed.
 - "Renew …" together with "ask me if anything changed" also means the same shop as before:
   merchant.familiar_on_card "true", source "inferred", on_fail "ask".
-- Amount scope: "per order" / "each order" / "purchases up to X each" = per purchase
-  (authorization.billing_amount_chf, scope "purchase"); "per night" / "each item" / "X each" after
-  an item = items[].unit_price_chf; "in any 7-day window" / "per month" = scope "period".
-  "Never spend more than X" is "<=". Two amounts in one sentence are two rules.
+- Amount scope: "per order" / "each order" / "purchases up to X each" / "electronics up to X each"
+  = per purchase (authorization.billing_amount_chf, scope "purchase"); "per night" / "each item" /
+  "X each" after counted items ("two tickets, max CHF 90 each") = items[].unit_price_chf; "in any
+  7-day window" / "a week" / "per month" = scope "period". "Never spend more than X" is "<=".
+  Two amounts in one sentence are two rules ("max CHF 120 per order and 300 a week": 300 is CHF
+  too, a 7-day limit).
 - Item types the customer allows ("groceries and household basics only", "weeknight dinners")
-  are one items[].item_category "in" rule; types after "no" are excluded, never allowed.
-  Excluded types ("no gift cards, no cosmetics"; flights and travel insurance are "travel") are
-  one "not_in" rule. A thing no category holds ("no alcohol": wine is groceries; "no premium
-  tiers"; "no annual prepayments") is one unverifiable rule each.
+  are one items[].item_category "in" rule, also without "only": what the customer wants bought
+  ("two meal deliveries a week", "a hotel") is that kind alone. Types after "no" are excluded,
+  never allowed.
+- Meals ("lunch", "dinners", "a meal delivery") are the item types dining and food_delivery
+  (source "inferred"), also when the meal word sits inside another restriction: "weeknight
+  dinners" is the item types and the weekdays; "one lunch delivery a day" is the item types and
+  the count.
+- Excluded types ("no gift cards, no cosmetics"; flights and insurance are "travel") are one
+  "not_in" rule; list values come only from the item_category values above. A thing no category
+  holds ("no alcohol": wine is groceries; "no premium tiers"; "no annual prepayments") is one
+  unverifiable rule each.
 - Known shop: "shops I use", "supermarkets I already use", "my usual services", "my current
   subscriptions", "no new services" all mean {KNOWN_SHOP_FIELD} "true".
-- Shop type words: "outdoor" / "sports" -> sporting_goods, "supermarket" -> groceries. A country
-  adjective ("the Austrian outdoor retailer") gives merchant.merchant_country as well.
+- Shop type words: "outdoor" / "sports" -> sporting_goods; "at supermarkets" ->
+  merchant.merchant_category "groceries" (source "inferred"), a rule of its own next to the known
+  shop rule. A country adjective ("the Austrian outdoor retailer") gives merchant.merchant_country
+  as well.
 - Days: "weekdays" / "weeknights" -> weekday in mon..fri; "never at the weekend" alone ->
   weekday not_in [sat, sun]; both together are one rule (in mon..fri).
-- A count per period ("one delivery a day", "two orders a week") -> {PURCHASE_COUNT_FIELD} "<=".
+- A count of purchases per period ("one delivery a day", "two orders a week"): no field counts
+  purchases, so it is one unverifiable rule, value_text = the customer's words. A meal or item
+  word inside it ("one lunch delivery a day") is still its own items[].item_category rule.
 - A booking: the category (hotel), the place and the dates (unverifiable, one rule each), the
   price per night (items[].unit_price_chf), "refundable rate" -> order.order_cancellable "true".
 - "If a price changes, ask me" with no single price stated -> an unverifiable rule, value_text
@@ -350,6 +364,27 @@ Worked examples:
 
 def _norm(text: str) -> str:
     return " ".join(text.lower().split())
+
+
+def _split_exclusions(raw: dict[str, Any], instruction: str) -> list[dict[str, Any]]:
+    """An excluded-types rule naming things no item category holds ("no alcohol, no gift
+    cards"): the categories stay one not_in rule, each other thing becomes an unverifiable
+    rule in the customer's words. Tighter, never looser: nothing excluded is dropped."""
+    values = [v.strip().lower() for v in raw["value_list"] or []]
+    if raw["field"] != "items[].item_category" or raw["operator"] != "not_in" \
+            or all(v in ITEM_CATEGORIES for v in values):
+        return [raw]
+    known = [v for v in values if v in ITEM_CATEGORIES]
+    out = [raw | {"value_list": known}] if known else []
+    for v in values:
+        if v in ITEM_CATEGORIES:
+            continue
+        said = re.search(rf"\b(?:no|never|without|except|excluding)\s+(?:any\s+)?{re.escape(v.replace('_', ' '))}\w*",
+                         instruction, re.IGNORECASE)
+        words = said.group(0) if said else f"no {v.replace('_', ' ')}"
+        out.append(raw | {"field": "unverifiable", "operator": "=", "value_list": None, "value_text": words,
+                          "words": words})
+    return out
 
 
 def _convert(
@@ -394,6 +429,10 @@ def _convert(
             return None, unreadable
         value = number(Decimal(str(raw["value_number"])))
         if field in ("authorization.billing_amount_chf", "items[].unit_price_chf"):
+            if field == "items[].unit_price_chf" and each_is_per_purchase(instruction, words):
+                field = common["field"] = "authorization.billing_amount_chf"  # the parser's reading of "each"
+            if op in ("<", "<=", "=") and (said := stated_boundary(instruction, value)):
+                common["operator"] = said  # T3: the boundary is the customer's word, never the model's
             scope = raw["scope"] or "purchase"
             period = raw["period_days"] if scope == "period" else None
             if scope == "period" and not period:
@@ -442,6 +481,7 @@ def read_with_llm(
     if today:
         user += f"\nToday (simulated): {today.isoformat()}"
     out = provider.complete_json(SCHEMA, SYSTEM, user, timeout_s)
+    out["rules"] = [split for raw in out["rules"] for split in _split_exclusions(raw, instruction)]
 
     requested = (out["requested_item"] or "").strip() or None
     specs: list[RuleSpec] = []
