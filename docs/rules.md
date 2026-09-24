@@ -68,14 +68,14 @@ The first step that applies decides.
 | ID | Rule | Fail → | Unknown → |
 |---|---|---|---|
 | C1 | **Order limit.** Total in CHF, delivery included, vs the per-order limit. "At or below / no more than / max / up to" → equal passes. "Under / less than / below" → equal fails. | Decline | Uncertainty setting (total missing) |
-| C2 | **Period limit.** Final approvals in the window + reserved pending + this purchase ≤ limit. "Any seven days" = rolling 168 h before purchase time. "Per month" = rolling 30 days unless "calendar month". Declines never count. | Decline | — |
+| C2 | **Period limit.** Final approvals in the window + reserved pending + this purchase ≤ limit. "Any seven days" = rolling 168 h before purchase time. "Per month" = rolling 30 days unless "calendar month". Declines never count. A purchase count per period ("one a day", "two orders a week", field `cart.purchases_in_period`) counts the same way: final approvals + pending step-ups on this card in the window + this purchase ≤ the count; declines never count, a redelivery counts once, and a breach caused only by pending step-ups asks (M5). | Decline | Uncertainty setting (count not available, or its window differs from the policy's shortest period) |
 | C3 | **Allowed item types.** Every cart line's `item_category` in the allowed set. Shop category proves nothing about the basket. | Decline | — |
 | C4 | **Blocked item types.** No cart line in the blocked set. | Decline | — |
 | C5 | **Specific item.** The item bought is the item asked for; a similar item is not it (trail ≠ road shoe; gift voucher ≠ monitor). | Decline | — |
 | C6 | **Item details.** Named details (size, colour, model, dimensions) match. Often only in shop text: extract, trust nothing else in it. | Decline | Uncertainty setting (not stated or self-contradictory) |
 | C7 | **Order terms.** Returns/cancellation/warranty as named. "14 days or more" → 14 passes, 7 fails. "Final sale / no returns / non-returnable" = 0 days. Cancellation reads `order_cancellable`: `"false"` fails a named cancellation term. When sources disagree, the stricter applies. | Decline | Uncertainty setting (not stated, `order_returnable = "unknown"`, or `order_cancellable = "unknown"` when cancellation is named) |
 | C8 | **Shop type.** `merchant_category` is the named type (sustainable goods ≠ specialist sports retailer, even selling the right shoe). `merchant_mcc` is secondary evidence; `merchant_category` decides. | Decline | — |
-| C9 | **Known shop.** As defined in §3. "Shop I use regularly" and "seller I have bought from before" both map here; see Q9 for a stricter reading of "regularly". | Decline | — |
+| C9 | **Known shop.** As defined in §3. "Shop I use regularly" and "seller I have bought from before" both map here; see Q9 for a stricter reading of "regularly". A customer with no purchase history yet (no approved purchase in history on any card, none in this run) makes C9 `unknown` (reason code `no_purchase_history`), not a fail: "You have no purchase history yet, so I can't tell whether you've used this shop - approve once and I'll remember it." The customer's yes on that ask is remembered for the shop, whatever the items. | Decline | Uncertainty setting (no purchase history yet) |
 | C10 | **Nothing extra.** Cart contains only what was asked; add-ons (protection plans, subscriptions, accessories) fail. Explanation says what to remove. | Decline | — |
 | C11 | **Uncertainty setting.** Apply the customer's choice when any rule is `unknown`. Default `ask`. | — | — |
 | C12 | **Other restrictions** (expected in hidden scenarios): per-item limit and quantity; country or currency; time of day / weekday; delivery date. Same pass/fail/unknown logic. | Decline | Uncertainty setting |
@@ -118,13 +118,14 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 - **W-rule 1** One strong sign → Ask.
 - **W-rule 2** Two or more weak signs → Ask. One weak sign alone → no effect.
 - **W-rule 3** "Pause anything that looks like someone else is driving" confirms this section is wanted; it does not lower the bar.
-- **W-rule 4** Recovery: signs are evaluated per purchase. Known device back and burst over → judged normally. Earlier signs don't carry over (they remain visible as evidence).
+- **W-rule 4** Recovery: after a burst (session watch on), the next otherwise-clean purchase asks once; the customer's approval turns the watch off; a no or a timeout keeps it on. The watch is per card and carries into later live sessions.
+- **W-rule 5** No baseline yet: with no approved purchase in history (any card) and no final approval in this run, W1, W3 and W4 do not trigger and show "no baseline yet" as info; from the first final approval in the run, that purchase's device, shop country and amount count as known (a purchase with no device id still triggers W1).
 
 ## 9. Explanations
 
-- **E1** One plain sentence per outcome, written for the customer.
-- **E2** Names the customer's own rule and the deciding fact: "Declined: returns are only 7 days; you asked for at least 14."
-- **E3** For Decline, what would make it a yes: "Remove the protection plan and I'll approve the shoes." (API: `counterfactual`.)
+- **E1** One plain sentence per outcome, written for the customer; a Decline adds one sentence for E3. The amount is said once, in the lead.
+- **E2** Names the customer's own rule and the deciding fact: "Declined CHF 38.90: over your CHF 20.00 per-order limit."
+- **E3** For Decline, what would make it a yes, said once, as the message's last sentence and in the API's `counterfactual`: "Declined CHF 38.90: over your CHF 20.00 per-order limit. Would approve at CHF 20.00 or less."
 - **E4** For Ask, what is uncertain: "The seller doesn't state a return policy."
 - **E5** For A1: say instructions were found and ignored; never repeat the injected instruction as if true.
 - **E6** No codes, jargon or "risk detected".
@@ -140,7 +141,7 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 | # | Question | Default | Why |
 |---|---|---|---|
 | Q1 | One purchase or several per policy? | Each purchase judged on its own; only near-identical repeats caught (A3). | Viseca's notes call AU0023 "fully compliant" and AU0042 "a legitimate re-quote". |
-| Q2 | Ask with no answer in 120 s? | **Closed.** Expiry → post `/resolve` `decline` with message "No answer within 120 s; nothing was approved", evidence `resolved_by: timeout`. Not spent; reservation released. | Viseca Q&A 24 Sep. |
+| Q2 | Ask with no answer in 120 s? | **Closed.** Expiry → post `/resolve` `decline` with message "No answer within 120 s; nothing was approved", evidence `resolved_by: timeout`. Not spent; reservation released. The stored and served message becomes "Expired: no answer within 120 s; nothing was approved." (the configured human window), the counterfactual is dropped and `explanation_source` is kept. The sandbox expires step-ups itself at the same moment, so the worker reads the platform's state first and posts only while it is still pending (decisions.md). | Viseca Q&A 24 Sep; live smoke 24 Sep. |
 | Q3 | Hidden scenarios at judging? | Assume yes. | Rules must survive unseen wording. |
 | Q4 | Seven days rolling or calendar? | Rolling 168 h. | Standard reading. |
 | Q5 | Pending reserved against limits? | Yes (M5). | Otherwise late approval overspends. |

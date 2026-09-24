@@ -1,5 +1,38 @@
 import type { PolicyDraft } from '../../api/types'
+import { formatShortDate } from '../../lib/datetime'
+import { formatChf } from '../../lib/money'
+import { canConfirmDraft, reviewQuestions } from '../../lib/policyReview'
 import { NewPolicyShell } from './NewPolicyShell'
+
+/**
+ * A dry-run example's outcome is what this rule *would have* done to a purchase
+ * the customer already made — it is not a decision, so it never borrows decision
+ * wording or styling. The labels match the three counters directly above, so each
+ * example reads as one case behind one counter, and each row carries its label as
+ * text rather than colour alone (`.claude/CLAUDE.md` Accessibility). An outcome
+ * this client doesn't recognise gets a neutral label instead of crashing — the
+ * same fallback the reason-code map follows (hard rule 9).
+ */
+const EXAMPLE_OUTCOME: Record<string, { label: string; className: string }> = {
+  violate: { label: 'Would stop', className: 'text-stopped' },
+  fit: { label: 'Would fit', className: 'text-approved' },
+  ask: { label: 'Would ask', className: 'text-asked' },
+}
+
+const UNKNOWN_EXAMPLE_OUTCOME = { label: 'Checked', className: 'text-ink-muted' }
+
+/**
+ * Contract §6 item 9's agent-history line, which names its own scope: this screen
+ * and its dry run are card-scoped, and the card and customer counts differ
+ * materially in the pack (CA0001: 14 on the card, 29 across the customer, so
+ * the scope is not cosmetic). Zero attempts is worth saying — it
+ * means this would be the first agent purchase on the card.
+ */
+function agentHistoryLine({ attempts, approved }: { attempts: number; approved: number }): string {
+  if (attempts === 0) return 'No agent has bought on this card before.'
+  const times = attempts === 1 ? 'once' : `${attempts} times`
+  return `An agent has bought on this card ${times} before — ${approved} approved.`
+}
 
 /** DESIGN.md #7: step-2 review — checks, uncertainty choice, dry run, confirm. */
 export function NewPolicyCheck({
@@ -24,6 +57,10 @@ export function NewPolicyCheck({
   error: boolean
 }) {
   const { dry_run: dryRun } = draft
+  // No checks read: C2 would refuse the draft, so confirming is off and the
+  // open question says what to write instead (contract §6 item 13).
+  const canConfirm = canConfirmDraft(draft)
+  const questions = reviewQuestions(draft)
 
   return (
     <NewPolicyShell
@@ -42,8 +79,12 @@ export function NewPolicyCheck({
           <button
             type="button"
             onClick={onConfirm}
-            disabled={confirming}
-            className="h-14 rounded-row bg-ink text-[16px] font-semibold text-on-ink transition-opacity disabled:cursor-not-allowed disabled:opacity-70 enabled:hover:opacity-90"
+            disabled={confirming || !canConfirm}
+            // Nothing to confirm reads as inert, like the sign-in screen's
+            // Continue; a busy "Confirming…" stays dark, only dimmed.
+            className={`h-14 rounded-row text-[16px] font-semibold transition-opacity disabled:cursor-not-allowed enabled:hover:opacity-90 ${
+              canConfirm ? 'bg-ink text-on-ink disabled:opacity-70' : 'bg-border-quiet text-ink-muted'
+            }`}
           >
             {confirming ? 'Confirming…' : 'Confirm policy'}
           </button>
@@ -57,6 +98,19 @@ export function NewPolicyCheck({
         </>
       }
     >
+      {/* Contract §6 item 10. 'fallback' means a rule-based parse produced these
+          checks, so they may be cruder — worth knowing before confirming. Not on
+          the step-1 spinner: `compiler` arrives with the draft, so there is
+          nothing to read while it is still up. */}
+      {draft.compiler === 'fallback' && (
+        <div
+          role="status"
+          className="rounded-row border border-asked-border bg-asked-tint px-4 py-3 text-[13px] text-asked-ink"
+        >
+          AI reading unavailable — rule-based reading used
+        </div>
+      )}
+
       {draft.instruction && (
         <div className="rounded-card border border-hairline bg-surface p-4">
           <div className="flex items-center justify-between">
@@ -100,9 +154,9 @@ export function NewPolicyCheck({
             </span>
           </div>
         ))}
-        {draft.open_questions.length > 0 && (
+        {questions.length > 0 && (
           <div className="rounded-row border border-asked-border bg-asked-tint px-4 py-3">
-            {draft.open_questions.map((question) => (
+            {questions.map((question) => (
               <p key={question} className="text-[13px] text-asked-ink">
                 {question}
               </p>
@@ -138,31 +192,70 @@ export function NewPolicyCheck({
         </div>
       </section>
 
-      <section className="rounded-hero bg-ink p-5 text-on-ink">
-        <p className="text-[11px] font-semibold tracking-[0.08em] text-on-ink-muted uppercase">
+      <section className="rounded-hero border border-hairline bg-surface p-5">
+        <p className="text-[11px] font-semibold tracking-[0.08em] text-cord-accent uppercase">
           Dry run on your history
         </p>
         <div className="mt-3 grid grid-cols-3 gap-3 text-center">
           <div>
-            <p className="font-display text-[28px] font-bold text-stopped-on-ink tabular-nums">
+            <p className="font-display text-[28px] font-bold text-stopped tabular-nums">
               {dryRun.would_violate}
             </p>
-            <p className="text-[12px] text-on-ink-muted">Would stop</p>
+            <p className="text-[12px] text-ink-muted">Would stop</p>
           </div>
           <div>
-            <p className="font-display text-[28px] font-bold text-approved-on-ink tabular-nums">
+            <p className="font-display text-[28px] font-bold text-approved tabular-nums">
               {dryRun.would_fit}
             </p>
-            <p className="text-[12px] text-on-ink-muted">Would fit</p>
+            <p className="text-[12px] text-ink-muted">Would fit</p>
           </div>
           <div>
-            <p className="font-display text-[28px] font-bold text-asked-on-ink tabular-nums">
+            <p className="font-display text-[28px] font-bold text-asked tabular-nums">
               {dryRun.would_ask}
             </p>
-            <p className="text-[12px] text-on-ink-muted">Would ask</p>
+            <p className="text-[12px] text-ink-muted">Would ask</p>
           </div>
         </div>
-        <p className="mt-4 text-[13px] text-on-ink-soft">{dryRun.insight}</p>
+        <p className="mt-4 text-[13px] text-ink-muted">{dryRun.insight}</p>
+
+        {/* The rows behind the counters — up to 3, one per outcome that occurred. */}
+        {dryRun.examples && dryRun.examples.length > 0 && (
+          <div className="mt-4 flex flex-col gap-3 border-t border-hairline pt-4">
+            {dryRun.examples.slice(0, 3).map((example) => {
+              const outcome = EXAMPLE_OUTCOME[example.outcome] ?? UNKNOWN_EXAMPLE_OUTCOME
+              return (
+                <div
+                  key={`${example.occurred_at}-${example.merchant_name}`}
+                  className="flex items-start justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    {/* Merchant name is untrusted shop text — plain text node only. */}
+                    <p className="truncate text-[14px] font-medium text-ink">
+                      {example.merchant_name}
+                    </p>
+                    <p className="mt-0.5 text-[12px] text-ink-muted">
+                      {formatShortDate(example.occurred_at)} · {example.reason}
+                    </p>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <p className="text-[14px] font-medium text-ink tabular-nums">
+                      {formatChf(example.billing_amount_chf)}
+                    </p>
+                    <p className={`mt-0.5 text-[11px] font-semibold ${outcome.className}`}>
+                      {outcome.label}
+                    </p>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {dryRun.agent_history && (
+          <p className="mt-4 border-t border-hairline pt-4 text-[13px] text-ink-muted">
+            {agentHistoryLine(dryRun.agent_history)}
+          </p>
+        )}
       </section>
     </NewPolicyShell>
   )

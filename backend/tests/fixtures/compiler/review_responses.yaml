@@ -1,0 +1,237 @@
+# Model responses for the compiler's LLM path: five free-text sentences from the P1 review of #48 (lane P4).
+# TEST DATA ONLY: read by backend/tests/test_compiler_judging.py, never by oneguard/.
+#
+# Captured once from the live OpenAI provider (gpt-4.1, temperature 0, structured output)
+# on 2026-09-24 with the prompt in compiler/llm.py at that commit. Each `response` is
+# the provider's JSON output (compiler/llm.py SCHEMA), replayed offline by a scripted provider.
+# The replay does not see the prompt: re-record after changing it (the parser tests still pin the floor).
+# S5 re-recorded on 2026-09-24 (gpt-4.1, same settings) after the prompt learned
+# cart.purchases_in_period (p4/purchases-in-period); the other entries are unchanged.
+- label: S1
+  instruction: Buy groceries but not more than 120 CHF
+  response:
+    uncertainty_policy: ask
+    requested_item: null
+    nothing_extra: false
+    rules:
+    - field: items[].item_category
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - groceries
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: groceries
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 120
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: not more than 120 CHF
+      source: exact
+      on_fail: decline
+    open_questions: []
+- label: S2
+  instruction: groceries only, max CHF 120 per order and 300 a week
+  response:
+    uncertainty_policy: ask
+    requested_item: null
+    nothing_extra: false
+    rules:
+    - field: items[].item_category
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - groceries
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: groceries only
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 120
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: max CHF 120 per order
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 300
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: period
+      period_days: 7
+      words: 300 a week
+      source: exact
+      on_fail: decline
+    open_questions: []
+- label: S3
+  instruction: clothing under 250 francs from shops I know
+  response:
+    uncertainty_policy: ask
+    requested_item: null
+    nothing_extra: false
+    rules:
+    - field: items[].item_category
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - clothing
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: clothing
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <
+      value_number: 250
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: under 250 francs
+      source: exact
+      on_fail: decline
+    - field: merchant.familiar_on_card
+      operator: '='
+      value_number: null
+      value_text: 'true'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: shops I know
+      source: exact
+      on_fail: decline
+    open_questions: []
+- label: S4
+  instruction: electronics up to CHF 300 each at known retailers, ask on unusual sessions
+  response:
+    uncertainty_policy: ask
+    requested_item: null
+    nothing_extra: false
+    rules:
+    - field: items[].item_category
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - electronics
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: electronics
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 300
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: up to CHF 300 each
+      source: exact
+      on_fail: decline
+    - field: merchant.familiar_on_card
+      operator: '='
+      value_number: null
+      value_text: 'true'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: known retailers
+      source: exact
+      on_fail: decline
+    open_questions: []
+- label: S5
+  instruction: one meal delivery a day, CHF 40 including delivery, never at the weekend
+  response:
+    uncertainty_policy: ask
+    requested_item: null
+    nothing_extra: false
+    rules:
+    - field: cart.purchases_in_period
+      operator: <=
+      value_number: 1
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: period
+      period_days: 1
+      words: one meal delivery a day
+      source: exact
+      on_fail: decline
+    - field: items[].item_category
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - dining
+      - food_delivery
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: meal delivery
+      source: inferred
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 40
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: CHF 40 including delivery
+      source: exact
+      on_fail: decline
+    - field: authorization.weekday
+      operator: not_in
+      value_number: null
+      value_text: null
+      value_list:
+      - sat
+      - sun
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: never at the weekend
+      source: exact
+      on_fail: decline
+    open_questions: []

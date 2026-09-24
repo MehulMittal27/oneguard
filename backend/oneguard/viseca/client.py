@@ -11,8 +11,12 @@ client's sink; ``store_sink`` appends it to the ``viseca_calls`` table (docs/dat
 logging never delays a decision.
 
 A non-2xx response raises ``VisecaError`` with the HTTP status and the ``code`` from the
-platform's JSON error envelope ``{"error": {"code", "message", "detail"?}}``. A network
-failure or timeout raises it with ``status=None`` and code ``upstream_unavailable``.
+platform's JSON error envelope ``{"error": {"code", "message", "details"?}}`` (the live
+sandbox sends ``details``, a list of validation problems; ``detail`` is read as well). A
+network failure or timeout raises it with ``status=None`` and code ``upstream_unavailable``.
+
+Response shapes seen on the live sandbox (24 Sep 2026) are pinned in each method's
+docstring; the worker reads them (``oneguard.viseca.worker``).
 """
 
 from __future__ import annotations
@@ -34,6 +38,10 @@ log = logging.getLogger(__name__)
 
 BASE_URL_ENV = "VISECA_BASE_URL"
 API_KEY_ENV = "VISECA_API_KEY"
+ALLOW_RUNS_ENV = "ONEGUARD_ALLOW_RUNS"
+RUNS_DISABLED_MESSAGE = (
+    f"Starting scenario runs is switched off ({ALLOW_RUNS_ENV}=false); nothing was started."
+)
 DEFAULT_BASE_URL = "https://saw26api.ashyground-364e1d07.switzerlandnorth.azurecontainerapps.io"
 DEFAULT_TIMEOUT_S = 10.0
 LONG_POLL_GRACE_S = 10.0
@@ -42,6 +50,12 @@ SUMMARY_LIMIT = 4096
 """Largest request / response summary stored in ``viseca_calls`` (characters)."""
 UPSTREAM_UNAVAILABLE = "upstream_unavailable"
 REDACTED = "[redacted]"
+
+
+def runs_allowed() -> bool:
+    """False only when ``ONEGUARD_ALLOW_RUNS`` is ``false``: then nothing may start a scenario
+    run (D3, ``make demo-live``). Unset or any other value allows runs."""
+    return os.environ.get(ALLOW_RUNS_ENV, "").strip().lower() != "false"
 
 
 class VisecaError(Exception):
@@ -151,9 +165,17 @@ class VisecaClient:
         await self._http.aclose()
 
     async def drain(self) -> None:
-        """Wait until every call summary has reached the sink."""
+        """Wait until every call summary has reached the sink.
+
+        What was awaited is removed here, not only by each future's done callback: a
+        summary emitted while its call was being cancelled (``VisecaWorker.stop``) was
+        seen finished with that callback never run, and a drain relying on it spun on the
+        finished future forever at full CPU.
+        """
         while self._pending_logs:
-            await asyncio.gather(*list(self._pending_logs), return_exceptions=True)
+            pending = list(self._pending_logs)
+            await asyncio.gather(*pending, return_exceptions=True)
+            self._pending_logs.difference_update(pending)
 
     # Transport ----------------------------------------------------------------------
 
@@ -266,7 +288,7 @@ class VisecaClient:
                 reply.status_code,
                 str(err.get("code") or f"http_{reply.status_code}"),
                 self._scrub(str(err.get("message") or reply.reason_phrase)),
-                err.get("detail"),
+                err.get("details", err.get("detail")),
             )
         return VisecaError(
             reply.status_code, f"http_{reply.status_code}", self._scrub(reply.text[:200] or reply.reason_phrase)
@@ -279,11 +301,19 @@ class VisecaClient:
         return await self._request("GET", "/healthz", authenticated=False)
 
     async def bootstrap(self) -> dict[str, Any]:
-        """``GET /v1/bootstrap``: versions, scenarios, timeouts, limits, features."""
+        """``GET /v1/bootstrap``: versions, profile, scenarios, limits, features.
+
+        Timeouts are ``limits.decision_timeout_seconds``, ``limits.step_up_timeout_seconds``
+        and ``limits.long_poll_max_seconds``; ``features.reset`` says whether team reset works.
+        """
         return await self._request("GET", "/v1/bootstrap")
 
     async def reference_data(self) -> dict[str, Any]:
-        """``GET /v1/reference-data``: catalogues, fx rates, history-file metadata."""
+        """``GET /v1/reference-data``: ``tables`` (catalogues, fx rates), ``history``.
+
+        ``history`` is ``{"path", "rows", "format"}``: no hash, so checking the served file
+        against the pack means downloading it.
+        """
         return await self._request("GET", "/v1/reference-data")
 
     async def authorization_history_csv(self) -> str:
@@ -300,7 +330,8 @@ class VisecaClient:
         guidance: list[str] | None = None,
         open_questions: list[str] | None = None,
     ) -> dict[str, Any]:
-        """``POST /v1/mandates``: store a draft; the response carries ``draft_id``."""
+        """``POST /v1/mandates``: store a draft (200); the response carries ``draft_id``,
+        ``status: "draft"`` and ``mandate_id: null`` until confirmed."""
         return await self._request(
             "POST",
             "/v1/mandates",
@@ -330,17 +361,29 @@ class VisecaClient:
         return await self._request("DELETE", f"/v1/mandates/{mandate_id}")
 
     async def create_run(self, scenario_id: str, mandate_id: str) -> dict[str, Any]:
-        """``POST /v1/scenario-runs``: start a run bound to an active mandate."""
+        """``POST /v1/scenario-runs``: start a run bound to an active mandate.
+
+        Returns the same shape as ``get_run``.
+        """
         return await self._request(
             "POST", "/v1/scenario-runs", body={"scenario_id": scenario_id, "mandate_id": mandate_id}
         )
 
     async def get_run(self, run_id: str) -> dict[str, Any]:
-        """``GET /v1/scenario-runs/{run_id}``: progress and event counters."""
+        """``GET /v1/scenario-runs/{run_id}``: ``status`` (``running``, ``completed``) and flat
+        counters ``generated_event_count``, ``delivered_event_count``,
+        ``finalized_event_count``, ``processed_event_count``, ``pending_event_count``,
+        ``queued_event_count``, ``platform_rejected_count``."""
         return await self._request("GET", f"/v1/scenario-runs/{run_id}")
 
     async def next_decision_request(self, wait: float = 25) -> dict[str, Any] | None:
-        """``GET /v1/decision-requests/next?wait=``: the envelope, or None on 204."""
+        """``GET /v1/decision-requests/next?wait=``: the envelope, or None on 204.
+
+        Envelope: ``event_id`` (int), ``type``, ``run_id``, ``authorization_id``,
+        ``occurred_at`` (queued time), ``data`` and ``status``: ``awaiting_decision`` for a
+        request to decide, ``pending_step_up`` for one we stepped up, which the platform
+        serves again on every poll until it is resolved or expires.
+        """
         wait_param = int(wait) if float(wait).is_integer() else wait
         return await self._request(
             "GET",
@@ -359,7 +402,13 @@ class VisecaClient:
         evidence: list[dict[str, Any]] | None = None,
         engine_version: str | None = None,
     ) -> dict[str, Any] | None:
-        """``POST /v1/authorizations/{id}/decision``: approve, decline or step_up."""
+        """``POST /v1/authorizations/{id}/decision``: approve, decline or step_up.
+
+        Returns ``{"authorization_id", "status", "decision": {...body, "decision_source"}}``
+        plus ``step_up_expires_at`` for a step-up (``status: "pending_step_up"``). A second
+        decision gets 409 ``step_up_resolution_required`` while the step-up waits and 409
+        ``authorization_finalized`` once it is final.
+        """
         body: dict[str, Any] = {"authorization_id": authorization_id, "decision": decision}
         optional = {
             "reason_codes": reason_codes,
@@ -377,21 +426,43 @@ class VisecaClient:
         customer_message: str,
         evidence: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
-        """``POST /v1/authorizations/{id}/resolve``: the human answer after a step_up."""
+        """``POST /v1/authorizations/{id}/resolve``: the human answer after a step_up.
+
+        409 ``authorization_not_pending`` once the step-up is final (the platform expires
+        it itself at ``step_up_expires_at``).
+        """
         return await self._request(
             "POST",
             f"/v1/authorizations/{authorization_id}/resolve",
             body={"decision": decision, "customer_message": customer_message, "evidence": evidence or []},
         )
 
-    async def list_authorizations(self, **params: Any) -> dict[str, Any]:
-        """``GET /v1/authorizations``: pending and final runtime authorizations."""
+    async def list_authorizations(self, **params: Any) -> list[dict[str, Any]]:
+        """``GET /v1/authorizations``: a JSON list of pending and final authorizations.
+
+        The platform filters by ``run_id`` and ``status``; it ignores ``authorization_id``.
+
+        Each item has ``authorization_id``, ``source_authorization_id``, ``scenario_id``,
+        ``run_id``, ``status``, ``decision``, ``decision_source``, ``reason_codes``,
+        ``occurred_at``, ``finalized_at`` and the full ``authorization``.
+        """
         return await self._request("GET", "/v1/authorizations", params=params or None)
 
     async def events(self, since: int | str = 0) -> dict[str, Any]:
-        """``GET /v1/events?since=``: the feed; continue from the returned ``next_cursor``."""
+        """``GET /v1/events?since=``: ``{"since", "next_cursor", "events": [...]}``.
+
+        Each event has ``event_id`` (int), ``type`` (``authorization.request``,
+        ``authorization.decision``, ``scenario.completed``), ``run_id``,
+        ``authorization_id`` (null for scenario events), ``status``, ``occurred_at`` and
+        ``data``. The cursor is team-wide and survives runs.
+        """
         return await self._request("GET", "/v1/events", params={"since": since})
 
     async def reset_team(self) -> dict[str, Any] | None:
-        """``POST /v1/team/reset``: clear development state (disabled during judging)."""
-        return await self._request("POST", "/v1/team/reset")
+        """``POST /v1/team/reset``: clear development state.
+
+        The body must be ``{"confirmed": true}`` (without it: 422 ``validation_error``).
+        403 ``reset_disabled`` during judging; ``bootstrap()["features"]["reset"]`` says
+        which.
+        """
+        return await self._request("POST", "/v1/team/reset", body={"confirmed": True})

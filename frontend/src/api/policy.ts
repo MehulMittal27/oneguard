@@ -2,6 +2,12 @@ import type { DryRunResult, FormInput, Mandate, MandateUsage, PolicyDraft, RuleC
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 
+// Mock mode's stand-in for the backend's mandate store: C2 writes it, C5 flips
+// it, C3 reads it. The UI only ever learns a card's policy from C3, so mock mode
+// needs something for C3 to read, or every refresh would erase the policy just
+// confirmed. Lives as long as the page, like everything else in mock mode.
+const mockMandates = new Map<string, Mandate>()
+
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -46,6 +52,10 @@ function fallbackDraft(cardId: string, instruction: string): PolicyDraft {
       "This instruction doesn't match anything we've tested yet — read the checks over carefully before confirming.",
     ],
     dry_run: EMPTY_DRY_RUN,
+    // This function is the rule-based parse the contract's 'fallback' means, so
+    // it says so. In mock mode any unrecognised instruction lands here, which is
+    // what exercises the review screen's banner.
+    compiler: 'fallback',
   }
 }
 
@@ -90,6 +100,8 @@ function formToDraft(cardId: string, form: FormInput): PolicyDraft {
     uncertainty_policy: form.uncertainty_policy,
     open_questions: [],
     dry_run: EMPTY_DRY_RUN,
+    // The customer typed the rules themselves; nothing read anything.
+    compiler: 'form',
   }
 }
 
@@ -146,7 +158,7 @@ export async function compilePolicy(
  */
 export async function confirmPolicy(draft: PolicyDraft): Promise<Mandate> {
   if (import.meta.env.VITE_USE_MOCKS === 'true') {
-    return {
+    const mandate: Mandate = {
       mandate_id: `TM-mock-${draft.draft_id}`,
       card_id: draft.card_id,
       instruction: draft.instruction,
@@ -159,6 +171,9 @@ export async function confirmPolicy(draft: PolicyDraft): Promise<Mandate> {
       // form and fallback drafts don't, so those fall back to the check wording.
       usage: (draft as PolicyDraft & { usage?: MandateUsage }).usage,
     }
+    // A confirmed draft replaces the card's policy (docs/api-contract.md §3.2).
+    mockMandates.set(draft.card_id, mandate)
+    return mandate
   }
 
   const response = await fetch(`${API_BASE_URL}/policy-drafts/${draft.draft_id}/confirm`, {
@@ -190,11 +205,13 @@ export async function tightenPolicy(
   additions: { addChecks: RuleCheck[]; uncertaintyPolicy?: 'decline' },
 ): Promise<Mandate> {
   if (import.meta.env.VITE_USE_MOCKS === 'true') {
-    return {
+    const tightened: Mandate = {
       ...mandate,
       checks: [...mandate.checks, ...additions.addChecks],
       uncertainty_policy: additions.uncertaintyPolicy ?? mandate.uncertainty_policy,
     }
+    mockMandates.set(mandate.card_id, tightened)
+    return tightened
   }
 
   const response = await fetch(`${API_BASE_URL}/cards/${mandate.card_id}/policy/tighten`, {
@@ -219,6 +236,9 @@ export async function tightenPolicy(
  */
 export async function revokePolicy(cardId: string): Promise<void> {
   if (import.meta.env.VITE_USE_MOCKS === 'true') {
+    // Flipped, never deleted — C3 keeps returning a revoked policy (§3.6).
+    const mandate = mockMandates.get(cardId)
+    if (mandate) mockMandates.set(cardId, { ...mandate, status: 'revoked' })
     return
   }
 
@@ -231,14 +251,15 @@ export async function revokePolicy(cardId: string): Promise<void> {
 }
 
 /**
- * Reads the current policy for a card (C3). In mock mode there is no
- * persisted backend state, so this always resolves `null` — confirming a
- * policy updates the session's own `PolicyContext` directly from
- * `confirmPolicy`'s result instead of refetching.
+ * Reads a card's policy (C3): the active mandate, else its latest revoked one,
+ * with `usage` from the engine ledger; `null` only when the card never had a
+ * policy. This is where the UI learns every card's policy, on sign-in and on
+ * every refresh (see `PolicyProvider`). In mock mode it reads the page-lifetime
+ * store that the mock C2/C4/C5 write.
  */
 export async function getPolicy(cardId: string): Promise<Mandate | null> {
   if (import.meta.env.VITE_USE_MOCKS === 'true') {
-    return null
+    return mockMandates.get(cardId) ?? null
   }
 
   const response = await fetch(`${API_BASE_URL}/cards/${cardId}/policy`)

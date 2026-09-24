@@ -136,9 +136,11 @@ class PolicyDraft(ApiModel):
     draft_id: str
     card_id: str
     instruction: str
+    """The C1 text verbatim, or exactly ``policies.FORM_INSTRUCTION`` for a form draft."""
     checks: list[RuleCheck]
     uncertainty_policy: UncertaintyChoice
     open_questions: list[str]
+    """With no checks read, the first entry is ``policies.NO_CHECKS_QUESTION`` and C2 refuses the draft."""
     dry_run: DryRunResult
     compiler: Literal["llm", "form", "fallback"] | None = None
 
@@ -148,7 +150,17 @@ class Fulfilment(ApiModel):
     requested: int = Field(ge=0)
 
 
+class Confirmation(ApiModel):
+    """A remembered customer yes ("things you've confirmed"); names are untrusted text."""
+
+    rule_text: str
+    merchant_name: str
+    item_name: str
+
+
 class MandateUsage(ApiModel):
+    _omit_if_none = frozenset({"confirmations"})
+
     per_order_limit_chf: float | None
     period_limit_chf: float | None
     period_days: int | None
@@ -156,6 +168,7 @@ class MandateUsage(ApiModel):
     period_window_start: Timestamp
     pending_chf: float
     fulfilment: Fulfilment | None = None
+    confirmations: list[Confirmation] | None = None
     as_of: Timestamp
 
 
@@ -165,6 +178,7 @@ class Mandate(ApiModel):
     mandate_id: str
     card_id: str
     instruction: str
+    """Its draft's ``instruction``, unchanged by C4; never the joined check texts."""
     checks: list[RuleCheck]
     uncertainty_policy: Literal["ask", "decline", "approve"]
     open_questions: list[str]
@@ -234,6 +248,14 @@ _VALID_STATES: frozenset[tuple[str, str | None, str]] = frozenset(
 )
 
 
+class Confirmable(ApiModel):
+    """A step-up decided by one restriction no data can check (field ``unverifiable``).
+    Approving it is remembered for this shop and item; ``phrase`` is the rule's value."""
+
+    rule_id: str
+    phrase: str
+
+
 class Decision(ApiModel):
     """One purchase decision. Only the combinations of §3.1a are valid."""
 
@@ -277,6 +299,7 @@ class Decision(ApiModel):
     latency_ms: float | None = Field(default=None, ge=0)
     explanation_source: Literal["template", "model"] | None = None
     resolved_by: Literal["customer", "timeout"] | None = None
+    confirmable: Confirmable | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> Decision:
@@ -430,6 +453,8 @@ ErrorCode = Literal[
     "window_closed",
     "upstream_unavailable",
     "compiler_timeout",
+    "internal",
+    "runs_disabled",
 ]
 
 

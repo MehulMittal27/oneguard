@@ -68,9 +68,16 @@ Unchanged from the frontend README except: C1 gains `504`, C2 gains the two `409
 | D4 | GET | `/api/dev/runs/{run_id}` | — | `LiveRun` — progress, counters, worker health |
 | D5 | POST | `/api/dev/soft-signals` | `{ enabled: boolean }` | `{ enabled }` — chaos toggle for the small decision model |
 | D6 | GET | `/api/dev/ledger/{card_id}` | — | `LedgerSnapshot` — the engine's own state, for the "reproduce this decision" view |
+| D7 | GET | `/api/dev/runs/current` | — | `LiveRun` or `ReplayStatus` — the newest run (live or replay, by the real time it started) with the counters D4 / D1 show; 404 when none. Starts nothing |
 
-D3 requires an active mandate on the card (409 otherwise). D1/D2 use the same engine and
+D3 requires an active mandate on the card (409 otherwise). While `ONEGUARD_ALLOW_RUNS=false` D3 starts nothing and
+answers 409 `runs_disabled` (unset: runs allowed); `make demo-live` refuses the same way. D1/D2 use the same engine and
 ledger as D3; only the event source differs (CSV vs Viseca long-poll).
+D3 accepts any scenario in the store's `scenario_catalogue`, which the worker syncs from Viseca's
+`/v1/reference-data` at start (docs/judging-pack.md): 404 for an unknown scenario or card, 422 when the scenario's card
+is known (the local pack's, or the served bootstrap profile's) and is another. D2 replays only scenarios the local pack
+has purchases for (404 otherwise). C12 lists the customers in the store, so served-only customers appear once synced;
+their `scenario_ids` / `live` include the scenario the served bootstrap profile runs on their card.
 
 ---
 
@@ -104,14 +111,17 @@ FormInput { per_order_limit_chf: number|null, period_limit_chf: number|null,
 DryRunResult { sample_size, would_violate, would_fit, would_ask, insight,
                examples?: [{ occurred_at, merchant_name, billing_amount_chf,
                              outcome: 'fit'|'violate'|'ask', reason }],    // NEW, ≤3 rows
-               agent_history?: { attempts: number, approved: number } }   // NEW: history rows with initiator_type 'agent'
+               agent_history?: { attempts: number, approved: number } }   // NEW: history rows with initiator_type 'agent',
+                                              // customer-level (all the customer's cards); the rest of the dry run is card-scoped
 
-PolicyDraft  { draft_id, card_id, instruction, checks: RuleCheck[],
-               uncertainty_policy: 'ask'|'decline', open_questions: string[],
+PolicyDraft  { draft_id, card_id, instruction, checks: RuleCheck[],   // instruction: the C1 text verbatim, or exactly
+                                              // "Built from the form" for a form draft; never the check texts
+               uncertainty_policy: 'ask'|'decline', open_questions: string[],  // no checks read: the first entry is
+                                              // "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'"
                dry_run: DryRunResult,
                compiler?: 'llm' | 'form' | 'fallback' }               // NEW: 'fallback' = LLM unavailable, rule-based parse used
 
-Mandate      { mandate_id, card_id, instruction, checks: RuleCheck[],
+Mandate      { mandate_id, card_id, instruction, checks: RuleCheck[],   // instruction: as its draft's (C4 keeps it)
                uncertainty_policy: 'ask'|'decline'|'approve', open_questions: string[],
                status: 'active'|'revoked', confirmed_at,
                usage?: MandateUsage }                                  // NEW
@@ -122,6 +132,9 @@ MandateUsage { per_order_limit_chf: number|null,                      // NEW —
                period_window_start: string,    // simulated time, ISO 8601
                pending_chf: number,            // stepped-up, awaiting the customer — not spent
                fulfilment?: { bought: number, requested: number } | null,   // single-item mandates
+               confirmations?: [{ rule_text: string, merchant_name: string,  // NEW: "things you've confirmed":
+                                  item_name: string }],                     // remembered yeses (ask once,
+                                                                            // then remember); names untrusted
                as_of: string }                 // simulated time of the last decision
 
 Decision {
@@ -130,7 +143,7 @@ Decision {
   uncertain_outcome: 'pending'|'expired'|'approved'|'declined' | null,
   status: 'final' | 'pending_human',
   reason_codes: string[],
-  message: string,                            // one sentence, names the number
+  message: string,                            // one sentence, names the number once; a decline adds "Would approve …" (= counterfactual)
   uncertainty: { note: string } | null,
   occurred_at: string,                        // SIMULATED time
   merchant: { merchant_id, name },            // name untrusted
@@ -150,8 +163,11 @@ Decision {
                     prior_approvals_on_card: number, prior_approvals_other_cards: number },
   engine_version?: string,                    // NEW
   latency_ms?: number,                        // NEW: engine wall time for this decision
-  explanation_source?: 'template' | 'model', // NEW: who wrote `message` (rules.md §4a, tier 3)
-  resolved_by?: 'customer' | 'timeout'        // NEW: resolved step-ups only (§3.5)
+  explanation_source?: 'template' | 'model', // NEW: who wrote `message` (rules.md §4a, tier 3); UI tag: template →
+                                              // "Explained by OneGuard", model → "Wording refined by AI · decision made by your rules"
+  resolved_by?: 'customer' | 'timeout',       // NEW: resolved step-ups only (§3.5)
+  confirmable?: { rule_id: string, phrase: string } | null   // NEW: step-up decided by one `unverifiable` rule
+                                              // (§3.3); phrase = its value. Approving can be remembered for the shop
 }
 
 Evidence  { rule: string,                     // which check or signal
@@ -179,7 +195,7 @@ LedgerSnapshot { card_id, mandate_id, entries: [{ authorization_id, occurred_at,
 | step_up | `uncertain` | `pending_human` | `pending` | POST …/decision `step_up` |
 | customer approves | `uncertain` | `final` | `approved` | POST …/resolve `approve` |
 | customer declines | `uncertain` | `final` | `declined` | POST …/resolve `decline` |
-| window lapses | `uncertain` | `final` | `expired` | backend posts `/resolve` `decline`, message "No answer within 120 s; nothing was approved", `resolved_by: timeout` |
+| window lapses | `uncertain` | `final` | `expired` | backend posts `/resolve` `decline`, message "No answer within 120 s; nothing was approved", `resolved_by: timeout`; the Decision's `message` becomes "Expired: no answer within 120 s; nothing was approved." (the configured window), `counterfactual` null |
 
 A step-up **stays** `decision: 'uncertain'` after resolution; the history must keep showing
 that a person was needed.
@@ -206,12 +222,18 @@ expire — that is a broken state, not a degraded one.
   lint → typed rules → `RuleCheck` text → dry-run against the card's history → draft.
   If the LLM fails or times out, the backend falls back to the rule-based parser and sets
   `compiler: 'fallback'`; if even that yields no amount cap, C1 returns the draft with an
-  `open_questions` entry rather than failing.
-- C1 with `form`: no LLM; rules built directly.
+  `open_questions` entry rather than failing. If no check at all was read (e.g. "buy
+  something nice"), that entry is "I couldn't read a spending limit or item type - try
+  'groceries, max CHF 120 per order'", first, in place of the no-amount question.
+- C1 with `form`: no LLM; rules built directly. The form has no words of the customer's, so
+  the draft's (and the mandate's) `instruction` is exactly "Built from the form".
 - The backend stores, per `RuleCheck.id`, the typed rule
   (`field`, `operator`, `value`, `currency?`, `scope?`, `period_days?`) in Viseca's rule
   format. **The UI only ever sees `text`; `checks` sent back in C2 are treated as accepted
   ids.** Unknown id → 422. Edited text is ignored.
+- C2 refuses a draft with no checks before anything else: 409 `lint_failed`, message
+  "Not confirmed: no restriction could be read.", `detail: { missing: ['per_order_limit'] }`.
+  Nothing is sent to Viseca and no mandate is stored.
 - C2 re-lints the accepted subset. If the result has no per-purchase amount cap, or drops a
   check whose `source` is `exact`, C2 returns 409 with the §3.8 envelope
   `{ error: { code: 'lint_failed', message: <reason>, detail: { missing: [...] } } }`.
@@ -219,7 +241,13 @@ expire — that is a broken state, not a degraded one.
   `hard_rules`, `uncertainty_policy`, `guidance` = check texts, `open_questions`) then
   `POST /v1/mandates/{draft_id}/confirm`. The returned `TM…` id is stored; our `mandate_id`
   is our own and maps to it.
-- The instruction is stored **verbatim** and sent to Viseca verbatim.
+- The instruction is stored **verbatim** and sent to Viseca verbatim; C1, C2, C3 and C4 serve
+  it unchanged. A form policy stores and serves "Built from the form" and sends Viseca its
+  accepted checks as sentences ("Total at or below CHF 20 per order. Ask me when
+  uncertain."), since the platform wants text.
+- A confirmed draft replaces the card's active mandate, which is revoked (C5 semantics).
+- C4 `add_checks` are ids of checks proposed by this card's drafts; their text is ignored.
+  Changing a check already in force is 409 `not_pure_addition`; an unknown id is 422.
 
 ### 3.3 Field vocabulary for typed rules (engine-side, informational)
 
@@ -227,6 +255,7 @@ expire — that is a broken state, not a degraded one.
 |---|---|
 | `authorization.billing_amount_chf` | total in CHF, delivery included (never add delivery again) |
 | `authorization.billing_amount_chf` + `scope: period`, `period_days: 7` | rolling window; sum of **final approvals** whose simulated timestamp ≥ current − 7×24h |
+| `cart.purchases_in_period` + `scope: period`, `period_days: N` | integer; purchases on this card in the rolling window of N×24h before the current simulated timestamp: **final approvals + pending step-ups** (declines and expired step-ups never count; a redelivered live id counts once). This purchase is compared as count + 1: `<= 1`, `period_days: 1` is "one a day", so a second purchase fails. Operators `<=` / `<` only. Fail: `period_count_exceeded`; evidence "You allowed one order per day; one was already approved today at 12:10" (time of the latest approval, Europe/Zurich), message "Declined CHF 32.00: you allowed one order per day; one was already approved today at 12:10. Would approve from tomorrow at 12:10."; a breach caused only by pending step-ups asks (`period_reserved_pending`, M5) |
 | `merchant.merchant_category` | trusted catalogue category |
 | `merchant.known_shop` | `"true"` if ≥1 approved purchase by this customer at this `merchant_id` on any of their cards (history + this run's finals); customer-level per rules.md Q7. `merchant.familiar_on_card` is accepted as an alias for the same check |
 | `items[].item_category` | every cart line must satisfy `in` / `not_in` |
@@ -244,7 +273,7 @@ expire — that is a broken state, not a degraded one.
 | `authorization.local_hour` | purchase time in Europe/Zurich, 0–23; time-of-day rules |
 | `unverifiable` | a stated restriction no field can check (e.g. "from the official ticket seller"); always `unknown`, so C11 applies |
 
-C2 (`scope: period`) is not evaluated with the other customer rules: it needs the run's spending memory, so decide.py evaluates it via `policy.evaluate_period_rule` with the LedgerView's spent and reserved amounts (M4, M5).
+C2 (`scope: period`) is not evaluated with the other customer rules: it needs the run's spending memory. C2 and remembered answers are added by the pipeline via `policy.add_ledger_results`, from the LedgerView's spent and reserved amounts (M4, M5), its purchase count (`period_count`, `period_reserved_count`: the same window and card as the spend) and `confirmed_keys`, so decide and explain both see them. The same step makes a known-shop check (`merchant.known_shop`, `merchant.familiar_on_card`, or the `requires_known_shop` flag, C9) `unknown` when the LedgerView knows no shop at all (no purchase history yet), with reason code `no_purchase_history`. `confirmed_keys` holds `rule|merchant|item` (read for `unverifiable` rules) and `rule|merchant|*` (read for a known-shop check: one yes covers the shop).
 
 Extraction from `item_details` is allowlisted regex only, produces facts, never instructions.
 
@@ -279,9 +308,12 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 - The worker never blocks on a pending step-up; polling continues.
 - C8 after the window → 409. A GET of C6 after the window marks the decision
   `uncertain_outcome: 'expired'`, `status: 'final'` server-side (so a reload agrees). On
-  expiry the backend posts `/resolve` `decline`, message "No answer within 120 s; nothing
-  was approved", `resolved_by: timeout` (rules.md Q2). Not spent. A customer answer through
-  C8 sets `resolved_by: 'customer'`.
+  expiry the backend first reads the platform's state (`GET /v1/authorizations?run_id=`):
+  Viseca expires step-ups itself at the same moment, and if it already has, that result is
+  recorded and nothing is posted. Still pending → `/resolve` `decline`, message "No answer
+  within 120 s; nothing was approved", `resolved_by: timeout` (rules.md Q2); on a 409 the
+  state is read again and recorded. Never a second `/resolve` for the same id. Not spent. A
+  customer answer through C8 sets `resolved_by: 'customer'`.
 - A step-up renders the **complete** purchase (all lines, delivery fee, currency, recurring
   flag, flagged text).
 
@@ -291,8 +323,9 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
   deleted. Pending step-ups are shown as cancelled **only** after Viseca confirms their
   state. A revoked card can receive a new policy (new draft → new mandate).
 - Session freeze (`session.trust = 'frozen'`) is engine state, not a mandate change: after a
-  burst the engine step-ups the next otherwise-clean purchase once
-  (`session_recovered` on approval), then relaxes. The step-up card may offer a shortcut to
+  burst the engine step-ups the next otherwise-clean purchase once (`session_watch`;
+  `session_recovered` on approval), then relaxes; a no or a timeout keeps the watch on. The
+  watch is per card and carries into later live sessions (rules.md W-rule 4). The step-up card may offer a shortcut to
   the existing RevokeSheet.
 
 ### 3.7 Soft signals (Laya)
@@ -303,6 +336,11 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
   `evidence` rows with `source: 'model'` and may raise `approve → uncertain`. It can never
   lower `stopped` or override a policy check. `engine_version` records whether the model
   was on, so a replay with it off is comparable.
+- `ONEGUARD_SOFT_SIGNALS`: `off` = no soft signal; `keywords` = the A1 pattern list;
+  `laya` = triggered if keywords OR Laya fire (Laya can only add, never clear a keyword hit).
+- Instruction readings (compiler): "under CHF X" = "Total under CHF X per order"; "two tickets" =
+  `cart.quantity`; "the present I picked" = an `unverifiable` rule; "by Friday" = from the card's
+  simulated date (docs/decisions.md, P4/P5 review).
 - Tier-2 fact extraction and tier-3 explanation use the same provider interface as the
   compiler (OpenAI first, model-agnostic).
 
@@ -310,9 +348,11 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 
 All errors: `{ error: { code: string, message: string, detail?: object } }`. Codes used:
 `not_found`, `validation`, `draft_confirmed`, `lint_failed`, `not_pure_addition`,
-`not_awaiting_answer`, `window_closed`, `upstream_unavailable`, `compiler_timeout`.
-`upstream_unavailable` (Viseca down) never changes a stored decision; the UI shows its
-offline state ("Nothing was approved while we were offline").
+`not_awaiting_answer`, `window_closed`, `upstream_unavailable`, `compiler_timeout`,
+`internal`, `runs_disabled`.
+`upstream_unavailable` (503: Viseca or the database unreachable or too slow) never changes a
+stored decision; the UI shows its offline state ("Nothing was approved while we were
+offline"). `internal` (500) is an unexpected server error.
 
 ### 3.9 Check wording
 
@@ -340,7 +380,12 @@ Existing: `within_limits`, `rule_satisfied`, `per_order_limit_exceeded`,
 Added: `split_order_suspected`, `requote_accepted`, `already_fulfilled`,
 `recurring_charge_added`, `wrong_size`, `session_recovered`, `on_other_card`,
 `foreign_currency_converted` (info), `ledger_mismatch` (info), `period_reserved_pending`,
-`shop_terms_contradictory`.
+`period_count_exceeded` (a `cart.purchases_in_period` count is full: more purchases in the period than allowed),
+`shop_terms_contradictory`, `rule_not_met` (a C12 rule with no specific code: per-item
+price, quantity, country, weekday, delivery date), `unusual_activity` (two weak warning
+signs), `session_watch` (the one ask after a burst, rules.md W-rule 4),
+`no_purchase_history` (a known-shop check, C9, left unknown because the customer has no
+purchase history yet; every other unknown keeps its own code, else unevaluable).
 
 Development only: `stub`, emitted only while `ONEGUARD_STUBS` stubs `decide`
 (`backend/oneguard/engine/stubs.py`); never in a live run.
@@ -365,14 +410,17 @@ neutral fallback for unknown codes.
 
 1. `Customer.scenario_id` → `scenario_ids: string[]`.
 2. `Decision.related` — one link row in DecisionDetail "Related decisions".
-3. `Decision.counterfactual` — one line under the message in DecisionDetail.
+3. `Decision.counterfactual` — one line under the message in DecisionDetail; when the message ends with the same suggestion, DecisionDetail drops that trailing copy so it is said once (lists keep the full message).
 4. `Mandate.usage` — `lib/spend.ts` prefers it when present; keep client math as mock fallback; ensure human-approved step-ups count as spend.
 5. `Evidence.outcome: 'info'` — neutral styling; unknown values fall back to neutral.
 6. Optional: `Decision.session` banner on DecisionDetail when trust ≠ normal; a "Revoke policy" shortcut on the Approvals card.
 7. Fixtures: add the new fields to `build_decisions_fixture.py` / `build_policy_fixture.py` so mock mode matches.
 8. `Decision.explanation_source` and `Decision.resolved_by` in `types.ts`; `mergeDecisions.sameDecision` also compares `explanation_source` and `counterfactual` so a tier-3 rewrite re-renders.
-9. Policy screen renders DryRunResult.examples and dry_run.agent_history as one line
+9. Policy screen renders DryRunResult.examples and dry_run.agent_history as one line; agent_history is customer-level and labelled "across your cards", the dry run stays card-scoped and says so ("on this card"). `Decision.explanation_source` tag strings: `template` → "Explained by OneGuard", `model` → "Wording refined by AI · decision made by your rules"
 10. PolicyDraft.compiler == 'fallback' shown as a banner; Decision.explanation_source shown as a subtle tag
+11. Optional: `Mandate.usage.confirmations` as a "Things you've confirmed" list on the policy screen (names rendered as plain text)
+12. Optional: `Decision.confirmable` - on a step-up, "Approve, and treat <shop> as <phrase> from now on"; absent or null means the ordinary approve button
+13. Policy review: a draft with no checks disables "Confirm policy" (C2 would refuse it, §3.2) and shows its `open_questions`, falling back to "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'" when there are none
 
 No endpoint changes. No screen removals. Tighten UI stays dormant.
 

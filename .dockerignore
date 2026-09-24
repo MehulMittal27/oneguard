@@ -1,0 +1,19 @@
+# Only backend/, data/ and frontend/ sources go into the image build.
+**/.env
+**/.env.*
+!.env.example
+.git
+.github
+.claude
+**/node_modules
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/*.egg-info
+**/*.sqlite
+frontend/dist
+vendor
+docs
+backend/tests
+backend/scripts

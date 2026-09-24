@@ -39,12 +39,13 @@ Runtime tables (ours):
 
 | Table | Written by | Key columns |
 |---|---|---|
-| `policy_drafts` | P1 api (C1) | `draft_id` PK, `card_id`, `customer_id`, `instruction`, `rules` JSON (typed rules keyed by RuleCheck id), `checks` JSON, `uncertainty_policy`, `open_questions` JSON, `dry_run` JSON, `compiler` (llm/form/fallback), `viseca_draft_id`, `created_at`, `confirmed_at` nullable |
+| `policy_drafts` | P1 api (C1) | `draft_id` PK, `card_id`, `customer_id`, `instruction`, `rules` JSON (typed rules keyed by RuleCheck id, plus the Policy flags such as `requested_item` under the reserved key `__policy__`), `checks` JSON, `uncertainty_policy`, `open_questions` JSON, `dry_run` JSON, `compiler` (llm/form/fallback), `viseca_draft_id`, `created_at`, `confirmed_at` nullable |
 | `mandates` | P1 api (C2, C4, C5) | `mandate_id` PK (ours), `viseca_mandate_id`, `card_id`, `customer_id`, `instruction`, `rules` JSON, `checks` JSON, `uncertainty_policy`, `open_questions` JSON, `status` (active/revoked), `confirmed_at`, `revoked_at` |
-| `runs` | P1 worker / routes_dev | `run_id` PK (ours), `viseca_run_id` nullable, `kind` (live/replay), `scenario_id`, `mandate_id`, `card_id`, `state`, counters, `started_at`, `finished_at`, `worker_last_poll_at`, `last_error`. The worker writes the row (`kind = live`) before a run's first decision: the ledger carries the session watch and remembered answers over only between live runs, and a run with no row counts as a replay |
-| `events_raw` | P1 worker / replay | `live_authorization_id` PK, `run_id`, `source_authorization_id`, `received_at`, `deadline_at`, `event` JSON (the full validated event) — this is what makes any decision reproducible |
+| `runs` | P1 worker / api offline replay | `run_id` PK (ours: `live-<viseca run>`, `replay-<hex>`), `viseca_run_id` nullable, `kind` (live/replay; a step-up in a `replay` run is closed locally, any other through the worker), `scenario_id`, `mandate_id`, `card_id`, `state`, counters, `started_at`, `finished_at`, `worker_last_poll_at`, `last_error`. The worker writes the row (`kind = live`) before a run's first decision, and the offline replay writes its `replay` row before its first: the ledger carries the session watch and remembered answers over only between live runs, and a run with no row counts as a replay |
+| `events_raw` | P1 worker / replay | `live_authorization_id` PK, `run_id`, `source_authorization_id`, `received_at`, `deadline_at`, `event` JSON (the full validated event) — this is what makes any decision reproducible. The ledger also reads the device and shop country of a run's final approvals from here (known devices and countries, W1, W3) |
 | `decisions` (the ledger) | P2 `ledger.py` only | `live_authorization_id` PK, `run_id`, `mandate_id`, `card_id`, `customer_id`, `ts_sim`, `outcome`, `final` bool, `uncertain_outcome` nullable, `reserved_chf`, `spent_chf`, `merchant_id`, `item_ids` JSON, `billing_amount_chf`, `related_live_id`, `relation`, `session_trust`, `step`, `deciding_ids` JSON (rebuild the EngineDecision on redelivery), `reason_codes` JSON, `evidence` JSON, `message`, `counterfactual`, `explanation_source`, `injection_flag` JSON, `engine_version`, `latency_ms`, `signals_enabled` bool, `decided_at`, `deadline_at` nullable (real clock, pending step-ups; stable across polls), `resolved_at`, `resolved_by` (customer/timeout) |
 | `merchant_flags` | P2 ledger (from A1 signals) | `run_id`, `merchant_id`, `flagged_at`, `reason` — info evidence for later purchases at that shop |
+| `worker_state` | P1 worker | `key` PK, `value` JSON, `updated_at`. Row `events_cursor`: the `next_cursor` of the last `GET /v1/events` page the worker processed, written after the page is checked against the ledger; on start the worker resumes from it and reads the feed from 0 only when no row exists (first boot). A new table, so `init_db` creates it on an existing Supabase database without a reset. After a `POST /v1/team/reset` delete the row so the new feed is read from 0 |
 | `viseca_calls` | P1 client | append-only log of every request/response summary (no key, no bodies over 4 KB); used by `/healthz` and for debugging the deadline |
 
 `decisions` is the only table two lanes touch: P2 writes it through `ledger.py`; P1's API
@@ -61,7 +62,10 @@ reads it to build `Decision` responses and `Mandate.usage`. Nobody else writes i
   `item_price_range(item_id) -> (min, typical, max)` for W6.
   Refunds and cash withdrawals are excluded from familiarity; card-level counts are also
   exposed (`known_merchants_on_card(card_id)`) so Q7 can flip without code changes.
-- P2 `ledger.py`: `StoreLedger(session, history=history)`, the worker's `default_ledger`;
+- P2 `ledger.py`: `StoreLedger(session, history=history)`. The worker's `default_ledger` is
+  P1's `ScopedStoreLedger` (`viseca/worker.py`): a `StoreLedger` on a short session per unit
+  of work (one decision, one resolution, one read), closed afterwards, and `stop()` closes
+  anything still open, so the worker never holds a pooled connection for its lifetime;
   `view()` combines `decisions` (this run's finals and reservations) with `HistoryIndex`
   (customer-level history) into `LedgerView`. `set_deadline(live_id, deadline_at)` moves a
   pending step-up's `deadline_at` to the Viseca-accepted time + human window and commits
@@ -77,10 +81,22 @@ reads it to build `Decision` responses and `Mandate.usage`. Nobody else writes i
 - `backend/oneguard/store/schema.py` — SQLAlchemy models (P1).
 - `backend/oneguard/store/db.py` — engine factory, `session()` context manager, `init_db()`
   (create_all; no Alembic this weekend — the schema is created from the models, and a
-  schema change is a `make reset-db` on Supabase, acceptable for a demo).
+  schema change is a `make reset-db` on Supabase, acceptable for a demo). Data fixes run at app
+  start instead, idempotently: `queries.restore_form_instructions` sets form policies stored
+  with their joined check texts as the instruction to "Built from the form".
 - `backend/oneguard/store/seed.py` — idempotent CSV → tables; `make seed` runs it against
   whatever `ONEGUARD_DATABASE_URL` points at. Checks `metadata.json` hashes so a changed
   pack is noticed.
+- Served reference data: at start the Viseca worker upserts every table
+  `/v1/reference-data` serves under `tables` (customers, accounts, cards, merchants, items,
+  fx_rates, scenario_catalogue; `scenario_authorities` is not served) with
+  `seed.sync_served`, in one transaction and only when a table's served rows differ from
+  the stored ones (row count plus content hash). Missing rows are inserted and changed ones
+  updated; rows only the store has are kept, and runtime tables are never touched. Plain
+  inserts and updates, so it works the same on SQLite and Postgres. A served-only scenario
+  gets empty `control_question` / `control_theme` / `short_rationale`, which the served
+  catalogue lacks. `make seed` still replaces the tables with `data/`; the next start
+  syncs the served rows again.
 - `make reset-db` — drop + create + seed (never runs during a live run; guarded by
   `ONEGUARD_ENV != prod`).
 

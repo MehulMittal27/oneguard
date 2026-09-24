@@ -5,7 +5,7 @@ import { BackChevronIcon, CheckIcon, HelpCircleIcon } from '../../components/ico
 import { OrderCapLeashMeter, PeriodLeashMeter } from '../../components/LeashMeter'
 import { RevokeSheet } from '../../components/RevokeSheet'
 import { formatShortDate } from '../../lib/datetime'
-import { computePendingChf, computePeriodSpend, limitsFromMandate } from '../../lib/spend'
+import { limitsFromMandate, spendFromMandate } from '../../lib/spend'
 import { usePolicy } from '../../state/PolicyContext'
 import { useDecisions } from '../../state/DecisionsContext'
 import { DecisionDetail } from '../DecisionDetail/DecisionDetail'
@@ -24,7 +24,7 @@ export function CardDetail({
   onAddPolicy: (cardId: string) => void
   onGoHome: () => void
 }) {
-  const { policiesByCard, revokePolicyForCard } = usePolicy()
+  const { policiesByCard, status: policiesStatus, revokePolicyForCard } = usePolicy()
   const { decisions } = useDecisions()
   const [revoking, setRevoking] = useState(false)
   const [viewingId, setViewingId] = useState<string | null>(null)
@@ -44,9 +44,14 @@ export function CardDetail({
           <BackChevronIcon size={20} strokeWidth={2} />
           Accounts
         </button>
-        <p className="text-[15px] text-ink-muted">
-          Nothing found for card {cardId} in this session.
-        </p>
+        {policiesStatus === 'loading' ? (
+          <div aria-live="polite" aria-busy="true">
+            <div className="h-40 animate-pulse rounded-card bg-surface-sunken" />
+            <span className="sr-only">Loading policy</span>
+          </div>
+        ) : (
+          <p className="text-[15px] text-ink-muted">No policy found for card {cardId}.</p>
+        )}
       </div>
     )
   }
@@ -59,6 +64,10 @@ export function CardDetail({
     .filter((d) => d.card_id === cardId)
     .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))
   const { perOrder, period } = limitsFromMandate(mandate)
+  // Absent until the backend sends it (see types.ts) — an empty list, never a guess.
+  const confirmations = mandate.usage?.confirmations ?? []
+  // Ledger-first: `usage` when the engine sent it, the client sum only in mock mode.
+  const spend = period ? spendFromMandate(mandate, decisions, cardId, period.days) : null
 
   // A still-pending uncertain purchase is actionable, not just viewable —
   // route straight to where it can actually be answered.
@@ -156,8 +165,8 @@ export function CardDetail({
             {period ? (
               <PeriodLeashMeter
                 limitChf={period.limitChf}
-                spentChf={computePeriodSpend(decisions, cardId, period.days)}
-                pendingChf={computePendingChf(decisions, cardId)}
+                spentChf={spend?.spentChf ?? 0}
+                pendingChf={spend?.pendingChf ?? 0}
                 days={period.days}
               />
             ) : perOrder ? (
@@ -176,8 +185,14 @@ export function CardDetail({
           </button>
         ) : (
           <>
-            <p className="mt-4 text-[13px] text-ink-muted">
+            {/* The mockup's note says revoking "declines anything still waiting",
+                which this system does not do: `../docs/rules.md` Q6 declines what
+                arrives *after* a revoke, and Appendix A keeps revoke off anything
+                in flight. */}
+            <p className="mt-4 text-[13px] leading-[1.45] text-ink-muted">
               A policy can only be tightened or revoked — loosening it means writing a new one.
+              After you revoke, anything your agent proposes next is declined; a purchase already
+              waiting for your answer is unaffected until the platform confirms it.
             </p>
             <button
               type="button"
@@ -189,6 +204,36 @@ export function CardDetail({
           </>
         )}
       </div>
+
+      {/*
+        Answers the customer gave once that the engine now remembers, so it stops
+        asking (engine/policy.py: only a restriction no data can check can be
+        passed this way). Read-only on purpose — this screen shows what is
+        remembered, and a policy is tightened or revoked, never edited here.
+        Hidden when empty: a heading over nothing would imply the engine is
+        remembering things it is not.
+      */}
+      {confirmations.length > 0 && (
+        <div>
+          <p className="mb-3 font-display text-[20px] font-bold text-ink">
+            Things you&apos;ve confirmed
+          </p>
+          <ul className="flex flex-col gap-2">
+            {confirmations.map((c, index) => (
+              <li
+                key={`${c.rule_text}-${c.merchant_name}-${c.item_name}-${index}`}
+                className="rounded-row border border-hairline bg-surface px-4 py-3"
+              >
+                <p className="text-[15px] font-medium text-ink">{c.rule_text}</p>
+                {/* Shop and item names are untrusted text — plain text nodes. */}
+                <p className="mt-0.5 text-[13px] text-ink-muted">
+                  {c.merchant_name} · {c.item_name}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div>
         <p className="mb-3 font-display text-[20px] font-bold text-ink">Card activity</p>

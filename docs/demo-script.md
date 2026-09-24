@@ -41,10 +41,10 @@ number, evidence rows, "Policy applied". Point at latency.
 ## 4. Session integrity + control (2 min) — SCEN0003
 
 - AU0026 step-up on a new device; customer declines.
-- Burst AU0027–AU0030: declined, session banner shows trust degrading.
+- Burst AU0027–AU0030: declined ×4, session banner shows trust degrading.
+- AU0031 on the known device asks once ("We're double-checking after unusual activity on
+  your card"); customer approves → AU0032 approves: escalate, check once, relax.
 - Customer opens the card and **revokes**. Show Viseca rejecting the next request.
-- (If time) restart with a fresh mandate; AU0031 on the known device approves directly:
-  escalate and relax.
 
 ## 5. Predictable without AI (30 s)
 

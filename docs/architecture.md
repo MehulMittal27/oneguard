@@ -64,18 +64,28 @@ oneguard/
 - One database per environment via ONEGUARD_DATABASE_URL (docs/database.md). One transaction per decision.
 - Viseca key from `VISECA_API_KEY`; base URL from `VISECA_BASE_URL`; both server-side.
 - Worker (`oneguard/viseca/worker.py`, `VisecaWorker`): on start reads `/v1/bootstrap`
-  (human window, decision deadline) and `/v1/reference-data`; if the served history-file
-  SHA-256 differs from `data/metadata.json` it re-seeds `authorization_history` from
-  `/v1/reference-data/authorization-history.csv` and logs it loudly. The served
+  (`limits`: human window, decision deadline, long-poll cap) and `/v1/reference-data`. Every
+  reference table served under `tables` (a superset of `data/` during judging) is upserted
+  into the store in one transaction when its rows differ from the stored ones (count plus
+  content hash), never deleting a row, with per-table counts logged (`seed.sync_served`);
+  the history index is reloaded if anything changed. No
+  history-file hash is served, so it downloads
+  `/v1/reference-data/authorization-history.csv`, and if its SHA-256 differs from
+  `data/metadata.json` it re-seeds `authorization_history` and logs it loudly. The served
   `tables.fx_rates` must equal the engine's `facts.FX_TO_CHF` exactly (decimal compare); a
   mismatch or a missing table is logged loudly and keeps the worker `degraded` (`ok: false`)
   for as long as it runs; decisions still use `FX_TO_CHF`. Every request is
   schema-checked, stored in `events_raw`, decided by `pipeline.decide_event` within
   `ONEGUARD_ENGINE_BUDGET_MS` and posted before `deadline_at`. A step-up's deadline is the
-  accepted time + the human window; an expiry task posts the timeout `/resolve` (rules Q2).
-  After a restart the worker re-arms that expiry only for pending step-ups of live runs
-  (`runs.kind = live`); a replay step-up was never posted to Viseca and gets none.
-  All ledger and pipeline calls run on one dedicated thread. `VisecaWorker.status()` is the
+  reply's `step_up_expires_at` (accepted time + the human window). Until then the platform
+  serves the step-up again on every poll (`status: "pending_step_up"`); the worker posts
+  nothing for it and pauses briefly. At the deadline the expiry reads the platform's state
+  first and posts the timeout `/resolve` (rules Q2) only if it is still pending; at most one
+  `/resolve` per live id. After a restart the expiry is re-armed only for pending step-ups
+  of live runs (`runs.kind = live`); a replay step-up was never posted to Viseca. Ledger calls run in short `ScopedStoreLedger` sessions.
+  All ledger and pipeline calls run on one dedicated thread. The event feed cursor is
+  stored in `worker_state` once a page is processed and resumed on start (0 only on first
+  boot), so a restart does not re-scan the team-wide feed. `VisecaWorker.status()` is the
   `/healthz` worker block: `state`, `ok`, `last_poll_at`, `events_cursor`,
   `human_window_s`, `pending_step_ups`, `history_reseeded`, `fx_rates_match`,
   `fx_rates_mismatch`, `last_error`, `runs`.
@@ -85,25 +95,36 @@ oneguard/
 
 ## Deployment (Plan C)
 
-One container on Fly, built by P1-2 (docs/team-plan.md). The files below arrive with that
-code; this section is the target they are built to.
+One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
 
-- `Dockerfile`: a node build stage builds `frontend/dist`; the runtime stage is
-  `python:3.12-slim` with the backend installed and `frontend/dist` copied in; `uvicorn`
-  listens on `$PORT`; `ONEGUARD_SOFT_SIGNALS=keywords` is the image default.
-- python:3.12-slim needs the tzdata package for Europe/Zurich rules
-- `fly.toml`: region `lhr`, one machine, no volume (state lives in Supabase via
-  `ONEGUARD_DATABASE_URL`).
-- Fly secrets: `VISECA_API_KEY`, `OPENAI_API_KEY`, `ONEGUARD_DATABASE_URL`.
-- Makefile targets: `make deploy`, `make demo-live SCEN=…`, `make demo-offline`,
-  `make matrix` (45-row replay matrix), `make seed`, `make reset-db` (guarded by
-  `ONEGUARD_ENV != prod`). `demo-live` and `demo-offline` exist today; the others are added
-  with the Wave 1–2 code (P1-0 `seed` / `reset-db`, P1-2 `deploy`, P5-4 `matrix`).
-- `/healthz` reports worker polling, provider configured, signals backend, database engine
-  (sqlite/postgres), a 1-row round-trip time, and the `GET /v1/events` cursor position;
-  the `viseca_calls` table (docs/database.md §2) feeds it.
+- `Dockerfile`: a node stage builds `frontend/dist` (only when `frontend/package.json` is in
+  the context) with `VITE_API_BASE_URL=/api` and `VITE_USE_MOCKS=false`; the runtime stage is
+  `python:3.12-slim` + `tzdata` (Europe/Zurich rules), the backend installed editable with
+  its `compiler` extra (the OpenAI and Anthropic SDKs; the `signals` extra, Laya, stays out)
+  and `data/` beside it and `frontend/dist` copied in, run as a non-root user; `uvicorn
+  oneguard.api.app:app` listens on `$PORT` (8080); `ONEGUARD_SOFT_SIGNALS=keywords` and
+  `ONEGUARD_ENV=prod` are the image defaults.
+- `fly.toml`: region `lhr` (nearest Supabase in eu-west-1), one `shared-cpu-1x` machine with
+  1 GB, never auto-stopped (the worker polls from inside the app), no volume: state lives in
+  Supabase via `ONEGUARD_DATABASE_URL`. Health check `GET /healthz`, 60 s grace.
+- Fly secrets: `VISECA_API_KEY`, `OPENAI_API_KEY`, `ONEGUARD_DATABASE_URL`,
+  `ONEGUARD_LLM_PROVIDER`, `ONEGUARD_SOFT_SIGNALS`; temporarily `ONEGUARD_ALLOW_RUNS=false`
+  (D3 and `make demo-live` refuse to start a run while it is set). Set with `fly secrets`, never in files.
+- Makefile: `make deploy` (`fly deploy -a oneguard --ha=false`), `make logs`, `make image`
+  (the same image locally), `make demo-live SCEN=…`, `make demo-offline`, `make seed`,
+  `make reset-db` (refused when `ONEGUARD_ENV=prod`); `make matrix` arrives with P5-4.
+- App start (`oneguard/api/app.py` lifespan): `init_db` (creates missing tables, never drops),
+  seeds only an empty store, loads `HistoryIndex`, warms the pool (5 connections), warms
+  soft signals if enabled, then starts the worker in the background only when
+  `VISECA_API_KEY` is set, after binding every stored mandate's policy to it.
+- `/healthz` (never names a secret or URL): `status` (`ok` when the database answers and the
+  worker, if configured, is polling), `worker` (`VisecaWorker.status()`: state, polling,
+  last poll, events cursor, human window, pending step-ups, last error), `events_cursor`,
+  `provider` (name, configured), `signals` (backend, enabled, model loaded), `database`
+  (engine name `sqlite`/`postgresql`, `SELECT 1` round trip in ms), `engine.stubbed`.
+  503 only when the database does not answer.
 - SQLite fallback (docs/database.md §5): if Supabase is unreachable, unset
-  `ONEGUARD_DATABASE_URL` → SQLite on the Fly machine, `make seed`, restart.
+  `ONEGUARD_DATABASE_URL`; the app seeds the empty SQLite store on the machine at start.
 
 ## Dependencies (ask before adding)
 
@@ -117,3 +138,5 @@ Fact build < 5 ms · rules + protections + signs < 5 ms · ledger transaction < 
 signals ≤ 500 ms (parallel, optional) · tier 2 ≤ 1.5 s (only when a rule is `unknown`),
 inside the 2 s budget · Viseca POST ~100–300 ms. Internal budget 2 s; platform deadline
 8 s from queueing. Tier 3 runs after posting, not in the budget.
+Measured (docs/benchmark.md, `backend/scripts/bench_engine.py`): end-to-end P95 5.6 ms on
+SQLite with signals off; Laya agent_directed P95 99 ms per purchase on the laptop.

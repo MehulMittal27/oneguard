@@ -4,6 +4,7 @@ import { resolveApproval } from '../api/approvals'
 import type { Decision } from '../api/types'
 import { DECISIONS_POLL_SECONDS } from '../config'
 import { useCustomer } from './CustomerContext'
+import { usePolicy } from './PolicyContext'
 import { DecisionsContext, type DecisionsContextValue } from './DecisionsContext'
 import { mergeDecisions } from './mergeDecisions'
 
@@ -24,6 +25,7 @@ function DecisionsProviderInner({
     customerId ? 'loading' : 'ready',
   )
   const [attempt, setAttempt] = useState(0)
+  const { refreshPolicies } = usePolicy()
 
   // Read once on sign-in, then kept current on a timer: the agent proposes
   // purchases while the customer has the app open, so decisions arrive during
@@ -33,6 +35,9 @@ function DecisionsProviderInner({
   // fetch from disturbing a running countdown or un-expiring a step-up. That
   // one function is also the whole seam for swapping polling out for a live
   // stream later — no screen is involved either way.
+  //
+  // Each read is followed by a policy refresh (C3): a new decision moves the
+  // ledger, and the meter reads the ledger's `usage`, not a sum of its own.
   useEffect(() => {
     if (!customerId) return
     let cancelled = false
@@ -50,6 +55,7 @@ function DecisionsProviderInner({
         // *first* read leaves nothing to show, and that is the error state.
         if (isFirst) setStatus('error')
       }
+      refreshPolicies()
     }
 
     read(true)
@@ -58,7 +64,7 @@ function DecisionsProviderInner({
       cancelled = true
       clearInterval(interval)
     }
-  }, [customerId, attempt])
+  }, [customerId, attempt, refreshPolicies])
 
   // Single ticking clock expires anything past its deadline, locally only.
   // Never calls resolve here — an unanswered step_up ends paused, not
@@ -94,6 +100,8 @@ function DecisionsProviderInner({
           : d,
       ),
     )
+    // An approved step-up is spend and leaves the pending reservation.
+    refreshPolicies()
   }
 
   function retry() {

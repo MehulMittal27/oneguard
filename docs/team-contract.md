@@ -10,7 +10,7 @@ avoid overwriting each other. Paste it into your agent together with `CLAUDE.md`
 | Lane | Person | Owns these paths (and only these) | Does not touch |
 |---|---|---|---|
 | P1 Integration & platform | Mehul | `backend/oneguard/pipeline.py`, `backend/oneguard/viseca/`, `backend/oneguard/api/`, `backend/oneguard/store/` (schema, engines, seed, HistoryIndex), `Dockerfile`, `fly.toml`, `Makefile`, root `README.md`, all of `docs/`, the interface files in §3 | engine internals, compiler internals, frontend |
-| P2 Engine core | Trim | `backend/oneguard/engine/facts.py`, `policy.py`, `ledger.py`, `decide.py`, `backend/tests/test_engine_core*.py` | protections, warnings, explain, signals, anything outside engine/ |
+| P2 Engine core | Trim | `backend/oneguard/engine/facts.py`, `policy.py`, `ledger.py`, `decide.py`, `backend/tests/test_engine_core*.py`, `backend/scripts/bench_engine.py` | protections, warnings, explain, signals, anything outside engine/ |
 | P3 Frontend | Yasin | everything under `frontend/` | anything under `backend/`, `docs/api-contract.md` (propose changes to P1) |
 | P4 LLM layer | Rozhina | `backend/oneguard/llm/` (except `provider.py` interface), `backend/oneguard/compiler/`, `backend/oneguard/engine/tier2.py`, `backend/oneguard/engine/tier3.py`, `backend/tests/test_compiler*.py`, `test_tier*.py` | the deterministic engine, api, viseca |
 | P5 Guardrails & quality | Dinesh | `backend/oneguard/engine/protections.py`, `warnings.py`, `signals.py`, `explain.py`, `backend/oneguard/replay/`, `backend/tests/test_oracle.py`, `test_protections*.py`, `test_replay*.py`, `test_no_scenario_refs.py`, `.github/workflows/` | facts/policy/ledger/decide, compiler, api, frontend |
@@ -119,7 +119,9 @@ class Policy:                  mandate_id, instruction, rules: list[Rule], uncer
                                allowed_item_categories, blocked_item_categories, requires_known_shop: bool,
                                nothing_extra: bool, shop_type: str | None
 class PriorDecision:           authorization_id, timestamp, outcome, final, approved: bool, merchant_id, item_ids: list, billing_amount_chf, reserved: bool
-class LedgerView:              period_spent_chf, period_reserved_chf, period_window_start, priors: list[PriorDecision],
+class LedgerView:              period_spent_chf, period_reserved_chf, period_window_start,
+                               period_count: int | None, period_reserved_count, period_last_approved_at,  # cart.purchases_in_period
+                               priors: list[PriorDecision],
                                known_merchant_ids: set, known_merchant_names: dict[str, str], known_device_ids: set, known_countries: set,
                                max_approved_chf: float, flagged_merchant_ids: set, frozen: bool, confirmed_keys: set
 class RuleResult:              rule_id, outcome: RuleOutcome, detail, counterfactual: str | None, source: FactSource

@@ -353,7 +353,8 @@
       ],
       "order_returnable": "true",
       "delivery_by": null,
-      "counterfactual": "Would approve at CHF 400 or less."
+      "counterfactual": "Would approve at CHF 400 or less.",
+      "explanation_source": "template"
     },
     {
       "mock": true,
@@ -555,7 +556,8 @@
         }
       ],
       "order_returnable": "true",
-      "delivery_by": null
+      "delivery_by": null,
+      "explanation_source": "model"
     },
     {
       "mock": true,
@@ -806,6 +808,68 @@
       "related": {
         "authorization_id": "AU0037",
         "relation": "requote_of"
+      },
+      "explanation_source": "model"
+    },
+    {
+      "mock": true,
+      "authorization_id": "AU0029",
+      "customer_id": "CU0012",
+      "card_id": "CA0023",
+      "decision": "uncertain",
+      "uncertain_outcome": "pending",
+      "status": "pending_human",
+      "reason_codes": [
+        "session_risk",
+        "night_purchase",
+        "velocity_burst"
+      ],
+      "message": "Third order on this card in seven minutes, at 02:21. Within your limit, but the pace and hour don't look like you.",
+      "uncertainty": {
+        "note": "Whether you are the one driving this session, or something else is using your agent."
+      },
+      "occurred_at": "2026-08-18T02:21:00Z",
+      "merchant": {
+        "merchant_id": "ME0060",
+        "name": "Thames Weave"
+      },
+      "amount": 219.0,
+      "currency": "GBP",
+      "billing_amount_chf": 245.28,
+      "items": [
+        {
+          "item_name": "Everyday jacket",
+          "quantity": 1,
+          "unit_price": 219.0,
+          "currency": "GBP",
+          "item_details": "Lined jacket, size M; returns accepted within 14 days"
+        }
+      ],
+      "injection_flag": null,
+      "evidence": [
+        {
+          "rule": "Per-order limit",
+          "outcome": "pass",
+          "detail": "CHF 219.00 is within your CHF 250 per-order limit."
+        },
+        {
+          "rule": "Session",
+          "outcome": "fail",
+          "detail": "Three orders in seven minutes, between 02:14 and 02:21.",
+          "source": "ledger"
+        },
+        {
+          "rule": "Time of day",
+          "outcome": "uncertain",
+          "detail": "02:21 Europe/Zurich, outside this card's usual hours.",
+          "source": "history"
+        }
+      ],
+      "order_returnable": "true",
+      "delivery_by": null,
+      "session": {
+        "trust": "frozen",
+        "note": "We're double-checking after unusual activity on your card"
       }
     },
     {
@@ -896,6 +960,162 @@
       ],
       "order_returnable": "false",
       "delivery_by": "2026-08-19"
+    },
+    {
+      "mock": true,
+      "authorization_id": "AU0022",
+      "customer_id": "CU0006",
+      "card_id": "CA0011",
+      "decision": "uncertain",
+      "uncertain_outcome": "pending",
+      "status": "pending_human",
+      "reason_codes": [
+        "rule_not_met",
+        "unfamiliar_merchant"
+      ],
+      "message": "CHF 189.00, inside your CHF 200 limit — but nothing says whether this shop counts as a specialist sports retailer.",
+      "uncertainty": {
+        "note": "Your rule asks for a specialist sports retailer. Nothing in this order says whether GreenLoop is one, and no record can settle it."
+      },
+      "occurred_at": "2026-08-18T14:25:00Z",
+      "merchant": {
+        "merchant_id": "ME0053",
+        "name": "GreenLoop"
+      },
+      "amount": 189.0,
+      "currency": "CHF",
+      "billing_amount_chf": 189.0,
+      "items": [
+        {
+          "item_name": "Road-running shoes",
+          "quantity": 1,
+          "unit_price": 189.0,
+          "currency": "CHF",
+          "item_details": "Road-running shoe, size 43; returns accepted within 30 days"
+        }
+      ],
+      "injection_flag": null,
+      "evidence": [
+        {
+          "rule": "Per-order limit",
+          "outcome": "pass",
+          "detail": "CHF 189.00 is within your CHF 200 limit."
+        },
+        {
+          "rule": "Retailer",
+          "outcome": "uncertain",
+          "detail": "No record says whether GreenLoop is a specialist sports retailer.",
+          "source": "policy"
+        }
+      ],
+      "order_returnable": "true",
+      "delivery_by": null,
+      "confirmable": {
+        "rule_id": "retailer",
+        "phrase": "a specialist sports retailer"
+      }
+    },
+    {
+      "mock": true,
+      "authorization_id": "AU0031",
+      "customer_id": "CU0012",
+      "card_id": "CA0023",
+      "decision": "uncertain",
+      "uncertain_outcome": "pending",
+      "status": "pending_human",
+      "reason_codes": [
+        "session_watch"
+      ],
+      "message": "CHF 95.00, well inside your CHF 250 limit. We're checking with you because this card is still under watch after Tuesday's burst.",
+      "uncertainty": {
+        "note": "Whether the burst in the early hours of 18 August was you. Until you say, this card's orders come to you first."
+      },
+      "occurred_at": "2026-08-19T17:30:00Z",
+      "merchant": {
+        "merchant_id": "ME0025",
+        "name": "Loom and Pine"
+      },
+      "amount": 95.0,
+      "currency": "CHF",
+      "billing_amount_chf": 95.0,
+      "items": [
+        {
+          "item_name": "Rain coat",
+          "quantity": 1,
+          "unit_price": 95.0,
+          "currency": "CHF",
+          "item_details": "Rain coat, size S; returns accepted within 30 days"
+        }
+      ],
+      "injection_flag": null,
+      "evidence": [
+        {
+          "rule": "Per-order limit",
+          "outcome": "pass",
+          "detail": "CHF 95.00 is well within your CHF 250 limit."
+        },
+        {
+          "rule": "Session",
+          "outcome": "uncertain",
+          "detail": "This card is under watch after four orders between 02:14 and 02:24 on 18 August.",
+          "source": "ledger"
+        }
+      ],
+      "order_returnable": "true",
+      "delivery_by": null,
+      "session": {
+        "trust": "elevated",
+        "note": "On watch since the burst on 18 August. Your answer lifts it."
+      }
+    },
+    {
+      "mock": true,
+      "authorization_id": "AU0032",
+      "customer_id": "CU0012",
+      "card_id": "CA0023",
+      "decision": "approved",
+      "uncertain_outcome": null,
+      "status": "final",
+      "reason_codes": [
+        "session_recovered",
+        "within_limits",
+        "foreign_currency_converted"
+      ],
+      "message": "CHF 247.00, within your CHF 250 limit — the watch on this card lifted after you answered.",
+      "uncertainty": null,
+      "occurred_at": "2026-08-20T11:15:00Z",
+      "merchant": {
+        "merchant_id": "ME0027",
+        "name": "Milano Weave"
+      },
+      "amount": 260.0,
+      "currency": "EUR",
+      "billing_amount_chf": 247.0,
+      "items": [
+        {
+          "item_name": "Seasonal clothing order",
+          "quantity": 1,
+          "unit_price": 260.0,
+          "currency": "EUR",
+          "item_details": "Seasonal outerwear order, size S; returns accepted within 30 days"
+        }
+      ],
+      "injection_flag": null,
+      "evidence": [
+        {
+          "rule": "Per-order limit",
+          "outcome": "pass",
+          "detail": "EUR 260.00 converts to CHF 247.00, within your CHF 250 limit."
+        },
+        {
+          "rule": "Session",
+          "outcome": "pass",
+          "detail": "Normal activity resumed after you confirmed the earlier order.",
+          "source": "ledger"
+        }
+      ],
+      "order_returnable": "true",
+      "delivery_by": null
     },
     {
       "mock": true,

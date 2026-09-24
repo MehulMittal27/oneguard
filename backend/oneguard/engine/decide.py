@@ -22,13 +22,13 @@ is unknown, and an unknown step-1 check never approves. The most restrictive res
 or while the session watch is on; ``elevated`` for any other strong sign.
 
 Pure function: no I/O. Reason codes use api-contract §4 (new codes requested there:
-``rule_not_met``, ``unusual_activity``, ``session_watch``).
+``rule_not_met``, ``unusual_activity``, ``session_watch``, ``no_purchase_history``).
 """
 from __future__ import annotations
 
 from oneguard.engine.facts import CONTRADICTORY
 from oneguard.engine.interfaces import register
-from oneguard.engine.policy import CONFIRMED, RESERVATION_ONLY
+from oneguard.engine.policy import CONFIRMED, COUNT_FIELD, NO_HISTORY, RESERVATION_ONLY
 from oneguard.engine.types import (
     STEP1_RULE_IDS,
     EngineDecision,
@@ -89,6 +89,8 @@ def _dedupe(codes: list[str]) -> list[str]:
 def _fail_code(result: RuleResult, rule: Rule | None) -> str:
     if result.rule_id in STEP1_RULE_IDS:
         return "card_or_authority_inactive"
+    if rule is not None and rule.field == COUNT_FIELD:
+        return "period_count_exceeded"  # like C2, a reservation-only breach asks (M5)
     if rule is not None and rule.scope == "period":
         return "period_limit_exceeded"  # a reservation-only breach never gets here (M5, step 4)
     if rule is not None and rule.field in _FAIL_CODE_BY_FIELD:
@@ -99,6 +101,8 @@ def _fail_code(result: RuleResult, rule: Rule | None) -> str:
 def _unknown_code(result: RuleResult, rule: Rule | None) -> str:
     if CONTRADICTORY in result.detail:
         return "shop_terms_contradictory"
+    if result.detail == NO_HISTORY:  # C9 with no purchase history yet (policy.add_ledger_results)
+        return "no_purchase_history"
     return _UNKNOWN_CODE_BY_FIELD.get(rule.field or "", "unevaluable") if rule is not None else "unevaluable"
 
 
@@ -106,11 +110,16 @@ def _signal_code(signal: Signal) -> str:
     return _SIGNAL_CODE.get(signal.id, "unusual_activity")
 
 
+def _warns(signal: Signal) -> bool:
+    """A triggered warning sign that asks; "info" ones (no baseline yet) never do (P5)."""
+    return signal.triggered and signal.outcome_if_triggered != "info"
+
+
 def _session_trust(warnings_: list[Signal], ledger: LedgerView) -> str:
-    on = {w.id for w in warnings_ if w.triggered}
+    on = {w.id for w in warnings_ if _warns(w)}
     if {"W1", "W2"} <= on or ledger.frozen:
         return "frozen"
-    if any(w.triggered and w.strength == "strong" for w in warnings_):
+    if any(_warns(w) and w.strength == "strong" for w in warnings_):
         return "elevated"
     return "normal"
 
@@ -194,8 +203,8 @@ def decide(
         return result("step_up", 5, [_signal_code(s) for s in asking], [s.id for s in asking], asking)
 
     # Step 6: warning signs (one strong, or two weak), soft signals, the session watch.
-    strong = [w for w in warnings_ if w.triggered and w.strength == "strong"]
-    weak = [w for w in warnings_ if w.triggered and w.strength == "weak"]
+    strong = [w for w in warnings_ if _warns(w) and w.strength == "strong"]
+    weak = [w for w in warnings_ if _warns(w) and w.strength == "weak"]
     signs = strong + (weak if len(weak) >= 2 else [])
     signs += [s for s in soft if s.triggered and s.outcome_if_triggered == "ask"]
     if signs:

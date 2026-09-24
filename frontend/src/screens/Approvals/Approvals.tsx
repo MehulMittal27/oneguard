@@ -6,9 +6,10 @@ import { DecisionMark } from '../../components/DecisionMark'
 import { CheckIcon, CrossIcon, HelpCircleIcon, InfoIcon } from '../../components/icons/lucide'
 import { OrderCapLeashMeter, PeriodLeashMeter } from '../../components/LeashMeter'
 import { RevokeSheet } from '../../components/RevokeSheet'
+import { SessionBanner } from '../../components/SessionBanner'
 import { formatShortDate } from '../../lib/datetime'
 import { formatChf } from '../../lib/money'
-import { computePendingChf, computePeriodSpend, limitsFromMandate } from '../../lib/spend'
+import { limitsFromMandate, spendFromMandate } from '../../lib/spend'
 import { useDecisions } from '../../state/DecisionsContext'
 import { usePolicy } from '../../state/PolicyContext'
 import { DecisionDetail } from '../DecisionDetail/DecisionDetail'
@@ -64,12 +65,24 @@ function PendingCard({
   // A revoked mandate has no live limit to preview against.
   const { perOrder, period } =
     mandate && mandate.status === 'active' ? limitsFromMandate(mandate) : { perOrder: null, period: null }
+  // Ledger-first: `usage` when the engine sent it, the client sum only in mock mode.
+  const spend = period
+    ? spendFromMandate(mandate, decisions, decision.card_id, period.days)
+    : null
   const cardDecisions = decisions
     .filter((d) => d.card_id === decision.card_id)
     .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))
 
   return (
     <div className="rounded-card border-2 border-asked-border bg-surface p-5">
+      {/* Why the engine is being careful, above the purchase it is being careful
+          about — the same banner DecisionDetail shows. */}
+      {decision.session && decision.session.trust !== 'normal' && (
+        <div className="mb-3">
+          <SessionBanner session={decision.session} />
+        </div>
+      )}
+
       <div className="flex items-center justify-between gap-3">
         <span className="rounded-pill bg-asked-tint px-3 py-1 text-[13px] font-medium text-asked">
           Waiting for you
@@ -127,13 +140,20 @@ function PendingCard({
         ))}
       </div>
 
+      {/*
+        Both, not one or the other: `message` is the engine's reason for pausing
+        and `uncertainty.note` is what specifically it can't settle. The note used
+        to replace the message, which left the engine's own sentence unrendered on
+        this screen (CLAUDE.md rule 10).
+      */}
       <div className="mt-3 rounded-row border border-asked-border bg-asked-tint px-4 py-3">
         <p className="text-[11px] font-semibold tracking-[0.08em] text-asked-ink uppercase">
           Why your rules are unsure
         </p>
-        <p className="mt-1 text-[13px] text-asked-ink">
-          {decision.uncertainty?.note ?? decision.message}
-        </p>
+        <p className="mt-1 text-[13px] font-medium text-asked-ink">{decision.message}</p>
+        {decision.uncertainty && (
+          <p className="mt-2 text-[13px] text-asked-ink">{decision.uncertainty.note}</p>
+        )}
       </div>
 
       {decision.evidence.length > 0 && (
@@ -170,8 +190,8 @@ function PendingCard({
             {period ? (
               <PeriodLeashMeter
                 limitChf={period.limitChf}
-                spentChf={computePeriodSpend(decisions, decision.card_id, period.days)}
-                pendingChf={computePendingChf(decisions, decision.card_id)}
+                spentChf={spend?.spentChf ?? 0}
+                pendingChf={spend?.pendingChf ?? 0}
                 days={period.days}
               />
             ) : perOrder ? (
@@ -181,24 +201,59 @@ function PendingCard({
         </div>
       )}
 
-      <div className="mt-4 grid grid-cols-2 gap-3">
-        <button
-          type="button"
-          disabled={resolving}
-          onClick={() => handle('approve')}
-          className="h-14 rounded-row bg-approved text-[16px] font-semibold text-on-ink disabled:opacity-60"
-        >
-          Approve
-        </button>
-        <button
-          type="button"
-          disabled={resolving}
-          onClick={() => handle('decline')}
-          className="h-14 rounded-row border-2 border-destructive-border text-[16px] font-semibold text-destructive disabled:opacity-60"
-        >
-          Reject
-        </button>
-      </div>
+      {/*
+        A step-up on a restriction no data can check ("an official ticket
+        seller") is the one case where approving can also be remembered: the
+        engine stores the answer against this shop and item and stops asking
+        (engine/policy.py `is_unverifiable`). The button says so in full, so the
+        customer is never agreeing to a standing rule by pressing a button that
+        only said "Approve". It stacks rather than sharing the two-column row —
+        the sentence does not fit half a 390px screen.
+      */}
+      {decision.confirmable ? (
+        <div className="mt-4 flex flex-col gap-3">
+          <button
+            type="button"
+            disabled={resolving}
+            onClick={() => handle('approve')}
+            className="min-h-14 rounded-row bg-approved px-4 py-3 text-[15px] leading-[1.35] font-semibold text-on-ink disabled:opacity-60"
+          >
+            {/* Merchant name is untrusted shop text — a plain text node here too. */}
+            Approve, and treat {decision.merchant.name} as {decision.confirmable.phrase} from now
+            on
+          </button>
+          <p className="text-[12px] text-ink-muted">
+            Applies to this shop and the items in this order. Everything else still asks you.
+          </p>
+          <button
+            type="button"
+            disabled={resolving}
+            onClick={() => handle('decline')}
+            className="h-14 rounded-row border-2 border-destructive-border text-[16px] font-semibold text-destructive disabled:opacity-60"
+          >
+            Reject
+          </button>
+        </div>
+      ) : (
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            disabled={resolving}
+            onClick={() => handle('approve')}
+            className="h-14 rounded-row bg-approved text-[16px] font-semibold text-on-ink disabled:opacity-60"
+          >
+            Approve
+          </button>
+          <button
+            type="button"
+            disabled={resolving}
+            onClick={() => handle('decline')}
+            className="h-14 rounded-row border-2 border-destructive-border text-[16px] font-semibold text-destructive disabled:opacity-60"
+          >
+            Reject
+          </button>
+        </div>
+      )}
 
       {error && (
         <p className="mt-3 text-[13px] text-destructive">

@@ -13,6 +13,11 @@ const DEMO_SECONDS_REMAINING: Record<string, number> = {
   AU0006: 100,
   AU0018: 45,
   AU0040: 12,
+  // The two beats that need reading time, not urgency: the remembered-answer
+  // step-up and the session watch both carry a sentence the customer has to
+  // take in before deciding.
+  AU0022: 110,
+  AU0031: 115,
 }
 
 function withDeadline(decision: Decision): Decision {

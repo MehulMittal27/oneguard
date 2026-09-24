@@ -24,7 +24,8 @@ def offending_lines(root: Path, scanned=SCANNED, allowed=frozenset()) -> list[st
                 continue
             for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
                 if FORBIDDEN.search(line):
-                    found.append(f"{path.relative_to(root)}:{number}: {line.strip()}")
+                    # as_posix: the same report on Windows, where str() would use backslashes
+                    found.append(f"{path.relative_to(root).as_posix()}:{number}: {line.strip()}")
     return found
 
 

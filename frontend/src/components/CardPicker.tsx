@@ -18,7 +18,7 @@ export function CardPicker({
   onSelect: (cardId: string) => void
   onClose: () => void
 }) {
-  const { policiesByCard } = usePolicy()
+  const { policiesByCard, status: policiesStatus } = usePolicy()
 
   return (
     <BottomSheet
@@ -63,11 +63,13 @@ export function CardPicker({
                   Card {card.card_id} · {card.card_purpose}
                 </span>
                 <span className="block truncate text-[13px] text-ink-muted">
-                  {isActive
-                    ? 'Already has an active policy — confirming here replaces it'
-                    : isRevoked
-                      ? 'Policy revoked'
-                      : 'No policy yet'}
+                  {policiesStatus !== 'ready'
+                    ? 'Checking this card’s policy…'
+                    : isActive
+                      ? 'Already has an active policy — confirming here replaces it'
+                      : isRevoked
+                        ? 'Policy revoked'
+                        : 'No policy yet'}
                 </span>
               </span>
             </label>

@@ -23,7 +23,7 @@ from oneguard.llm.provider import (
     get_provider,
     provider_available,
 )
-from oneguard.pipeline import PipelineContext, decide_event
+from oneguard.pipeline import PipelineContext, decide_event, to_api_decision
 from oneguard.store.history import StoreHistoryIndex
 
 REPO = Path(__file__).resolve().parents[2]
@@ -64,6 +64,11 @@ DRY_RUN = {
     "examples": [DRY_RUN_EXAMPLE],
     "agent_history": {"attempts": 10, "approved": 9},
 }
+CONFIRMATION = {
+    "rule_text": "from the official ticket seller",
+    "merchant_name": "EventForge",
+    "item_name": "Concert ticket",
+}
 USAGE = {
     "per_order_limit_chf": 120,
     "period_limit_chf": 300,
@@ -72,6 +77,7 @@ USAGE = {
     "period_window_start": "2026-08-03T09:12:00Z",
     "pending_chf": 0,
     "fulfilment": {"bought": 0, "requested": 1},
+    "confirmations": [CONFIRMATION],
     "as_of": "2026-08-10T09:12:00Z",
 }
 MANDATE = {
@@ -128,6 +134,7 @@ DECISION = {
     "engine_version": "oneguard/0.0.0 signals=off",
     "latency_ms": 3.2,
     "explanation_source": "template",
+    "confirmable": {"rule_id": "U1", "phrase": "from the official ticket seller"},
 }
 RESOLVED_DECISION = {
     **{k: v for k, v in DECISION.items() if k != "deadline_at"},
@@ -172,6 +179,7 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
         "compiler": "fallback",
     },
     api.Fulfilment: {"bought": 0, "requested": 1},
+    api.Confirmation: CONFIRMATION,
     api.MandateUsage: USAGE,
     api.Mandate: MANDATE,
     api.Evidence: EVIDENCE,
@@ -182,6 +190,7 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
     api.Related: DECISION["related"],
     api.Session: DECISION["session"],
     api.MerchantMeta: DECISION["merchant_meta"],
+    api.Confirmable: DECISION["confirmable"],
     api.Decision: DECISION,
     api.ReplayStatus: {
         "scenario_id": "S1",
@@ -281,15 +290,19 @@ def test_optional_fields_are_omitted_and_nullable_fields_are_null() -> None:
         counterfactual=None,
         related=None,
         session=None,
+        confirmable=None,
     )
     del minimal["deadline_at"]
     dumped = api.Decision.model_validate(minimal).model_dump(mode="json")
     assert dumped == minimal
-    for key in ("uncertain_outcome", "uncertainty", "injection_flag", "counterfactual", "related", "session"):
+    for key in ("uncertain_outcome", "uncertainty", "injection_flag", "counterfactual", "related", "session",
+                "confirmable"):
         assert key in dumped and dumped[key] is None
     for key in ("deadline_at", "merchant_meta", "resolved_by", "latency_ms"):
         assert key not in dumped
     assert "kind" not in api.RuleCheck(id="a", text="t", source="exact", uncertainty=None).model_dump()
+    usage = {k: v for k, v in USAGE.items() if k != "confirmations"}
+    assert api.MandateUsage.model_validate(usage).model_dump(mode="json") == usage
 
 
 @pytest.mark.parametrize(
@@ -357,6 +370,8 @@ EXPECTED_INTERFACES = {
     "explain",
     "rewrite_explanation",
     "compile_instruction",
+    "lint_accepted",
+    "dry_run",
 }
 
 
@@ -495,6 +510,32 @@ def test_stub_pipeline_returns_a_valid_decision_for_the_example_event() -> None:
     assert ctx.ledger.get("AU_EXAMPLE_0001").reserved_chf == 20.0
 
 
+def test_confirmable_only_on_a_step_up_decided_by_one_unverifiable_rule() -> None:
+    u1 = Rule(id="U1", field="unverifiable", operator="=", value="from the official ticket seller",
+              text="official seller", source="exact")
+    c1 = Rule(id="C1", field="authorization.billing_amount_chf", operator="<=", value=120,
+              currency="CHF", text="Total at or below CHF 120", source="exact")
+    policy = Policy(mandate_id="mnd_1", status="active", instruction="stub", rules=[u1, c1],
+                    uncertainty_policy="ask")
+    ctx = _context(policy=policy)
+    decide_event(_event(), ctx)
+    stored = ctx.ledger.get("AU_EXAMPLE_0001")
+    view = ctx.ledger.view(run_id="run_1", customer_id=stored.customer_id, card_id=stored.card_id,
+                           at=stored.ts_sim, period_days=None)
+
+    def wire(**over: Any) -> Any:
+        entry = stored.model_copy(update=over)
+        return to_api_decision(_event(), entry, view, policy).model_dump(mode="json")["confirmable"]
+
+    assert wire(deciding_ids=["U1"]) == {"rule_id": "U1", "phrase": "from the official ticket seller"}
+    assert wire(deciding_ids=["C1"]) is None
+    assert wire(deciding_ids=["U1", "C1"]) is None
+    assert wire(deciding_ids=["U1", "A1"]) is None
+    assert wire(deciding_ids=[]) is None
+    assert wire(deciding_ids=["U1"], outcome="decline", final=True, uncertain_outcome=None,
+                deadline_at=None) is None
+
+
 def test_redelivery_returns_the_stored_result_and_counts_nothing() -> None:
     ctx = _context()
     first = decide_event(_event(), ctx)
@@ -536,3 +577,30 @@ def test_tier2_is_skipped_without_a_provider_and_failures_are_contained() -> Non
     _, _, decision = decide_event(_event(), _context(implementations=functions, provider=Configured()))
     assert calls == ["tier2"]
     assert decision.status == "pending_human"
+
+
+def test_the_lint_stub_never_passes_everything() -> None:
+    """A stubbed C2 re-lint still asks for a per-order cap and every exact check."""
+    from oneguard.engine.types import Rule
+
+    cap = Rule(id="C1", field="authorization.billing_amount_chf", operator="<=", value=120, currency="CHF",
+               scope="purchase", text="Total at or below CHF 120 per order", source="exact")
+    shop = Rule(id="C9", field="merchant.known_shop", operator="=", value="true",
+                text="Only shops you have bought from before", source="inferred")
+    assert stubs.STUBS["lint_accepted"]([cap, shop], ["C1"]) == ([], [])
+    missing, reasons = stubs.STUBS["lint_accepted"]([cap, shop], ["C9"])
+    assert missing == ["per_order_limit", "C1"] and len(reasons) == 2
+
+
+def test_the_lint_stub_counts_only_an_upper_bound_as_a_per_order_cap() -> None:
+    """A ">=" or ">" floor on the amount limits nothing; "<", "<=" and an exact "=" are caps."""
+    from oneguard.engine.types import Rule
+
+    def amount(operator: str) -> Rule:
+        return Rule(id="C1", field="authorization.billing_amount_chf", operator=operator, value=20,
+                    currency="CHF", scope="purchase", text=f"Total {operator} CHF 20", source="inferred")
+
+    for floor in (">=", ">"):
+        assert stubs.STUBS["lint_accepted"]([amount(floor)], ["C1"])[0] == ["per_order_limit"]
+    for cap in ("<", "<=", "="):
+        assert stubs.STUBS["lint_accepted"]([amount(cap)], ["C1"]) == ([], [])

@@ -1,0 +1,339 @@
+# Model responses for the compiler's LLM path on the five public instructions (lane P4).
+# TEST DATA ONLY: read by backend/tests/test_compiler_recorded.py, never by oneguard/.
+#
+# Each `response` is the provider's JSON output (compiler/llm.py SCHEMA) for `instruction`.
+# These were written in that format by hand, not captured from a live model: no API key
+# was available when this file was made. `public_2_reviewed_run` reproduces the defects
+# the P4-1 review saw on a real run. To refresh with captured output, replace a `response`
+# block and keep `expect`.
+#
+# expect.kinds: the kinds of restriction the shipped draft holds (compiler.lint.coverage);
+# expect.on_fail: every rule's on_fail; expect.compiler: llm | fallback.
+- label: public_0
+  instruction: Buy one ordinary grocery item for CHF 20 or less from a shop I use regularly. Ask me when uncertain.
+  response:
+    uncertainty_policy: ask
+    requested_item: null
+    nothing_extra: false
+    rules:
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 20
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: for CHF 20 or less
+      source: exact
+      on_fail: decline
+    - field: items[].item_category
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - groceries
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: ordinary grocery item
+      source: inferred
+      on_fail: decline
+    - field: merchant.familiar_on_card
+      operator: '='
+      value_number: null
+      value_text: 'true'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: from a shop I use regularly
+      source: inferred
+      on_fail: decline
+    open_questions: []
+  expect:
+    compiler: llm
+    kinds:
+    - C1
+    - C3
+    - C9
+    uncertainty_policy: ask
+    on_fail: decline
+- label: public_1
+  instruction: Order our household groceries for delivery. Keep each order at or below CHF 120 including delivery,
+    and keep the total across any seven days at or below CHF 300. Ask me when uncertain.
+  response:
+    uncertainty_policy: ask
+    requested_item: null
+    nothing_extra: false
+    rules:
+    - field: items[].item_category
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - groceries
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: household groceries
+      source: inferred
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 120
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: Keep each order at or below CHF 120 including delivery
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 300
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: period
+      period_days: 7
+      words: keep the total across any seven days at or below CHF 300
+      source: exact
+      on_fail: decline
+    open_questions: []
+  expect:
+    compiler: llm
+    kinds:
+    - C1
+    - C2
+    - C3
+    uncertainty_policy: ask
+    on_fail: decline
+- label: public_2
+  instruction: Replace my worn road-running shoes in size 43. Buy only from a specialist sports retailer, only if
+    the order can be returned within 14 days or more, and pay no more than CHF 200. Ask me when uncertain.
+  response:
+    uncertainty_policy: ask
+    requested_item: road-running shoes
+    nothing_extra: false
+    rules:
+    - field: items[].size_eu
+      operator: '='
+      value_number: 43
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: in size 43
+      source: exact
+      on_fail: decline
+    - field: merchant.merchant_category
+      operator: '='
+      value_number: null
+      value_text: sporting_goods
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: specialist sports retailer
+      source: exact
+      on_fail: decline
+    - field: order.return_window_days
+      operator: '>='
+      value_number: 14
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: returned within 14 days or more
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 200
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: pay no more than CHF 200
+      source: exact
+      on_fail: decline
+    open_questions: []
+  expect:
+    compiler: llm
+    kinds:
+    - C1
+    - C5
+    - C6
+    - C7
+    - C8
+    uncertainty_policy: ask
+    on_fail: decline
+- label: public_2_reviewed_run
+  instruction: Replace my worn road-running shoes in size 43. Buy only from a specialist sports retailer, only if
+    the order can be returned within 14 days or more, and pay no more than CHF 200. Ask me when uncertain.
+  note: 'The defects from the P4-1 review: on_fail ask on every rule, shop type turned into an open question, requested
+    item lost. Must be rejected; the rule-based reading ships.'
+  response:
+    uncertainty_policy: ask
+    requested_item: null
+    nothing_extra: false
+    rules:
+    - field: items[].size_eu
+      operator: '='
+      value_number: 43
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: in size 43
+      source: exact
+      on_fail: ask
+    - field: order.return_window_days
+      operator: '>='
+      value_number: 14
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: returned within 14 days or more
+      source: exact
+      on_fail: ask
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 200
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: pay no more than CHF 200
+      source: exact
+      on_fail: ask
+    open_questions:
+    - Which shops count as a specialist sports retailer?
+  expect:
+    compiler: fallback
+    kinds:
+    - C1
+    - C5
+    - C6
+    - C7
+    - C8
+    uncertainty_policy: ask
+    on_fail: decline
+- label: public_3
+  instruction: The agent may buy clothing for me, up to CHF 250 per order, from shops I have used before. Pause
+    anything that looks like someone other than me is driving the session. Ask me when uncertain.
+  response:
+    uncertainty_policy: ask
+    requested_item: null
+    nothing_extra: false
+    rules:
+    - field: items[].item_category
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - clothing
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: clothing
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 250
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: up to CHF 250 per order
+      source: exact
+      on_fail: decline
+    - field: merchant.familiar_on_card
+      operator: '='
+      value_number: null
+      value_text: 'true'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: from shops I have used before
+      source: exact
+      on_fail: decline
+    open_questions: []
+  expect:
+    compiler: llm
+    kinds:
+    - C1
+    - C3
+    - C9
+    uncertainty_policy: ask
+    on_fail: decline
+- label: public_4
+  instruction: Buy the 27-inch monitor I chose, from a seller I have bought from before, for CHF 400 or less. Do
+    not add anything I did not ask for. Ask me when uncertain.
+  response:
+    uncertainty_policy: ask
+    requested_item: 27-inch monitor
+    nothing_extra: true
+    rules:
+    - field: merchant.familiar_on_card
+      operator: '='
+      value_number: null
+      value_text: 'true'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: from a seller I have bought from before
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 400
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: for CHF 400 or less
+      source: exact
+      on_fail: decline
+    open_questions: []
+  expect:
+    compiler: llm
+    kinds:
+    - C1
+    - C5
+    - C9
+    - C10
+    uncertainty_policy: ask
+    on_fail: decline
