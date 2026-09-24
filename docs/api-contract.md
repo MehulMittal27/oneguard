@@ -67,6 +67,7 @@ Unchanged from the frontend README except: C1 gains `504`, C2 gains the two `409
 | D3 | POST | `/api/dev/runs` | `{ scenario_id, card_id, force?: boolean }` | `LiveRun` — creates a Viseca run against the card's active mandate, followed by the worker; names the run card's holder |
 | D4 | GET | `/api/dev/runs/{run_id}` | — | `LiveRun` — progress, counters, worker health |
 | D5 | POST | `/api/dev/soft-signals` | `{ enabled: boolean }` | `{ enabled }` — chaos toggle for the small decision model |
+| D5 | GET | `/api/dev/soft-signals` | - | `{ live: boolean, replay: boolean }` - whether the models run now for live runs and for the offline replay; the two differ until an operator sets D5 (§3.7). Reads only |
 | D6 | GET | `/api/dev/ledger/{card_id}` | — | `LedgerSnapshot` — the engine's own state, for the "reproduce this decision" view |
 | D7 | GET | `/api/dev/runs/current` | — | `LiveRun` or `ReplayStatus` — the newest run (live or replay, by the real time it started) with the counters D4 / D1 show; 404 when none. Starts nothing |
 | D8 | GET | `/api/dev/scenarios` | — | `{ scenarios: Scenario[] }` — every scenario in the store's catalogue, whether the platform serves it now, the customer and card it runs on when known, and a run of it still in progress. Reads only |
@@ -455,7 +456,10 @@ neutral fallback for unknown codes.
 13. Policy review: a draft with no checks disables "Confirm policy" (C2 would refuse it, §3.2) and shows its `open_questions`, falling back to "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'" when there are none
 14. `Decision.run_id` / `run_started_at` - Activity and Home list each card's newest run (latest `run_started_at`); older runs sit collapsed under "Earlier runs (n)", each headed by its start time. A decision without `run_id` is always listed. Approvals is unchanged (pending only)
 
-No endpoint changes. No screen removals. Tighten UI stays dormant.
+15. Approvals pending card: `uncertainty.note` shows only when it says something the message does not (`lib/decisionMessage.ts` `noteAddsToMessage`); the note is usually the uncertain evidence row's detail, which the card lists anyway.
+16. Operator strip (`?demo=1`, operator only): reads D5 GET on each poll and labels the toggle with what the server reports (on, off, live only, replay only), never an assumed "on"; D1's 404 reads as "no replay yet", not as the backend being unreachable.
+
+No customer endpoint changes. No screen removals. Tighten UI stays dormant.
 
 ---
 
