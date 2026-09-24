@@ -1,9 +1,11 @@
 """Policy compiler (P4): instruction -> typed rules -> lint -> dry-run (rules.md §10).
 
-``compile_instruction`` reads with the LLM (llm.py) and falls back to the English
-parser (parser.py) when the model is unavailable, times out, or its reading lints
-worse. The instruction is kept verbatim. Lint problems that remain are put to the
-customer as open questions; nothing is guessed (T2).
+The English parser's reading (parser.py) is the floor. The LLM reading (llm.py) ships
+only when it passes lint and keeps every kind of restriction the parser found; its job
+is to add what the parser cannot read (other phrasing, other languages), never to
+replace what it can. Otherwise the parser's reading ships with ``compiler: fallback``
+and a warning in the log. The instruction is kept verbatim. Lint problems that remain
+are put to the customer as open questions; nothing is guessed (T2).
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from datetime import date
 from oneguard.api.models import DryRunResult
 from oneguard.compiler.draft import ParsedDraft
 from oneguard.compiler.dryrun import dry_run
-from oneguard.compiler.lint import LintResult, lint
+from oneguard.compiler.lint import LintResult, lint, lint_against_floor
 from oneguard.compiler.llm import read_with_llm
 from oneguard.compiler.parser import parse
 from oneguard.compiler.resolve import simulated_today
@@ -53,12 +55,12 @@ def compile_instruction(
     if provider_available(provider):
         try:
             read = read_with_llm(text, provider, history, card_id, today, preferences)
-            read_lint = lint(read)
-            if read_lint.ok or len(read_lint.issues) <= len(fallback_lint.issues):
-                chosen, chosen_lint, compiler = read, read_lint, "llm"
+            rejected = lint(read).issues + lint_against_floor(read, fallback)
+            if not rejected:
+                chosen, chosen_lint, compiler = read, LintResult(issues=[]), "llm"
             else:
-                log.info("compiler: LLM reading linted worse (%s); using fallback",
-                         ", ".join(i.code for i in read_lint.issues))
+                log.warning("compiler: LLM reading rejected, using the rule-based reading: %s",
+                            "; ".join(f"{i.code}: {i.message}" for i in rejected))
         except ProviderUnavailable as exc:
             log.warning("compiler: LLM unavailable, using fallback: %s", exc)
 

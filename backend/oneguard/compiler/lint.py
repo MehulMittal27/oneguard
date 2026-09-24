@@ -6,9 +6,14 @@
 - T3 boundary words kept: "under" is ``<``, "at or below / or less / max / up to" is ``<=``;
 - T4 a foreign-currency limit is shown converted to CHF;
 - T5 a per-order amount cap is present, or an open question asks for one;
-- contradictions: rules on the same field that no purchase could satisfy together.
+- contradictions: rules on the same field that no purchase could satisfy together;
+- ``on_fail: ask`` only where the customer said to be asked about a change ("ask me if
+  anything changed"); "ask me when uncertain" is the uncertainty setting (C11), and a
+  broken limit under it still declines (D1).
 
-``lint_accepted`` is the C2 re-lint of the subset the customer accepted.
+``lint_against_floor`` holds an LLM reading to the fallback parser's (T1): it must keep
+every kind of restriction the parser found. ``lint_accepted`` is the C2 re-lint of the
+subset the customer accepted.
 """
 
 from __future__ import annotations
@@ -26,13 +31,15 @@ from oneguard.compiler.parser import (
     _INCLUSIVE_AFTER,
     _INCLUSIVE_BEFORE,
     _STRICT_BEFORE,
+    ASK_IF_CHANGED,
     NUMBER_WORDS,
 )
 from oneguard.engine.types import Rule
 
 IssueCode = Literal[
     "amount_not_used", "invented_value", "boundary_changed", "currency_not_shown",
-    "no_amount_cap", "contradiction", "exact_check_dropped",
+    "no_amount_cap", "contradiction", "exact_check_dropped", "on_fail_not_stated",
+    "restriction_dropped",
 ]
 _AMOUNT_QUESTION = re.compile(r"\b(?:amount|limit|cost|price|spend|budget|CHF)\b", re.IGNORECASE)
 _STATED_NUMBERS = {"items[].size_eu", "order.return_window_days", "cart.quantity", "items[].quantity"}
@@ -175,8 +182,50 @@ def _bounds_conflict(rules: list[Rule]) -> list[LintIssue]:
     return issues
 
 
+def _check_on_fail(draft: ParsedDraft) -> list[LintIssue]:
+    if ASK_IF_CHANGED.search(draft.instruction):
+        return []
+    return [
+        LintIssue(code="on_fail_not_stated", rule_id=r.id,
+                  message=f"{r.text}: you did not ask to be asked instead of declining")
+        for r in draft.rules if r.on_fail == "ask"
+    ]
+
+
+def coverage(draft: ParsedDraft) -> set[str]:
+    """The kinds of restriction a reading holds: rule ids without their ``-n`` suffix,
+    plus C5 (requested item), C10 (nothing extra) and C11 (decline when uncertain)."""
+    kinds = {re.sub(r"-\d+$", "", r.id) if not r.id.startswith("U") else "U" for r in draft.rules}
+    if draft.requested_item:
+        kinds.add("C5")
+    if draft.nothing_extra:
+        kinds.add("C10")
+    if draft.uncertainty_policy == "decline":
+        kinds.add("C11")
+    return kinds
+
+
+_KIND_NAMES = {
+    "C1": "the per-order limit", "C2": "the period limit", "C3": "the item types",
+    "C4": "the excluded item types", "C5": "the requested item", "C6": "the size",
+    "C7": "the order terms", "C8": "the shop type", "C9": "shops you know", "C10": "nothing extra",
+    "C11": "decline when uncertain", "U": "a restriction no data can check",
+}
+
+
+def lint_against_floor(read: ParsedDraft, floor: ParsedDraft) -> list[LintIssue]:
+    """T1: the LLM reading may add to what the English parser found, never lose it."""
+    lost = sorted(coverage(floor) - coverage(read))
+    return [
+        LintIssue(code="restriction_dropped", rule_id=kind,
+                  message=f"the reading lost {_KIND_NAMES.get(kind, kind)} that the rule-based reading found")
+        for kind in lost
+    ]
+
+
 def lint(draft: ParsedDraft) -> LintResult:
     issues = _check_amounts_used(draft) + _check_boundaries(draft) + _check_numbers(draft)
+    issues += _check_on_fail(draft)
     if not _has_amount_cap(draft.rules) and not any(_AMOUNT_QUESTION.search(q) for q in draft.open_questions):
         issues.append(LintIssue(code="no_amount_cap",
                                 message="No per-order amount limit, and no question asking for one"))

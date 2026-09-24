@@ -364,14 +364,24 @@ def uncertainty_setting(text: str) -> tuple[str, list[str]]:
 
 
 # --- Same price as last time (C1 from history) ---------------------------------------
+# ``on_fail: ask`` needs the customer to say so about a change ("ask me if anything
+# changed", "if it differs, ask me"). "Ask me when uncertain" is C11, not this.
+ASK_IF_CHANGED = re.compile(
+    r"\bask me (?:if|when|whenever|in case)\s+(?:anything|something|the price|it|that|this|any of (?:it|this))"
+    r"\s+(?:has\s+)?(?:changed|changes|differs|is different|goes up)\b"
+    r"|\bif (?:anything|something|the price|it|that) (?:has\s+)?(?:changed|changes|differs|is different|goes up)"
+    r",?\s+(?:then\s+)?ask me\b",
+    re.IGNORECASE,
+)
+
+
 def _same_price(reading: _Reading, text: str, history, card_id: str) -> None:
     from oneguard.compiler.resolve import last_price
 
     m = re.search(r"\bsame (?:price|amount) as (?:last time|before|usual|last)\b", text, re.IGNORECASE)
     if not m:
         return
-    ask = bool(re.search(r"\bask me if (?:anything|something|the price|it) (?:changed|changes|is different)\b",
-                         text, re.IGNORECASE))
+    ask = bool(ASK_IF_CHANGED.search(text))
     found = last_price(history, card_id, reading.requested_item or text)
     if found is None:
         reading.questions.append(
