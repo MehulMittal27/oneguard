@@ -1017,3 +1017,60 @@ def test_d3_starts_nothing_while_runs_are_switched_off(db_url: str, monkeypatch:
             assert ok.status_code == 200 and len(run.fake.runs) == 1
 
     asyncio.run(scenario())
+
+
+def test_d7_shows_the_newest_run_live_or_replay(db_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """D7: 404 before any run; then whichever run started last, as D1's or D4's shape."""
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast())) as run:
+            none = await run.get("/api/dev/runs/current")
+            assert none.status_code == 404
+            assert none.json() == {"error": {"code": "not_found", "message": "No run has started yet."}}
+
+            await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
+            current = (await run.get("/api/dev/runs/current")).json()
+            assert current == (await run.get("/api/dev/replay")).json()
+
+            await confirm_form(run)
+            live = (await run.post("/api/dev/runs", json={"scenario_id": "SCEN0000", "card_id": "CA0001"})).json()
+            current = (await run.get("/api/dev/runs/current")).json()
+            assert current["run_id"] == live["run_id"]
+            assert current == (await run.get(f"/api/dev/runs/{live['run_id']}")).json()
+
+            async def decided() -> bool:
+                return (await run.get("/api/dev/runs/current")).json()["decided"] == 1
+
+            await until(decided)
+            await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
+            current = (await run.get("/api/dev/runs/current")).json()
+            assert set(current) == {"scenario_id", "card_id", "delivered", "total", "running", "next_at"}
+            assert (current["delivered"], current["total"], current["running"]) == (10, 10, False)
+
+            # read-only, whatever ONEGUARD_ALLOW_RUNS says
+            monkeypatch.setenv("ONEGUARD_ALLOW_RUNS", "false")
+            runs_before = dict(run.fake.runs)
+            again = await run.get("/api/dev/runs/current")
+            assert again.status_code == 200 and again.json() == current
+            assert run.fake.runs == runs_before
+
+    asyncio.run(scenario())
+
+
+def test_d7_reads_the_stored_newest_run_after_a_restart(db_url: str) -> None:
+    """A live run stored by an earlier process is still D7's answer (worker_ok false)."""
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast())) as run:
+            await confirm_form(run)
+            live = (await run.post("/api/dev/runs", json={"scenario_id": "SCEN0000", "card_id": "CA0001"})).json()
+
+            async def decided() -> bool:
+                return (await run.get("/api/dev/runs/current")).json()["decided"] == 1
+
+            await until(decided)
+        async with running(db_url) as run:  # no worker now
+            current = (await run.get("/api/dev/runs/current")).json()
+            assert (current["run_id"], current["decided"], current["worker_ok"]) == (live["run_id"], 1, False)
+
+    asyncio.run(scenario())

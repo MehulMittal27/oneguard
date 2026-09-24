@@ -251,6 +251,17 @@ def replay_run(db: Engine, run: Run) -> None:
         s.merge(run)
 
 
+def newest_run(db: Engine) -> Run | None:
+    """The run started last on the real clock, live or replay."""
+    with session(db) as s:
+        return s.scalar(select(Run).order_by(Run.started_at.desc(), Run.run_id.desc()).limit(1))
+
+
+def run_row(db: Engine, run_id: str) -> Run | None:
+    with session(db) as s:
+        return s.get(Run, run_id)
+
+
 def live_run_row(db: Engine, viseca_run_id: str) -> Run | None:
     with session(db) as s:
         return s.scalar(select(Run).where(Run.viseca_run_id == viseca_run_id, Run.kind == "live"))

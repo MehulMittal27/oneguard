@@ -128,6 +128,10 @@ class OfflineRunner:
     def status(self) -> api.ReplayStatus | None:
         return self._state.status() if self._state else None
 
+    def current(self) -> tuple[str, datetime] | None:
+        """(run id, started at) of the latest replay this process started, if any."""
+        return (self._state.run_id, self._state.started_at) if self._state else None
+
     async def restart(
         self,
         *,

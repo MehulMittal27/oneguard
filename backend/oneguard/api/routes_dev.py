@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import cache
 
 from fastapi import APIRouter, Request
@@ -28,6 +28,7 @@ from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import LedgerEntry
 from oneguard.engine.types import CompiledDraft, Policy
 from oneguard.replay.events import Pack, build_events
+from oneguard.store.schema import Run
 from oneguard.viseca.client import RUNS_DISABLED_MESSAGE, runs_allowed
 from oneguard.viseca.worker import first_value
 
@@ -158,6 +159,7 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
     started = await s.viseca(s.client.create_run(body.scenario_id, row.viseca_mandate_id), "new run")
     run_id = str(started["run_id"])
     total = first_value(started, "generated_event_count", "total", "total_events", "event_count")
+    s.live_started[run_id] = s.now()
     s.worker.track_run(
         run_id,
         scenario_id=body.scenario_id,
@@ -167,6 +169,69 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
     live = s.worker.live_run(run_id)
     assert live is not None
     return reply(live.model_copy(update={"card_id": live.card_id or body.card_id, "mandate_id": row.mandate_id}))
+
+
+def _stored_live_run(run_id: str, row: Run) -> api.LiveRun:
+    state = row.state if row.state in ("starting", "running", "done", "error") else "error"
+    return api.LiveRun(
+        run_id=run_id,
+        scenario_id=row.scenario_id or "",
+        card_id=row.card_id,
+        mandate_id=row.mandate_id,
+        state=state,
+        delivered=row.delivered,
+        decided=row.decided,
+        pending_human=row.pending_human,
+        total=row.total,
+        worker_ok=False,
+        last_error=row.last_error,
+    )
+
+
+@router.get("/runs/current", response_model=api.LiveRun | api.ReplayStatus)
+async def current_run(request: Request) -> JSONResponse:
+    """D7: the newest run, live or replay, as D4's ``LiveRun`` or D1's ``ReplayStatus``.
+
+    Newest by the real time it started, across the stored runs, the replay this process
+    runs and the runs D3 started that the worker has not stored yet. Starts nothing.
+    """
+    s = services(request)
+    candidates: list[tuple[datetime, str, str]] = []  # (started, kind, run id: Viseca's for live)
+    row = await s.db(queries.newest_run, s.db_engine)
+    if row is not None:
+        candidates.append((row.started_at, row.kind, row.viseca_run_id or row.run_id))
+    replay = s.offline.current()
+    if replay is not None:
+        candidates.append((replay[1], "replay", replay[0]))
+    candidates.extend((at, "live", run_id) for run_id, at in s.live_started.items())
+    if not candidates:
+        raise not_found("No run has started yet.")
+    _, kind, run_id = max(candidates, key=lambda c: c[0])
+    if kind == "live":
+        live = s.worker.live_run(run_id) if s.worker is not None else None
+        if live is not None:
+            return reply(live)
+        stored = await s.db(queries.live_run_row, s.db_engine, run_id)
+        if stored is None:
+            raise not_found(f"No run {run_id}.")
+        return reply(_stored_live_run(run_id, stored))
+    if replay is not None and replay[0] == run_id:
+        status = s.offline.status()
+        assert status is not None
+        return reply(status)
+    stored = await s.db(queries.run_row, s.db_engine, run_id)
+    if stored is None:
+        raise not_found(f"No run {run_id}.")
+    return reply(
+        api.ReplayStatus(
+            scenario_id=stored.scenario_id or "",
+            card_id=stored.card_id,
+            delivered=stored.delivered,
+            total=stored.total,
+            running=False,
+            next_at=None,
+        )
+    )
 
 
 @router.get("/runs/{run_id}", response_model=api.LiveRun)
@@ -179,22 +244,7 @@ async def get_run(run_id: str, request: Request) -> JSONResponse:
     row = await s.db(queries.live_run_row, s.db_engine, run_id)
     if row is None:
         raise not_found(f"No run {run_id}.")
-    state = row.state if row.state in ("starting", "running", "done", "error") else "error"
-    return reply(
-        api.LiveRun(
-            run_id=run_id,
-            scenario_id=row.scenario_id or "",
-            card_id=row.card_id,
-            mandate_id=row.mandate_id,
-            state=state,
-            delivered=row.delivered,
-            decided=row.decided,
-            pending_human=row.pending_human,
-            total=row.total,
-            worker_ok=False,
-            last_error=row.last_error,
-        )
-    )
+    return reply(_stored_live_run(run_id, row))
 
 
 # D5 -------------------------------------------------------------------------------------

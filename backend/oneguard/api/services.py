@@ -70,6 +70,8 @@ class Services:
     models_enabled: bool | None = None
     """D5 chaos toggle; None until an operator sets it."""
     worker_error: str | None = None
+    live_started: dict[str, datetime] = field(default_factory=dict)
+    """Viseca run id → real time D3 started it (before the worker has stored its row)."""
     db_timeout_s: float = DB_TIMEOUT_S
     viseca_timeout_s: float = VISECA_TIMEOUT_S
     compile_timeout_s: float = COMPILE_TIMEOUT_S

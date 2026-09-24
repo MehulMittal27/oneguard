@@ -68,6 +68,7 @@ Unchanged from the frontend README except: C1 gains `504`, C2 gains the two `409
 | D4 | GET | `/api/dev/runs/{run_id}` | — | `LiveRun` — progress, counters, worker health |
 | D5 | POST | `/api/dev/soft-signals` | `{ enabled: boolean }` | `{ enabled }` — chaos toggle for the small decision model |
 | D6 | GET | `/api/dev/ledger/{card_id}` | — | `LedgerSnapshot` — the engine's own state, for the "reproduce this decision" view |
+| D7 | GET | `/api/dev/runs/current` | — | `LiveRun` or `ReplayStatus` — the newest run (live or replay, by the real time it started) with the counters D4 / D1 show; 404 when none. Starts nothing |
 
 D3 requires an active mandate on the card (409 otherwise). While `ONEGUARD_ALLOW_RUNS=false` D3 starts nothing and
 answers 409 `runs_disabled` (unset: runs allowed); `make demo-live` refuses the same way. D1/D2 use the same engine and
