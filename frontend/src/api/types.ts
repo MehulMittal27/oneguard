@@ -140,9 +140,9 @@ export interface MandateUsage {
    * Restrictions the customer has already answered for a shop and item, which
    * the engine remembers so it stops asking (`LedgerView.confirmed_keys`;
    * engine/policy.py `is_unverifiable` — only a restriction no data can check
-   * can be passed this way). PENDING: not yet in `../docs/api-contract.md` §2
-   * or `api/models.py`; requested from P1. Absent until then, so this renders
-   * nothing rather than guessing.
+   * can be passed this way). `../docs/api-contract.md` §2, rendered per §6
+   * item 11. Field-for-field with the backend's `Confirmation`. Names are
+   * untrusted text and render as plain text nodes.
    */
   confirmations?: { rule_text: string; merchant_name: string; item_name: string }[]
 }

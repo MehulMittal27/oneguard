@@ -37,7 +37,6 @@ MOCK_ONLY = {"mock", "scenario_id"}
 # leaves this set the moment the backend has it, and the check then guards it
 # like any other. Keep it short: it is a list of things not yet agreed.
 PENDING_CONTRACT = {
-    ("MandateUsage", "confirmations"),
     ("Decision", "confirmable"),
 }
 
