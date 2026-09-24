@@ -14,8 +14,8 @@ The lifespan, in order (docs/architecture.md Runtime, docs/database.md §5):
 5. the Viseca worker started, only when ``VISECA_API_KEY`` is set, in the background:
    it reads bootstrap and reference data, syncs the served reference tables into the
    store, then long-polls. Once started, the routes use its history index (reloaded if
-   the sync changed anything) and C12 adds the scenario the served bootstrap profile
-   runs on its card. ``/healthz`` shows it.
+   the sync changed anything), and C12 / D3 / D8 read the scenario bindings it stores
+   (``scenario_profiles``) and the scenarios it serves. ``/healthz`` shows it.
 
 ``/healthz`` reports the worker (state, last poll, events cursor), whether a model
 provider is configured, the signals backend and whether its model loaded, the database
@@ -174,7 +174,6 @@ async def _start_worker(s: Services) -> None:
         s.worker_error = f"worker did not start: {type(exc).__name__}"
         return
     s.history = s.worker.history
-    s.scenarios = routes_dev.merge_bindings(s.scenarios, routes_dev.profile_bindings(s.worker.bootstrap))
 
 
 @asynccontextmanager

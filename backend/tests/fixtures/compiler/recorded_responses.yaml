@@ -7,7 +7,8 @@
 # the P4-1 review saw on a real run. To refresh with captured output, replace a `response`
 # block and keep `expect`.
 #
-# expect.kinds: the kinds of restriction the shipped draft holds (compiler.lint.coverage);
+# expect.kinds: the kinds of restriction the shipped draft holds (compiler.lint.coverage); C3 on
+# public_2 and public_4 is the requested item's catalogue type, added by both paths (parser.PRODUCT_WORDS);
 # expect.on_fail: every rule's on_fail; expect.compiler: llm | fallback.
 - label: public_0
   instruction: Buy one ordinary grocery item for CHF 20 or less from a shop I use regularly. Ask me when uncertain.
@@ -177,6 +178,7 @@
     compiler: llm
     kinds:
     - C1
+    - C3
     - C5
     - C6
     - C7
@@ -235,6 +237,7 @@
     compiler: fallback
     kinds:
     - C1
+    - C3
     - C5
     - C6
     - C7
@@ -332,6 +335,7 @@
     compiler: llm
     kinds:
     - C1
+    - C3
     - C5
     - C9
     - C10

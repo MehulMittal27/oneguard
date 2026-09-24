@@ -211,6 +211,11 @@ export interface Decision {
    * requested from P1. Absent means the ordinary approve button.
    */
   confirmable?: { rule_id: string; phrase: string } | null
+  // The run this decision belongs to, and that run's start on the real clock
+  // (`../docs/api-contract.md` §2, §6 item 14). Activity and Home list a card's
+  // newest run and fold older ones away (`lib/runs.ts`).
+  run_id?: string
+  run_started_at?: string
 }
 
 // Operator-only shapes (`../docs/api-contract.md` §1.1 D1–D6), for the `?demo=1`
@@ -222,6 +227,13 @@ export interface ReplayStatus {
   total: number
   running: boolean
   next_at: string | null
+}
+
+// D5 read: whether the models run now, for live runs and for the offline replay.
+// The two differ until an operator sets D5 (§3.7).
+export interface SoftSignalsState {
+  live: boolean
+  replay: boolean
 }
 
 export interface LiveRun {

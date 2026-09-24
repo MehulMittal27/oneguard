@@ -28,7 +28,13 @@ from oneguard.store.schema import (
     Mandate,
     PolicyDraft,
     Run,
+    ScenarioCatalogue,
+    ScenarioProfile,
+    WorkerState,
 )
+
+SERVED_SCENARIOS_KEY = "served_scenarios"
+"""``worker_state`` row the worker writes at start (``viseca.worker.SERVED_SCENARIOS_KEY``)."""
 
 _CENT = Decimal("0.01")
 _MONEY_COLUMNS = ("reserved_chf", "spent_chf", "billing_amount_chf")
@@ -49,11 +55,12 @@ def entry_of(row: Decision) -> LedgerEntry:
 
 @dataclass(frozen=True)
 class StoredDecision:
-    """A decision with the event it decided and the kind of run it belongs to."""
+    """A decision with the event it decided and the kind and start of the run it belongs to."""
 
     entry: LedgerEntry
     event: dict[str, Any] | None
     run_kind: str | None
+    run_started_at: datetime | None = None
 
 
 # Reference data -------------------------------------------------------------------------
@@ -96,14 +103,53 @@ def card_customer(db: Engine, card_id: str) -> str | None:
         )
 
 
+def customer_names(db: Engine, customer_ids: Iterable[str]) -> dict[str, str]:
+    ids = sorted(set(customer_ids))
+    if not ids:
+        return {}
+    with session(db) as s:
+        rows = s.execute(select(Customer.customer_id, Customer.persona_name).where(Customer.customer_id.in_(ids)))
+        return {r[0]: r[1] for r in rows}
+
+
+# Scenarios (operator data: routes_dev and C12 only) --------------------------------------
+
+
+def scenario_catalogue(db: Engine) -> list[ScenarioCatalogue]:
+    with session(db) as s:
+        return list(s.scalars(select(ScenarioCatalogue).order_by(ScenarioCatalogue.scenario_id)))
+
+
+def scenario_profiles(db: Engine) -> list[ScenarioProfile]:
+    """The platform's scenario → customer / card bindings the worker stored."""
+    with session(db) as s:
+        return list(s.scalars(select(ScenarioProfile).order_by(ScenarioProfile.scenario_id)))
+
+
+def served_scenarios(db: Engine) -> list[str] | None:
+    """The scenario ids the platform served at the worker's last start; None if it never read them."""
+    with session(db) as s:
+        row = s.get(WorkerState, SERVED_SCENARIOS_KEY)
+    if row is None or not isinstance(row.value, list):
+        return None
+    return [v for v in row.value if isinstance(v, str)]
+
+
 # Decisions ------------------------------------------------------------------------------
 
 
-def _run_kinds(s: Session, run_ids: Iterable[str]) -> dict[str, str]:
+def _runs(s: Session, run_ids: Iterable[str]) -> dict[str, tuple[str, datetime]]:
+    """``run_id`` → (kind, started_at) for the runs that have a ``runs`` row."""
     ids = sorted(set(run_ids))
     if not ids:
         return {}
-    return dict(s.execute(select(Run.run_id, Run.kind).where(Run.run_id.in_(ids))).all())
+    rows = s.execute(select(Run.run_id, Run.kind, Run.started_at).where(Run.run_id.in_(ids))).all()
+    return {run_id: (kind, started_at) for run_id, kind, started_at in rows}
+
+
+def _stored(entry: LedgerEntry, event: dict[str, Any] | None, run: tuple[str, datetime] | None) -> StoredDecision:
+    kind, started_at = run if run is not None else (None, None)
+    return StoredDecision(entry, event, kind, started_at)
 
 
 def _events(s: Session, live_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
@@ -130,10 +176,8 @@ def customer_decisions(db: Engine, customer_id: str) -> list[StoredDecision]:
         )
         entries = [entry_of(r) for r in rows]
         events = _events(s, (e.live_authorization_id for e in entries))
-        kinds = _run_kinds(s, (e.run_id for e in entries))
-    return [
-        StoredDecision(e, events.get(e.live_authorization_id), kinds.get(e.run_id)) for e in entries
-    ]
+        runs = _runs(s, (e.run_id for e in entries))
+    return [_stored(e, events.get(e.live_authorization_id), runs.get(e.run_id)) for e in entries]
 
 
 def decision(db: Engine, live_id: str) -> StoredDecision | None:
@@ -143,8 +187,8 @@ def decision(db: Engine, live_id: str) -> StoredDecision | None:
             return None
         entry = entry_of(row)
         event = _events(s, [live_id]).get(live_id)
-        kind = _run_kinds(s, [entry.run_id]).get(entry.run_id)
-    return StoredDecision(entry, event, kind)
+        run = _runs(s, [entry.run_id]).get(entry.run_id)
+    return _stored(entry, event, run)
 
 
 def latest_run_decisions(db: Engine, *, card_id: str, mandate_id: str | None = None) -> list[LedgerEntry]:
@@ -244,6 +288,42 @@ def confirm_draft(db: Engine, draft_id: str, mandate: Mandate, viseca_draft_id: 
     return replaced
 
 
+def move_mandate(
+    db: Engine, mandate_id: str, card_id: str, customer_id: str, at: datetime, new_id: str
+) -> tuple[Mandate, list[Mandate]]:
+    """D3: the platform ran a mandate's scenario on another card than the one it was
+    confirmed on. The policy moves to that card: a copy (same instruction, rules and
+    Viseca mandate) becomes the card's active mandate and the original is marked revoked
+    here only, since the same Viseca mandate stays in force. Returns the copy and the
+    card's earlier active mandates, revoked, which the caller revokes at the platform."""
+    with session(db) as s:
+        source = s.get(Mandate, mandate_id)
+        assert source is not None
+        replaced = list(s.scalars(select(Mandate).where(Mandate.card_id == card_id, Mandate.status == "active")))
+        for old in replaced:
+            old.status = "revoked"
+            old.revoked_at = at
+        source.status = "revoked"
+        source.revoked_at = at
+        moved = Mandate(
+            mandate_id=new_id,
+            viseca_mandate_id=source.viseca_mandate_id,
+            card_id=card_id,
+            customer_id=customer_id,
+            instruction=source.instruction,
+            rules=source.rules,
+            checks=source.checks,
+            uncertainty_policy=source.uncertainty_policy,
+            open_questions=source.open_questions,
+            status="active",
+            confirmed_at=source.confirmed_at,
+            revoked_at=None,
+        )
+        s.add(moved)
+        s.flush()
+        return moved, replaced
+
+
 def update_mandate(db: Engine, mandate_id: str, **fields: Any) -> Mandate:
     with session(db) as s:
         row = s.get(Mandate, mandate_id)
@@ -268,6 +348,18 @@ def newest_run(db: Engine) -> Run | None:
 def run_row(db: Engine, run_id: str) -> Run | None:
     with session(db) as s:
         return s.get(Run, run_id)
+
+
+def unfinished_live_runs(db: Engine) -> list[Run]:
+    """Live runs the store last saw starting or running."""
+    with session(db) as s:
+        return list(
+            s.scalars(
+                select(Run)
+                .where(Run.kind == "live", Run.state.in_(("starting", "running")))
+                .order_by(Run.started_at.desc())
+            )
+        )
 
 
 def live_run_row(db: Engine, viseca_run_id: str) -> Run | None:

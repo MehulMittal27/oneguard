@@ -1,7 +1,7 @@
 import type { PolicyDraft } from '../../api/types'
 import { formatShortDate } from '../../lib/datetime'
 import { formatChf } from '../../lib/money'
-import { canConfirmDraft, reviewQuestions } from '../../lib/policyReview'
+import { agentHistoryLine, canConfirmDraft, reviewQuestions } from '../../lib/policyReview'
 import { NewPolicyShell } from './NewPolicyShell'
 
 /**
@@ -20,18 +20,6 @@ const EXAMPLE_OUTCOME: Record<string, { label: string; className: string }> = {
 }
 
 const UNKNOWN_EXAMPLE_OUTCOME = { label: 'Checked', className: 'text-ink-muted' }
-
-/**
- * Contract §6 item 9's agent-history line names its customer-wide scope. The
- * dry-run counters above remain card-scoped (and say "on this card"), while
- * this line covers every card. Zero attempts is worth saying: it means this
- * would be the first agent purchase on any of the customer's cards.
- */
-function agentHistoryLine({ attempts, approved }: { attempts: number; approved: number }): string {
-  if (attempts === 0) return "You haven't let an agent buy before across your cards."
-  const times = attempts === 1 ? 'once' : `${attempts} times`
-  return `You've let an agent buy ${times} before across your cards, ${approved} approved.`
-}
 
 /** DESIGN.md #7: step-2 review — checks, uncertainty choice, dry run, confirm. */
 export function NewPolicyCheck({

@@ -39,10 +39,11 @@ const UNCERTAIN_BANNER: Record<UncertainOutcome, { headline: string; bg: string;
 }
 
 /**
- * Contract §6 item 10's provenance tag, rendered beside the message it
- * describes — which is what makes the source explicit. No model sits in the decision
- * path (`../../../CLAUDE.md` non-negotiable 1). Unknown values fall back to the
- * label that is true either way.
+ * Contract §6 items 9-10's provenance tag, on its own small line under the
+ * explanation. It no longer sits beside the message, so the model label is the
+ * contract's full wording, which says outright that only the wording changed:
+ * no model sits in the decision path (`../../../CLAUDE.md` non-negotiable 1).
+ * Unknown values fall back to the label that is true either way.
  */
 const EXPLANATION_SOURCE: Record<string, string> = {
   template: 'Explained by OneGuard',
@@ -155,6 +156,9 @@ export function DecisionDetail({
     .filter(
       (d) =>
         d.card_id === decision.card_id &&
+        // Another run on this card is a replay of the same purchases, not a
+        // neighbour of this one.
+        (d.run_id ?? null) === (decision.run_id ?? null) &&
         d.authorization_id !== decision.authorization_id &&
         d.authorization_id !== link?.authorization_id &&
         (d.decision === 'stopped' || d.decision === 'uncertain'),
@@ -232,26 +236,24 @@ export function DecisionDetail({
           The reason, first thing under the banner: CLAUDE.md rule 10 — a
           decision with no visible reason is a bug. D-040 had removed the
           restated reason text, which left the message unrendered on the one
-          screen whose whole job is explaining. The provenance tag sits beside it
-          rather than floating alone, so the source plainly qualifies this
-          sentence and not the decision. It wraps under the sentence when the two
-          do not fit on one line, so a long tag never squeezes the message.
+          screen whose whole job is explaining. The message takes the full
+          width, the counterfactual is one line under it, and the provenance tag
+          is a small line of its own below both.
         */}
         <div className="mt-4 border-t border-hairline pt-4">
-          <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
-            {/* The counterfactual line below says the suggestion; the message's
-                trailing copy of it is dropped so it is said once. */}
-            <p className="text-[15px] leading-[1.45] font-medium text-ink">
-              {messageWithoutCounterfactual(decision.message, decision.counterfactual)}
-            </p>
-            {decision.explanation_source && (
-              <span className="mt-0.5 max-w-full rounded-pill bg-surface-sunken px-2 py-0.5 text-[11px] text-ink-muted">
-                {EXPLANATION_SOURCE[decision.explanation_source] ?? EXPLANATION_SOURCE_FALLBACK}
-              </span>
-            )}
-          </div>
+          {/* The counterfactual line below says the suggestion; the message's
+              trailing copy of it, which older messages still carry, is dropped so
+              it is said once. */}
+          <p className="text-[15px] leading-[1.45] font-medium text-ink">
+            {messageWithoutCounterfactual(decision.message, decision.counterfactual)}
+          </p>
           {decision.counterfactual && (
-            <p className="mt-2 text-[14px] font-medium text-ink-soft">{decision.counterfactual}</p>
+            <p className="mt-1 text-[14px] leading-[1.45] text-ink-soft">{decision.counterfactual}</p>
+          )}
+          {decision.explanation_source && (
+            <p className="mt-2 text-[11px] text-ink-muted">
+              {EXPLANATION_SOURCE[decision.explanation_source] ?? EXPLANATION_SOURCE_FALLBACK}
+            </p>
           )}
           {/* The codes the engine actually emitted, in the customer's words. One
               label map for the whole app (hard rule 9); an unknown code gets the

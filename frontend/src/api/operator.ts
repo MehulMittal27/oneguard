@@ -1,4 +1,4 @@
-import type { LiveRun, ReplayStatus } from './types'
+import type { LiveRun, ReplayStatus, SoftSignalsState } from './types'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 
@@ -29,6 +29,18 @@ export async function getCurrentRun(): Promise<CurrentRun | null> {
   if (!response.ok) throw new Error(`Failed to read current run (${response.status})`)
   const body = (await response.json()) as LiveRun | ReplayStatus
   return 'run_id' in body ? { kind: 'live', run: body } : { kind: 'replay', run: body }
+}
+
+/**
+ * D5 read: what the models are doing now, so the strip starts from the engine's
+ * state rather than assuming "on". With mocks nothing runs, so both are off.
+ */
+export async function getSoftSignals(): Promise<SoftSignalsState> {
+  if (import.meta.env.VITE_USE_MOCKS === 'true') return { live: false, replay: false }
+
+  const response = await fetch(`${API_BASE_URL}/dev/soft-signals`)
+  if (!response.ok) throw new Error(`Failed to read soft signals (${response.status})`)
+  return (await response.json()) as SoftSignalsState
 }
 
 /**
