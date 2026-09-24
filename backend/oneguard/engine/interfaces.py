@@ -109,9 +109,9 @@ def compile_instruction(
 ) -> CompiledDraft:
     """P4 compiler/. Instruction → typed rules + dry-run (§10, api-contract §3.2).
 
-    ``confirmed_at`` is when the customer confirmed the instruction (C2): relative dates
-    ("by Friday") count from its Europe/Zurich date; without it, from the card's
-    simulated present (its latest history row, M6)."""
+    Relative dates ("by Friday") count from the card's simulated present (its latest
+    history row, M6). ``confirmed_at``, when given, replaces it with its Europe/Zurich
+    date; no route passes it (C2 does not pass the real clock, api-contract §3.2)."""
     raise NotImplementedError
 
 

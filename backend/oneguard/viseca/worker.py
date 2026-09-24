@@ -124,6 +124,9 @@ POST_RETRY_DELAYS_S = (0.2, 0.5, 1.0)
 LOOP_BACKOFF_MAX_S = 10.0
 TIER3_TIMEOUT_S = 8.0
 """How long tier 3 may take to rewrite a posted message; it runs after posting (§4a)."""
+TIER3_THREADS = 4
+"""Model calls tier 3 makes at once, on its own threads: slow rewrites queue there and never
+take the default executor the worker's store writes (``asyncio.to_thread``) run on."""
 RECONCILE_TOLERANCE_CHF = Decimal("0.005")
 HISTORY_FILE = "authorization_history.csv"
 
@@ -612,6 +615,7 @@ class VisecaWorker:
         self._listeners: list[DecisionListener] = []
         self._rewrites: set[asyncio.Task[None]] = set()
         """Tier-3 rewrites in flight, cancelled by ``stop``."""
+        self._tier3_pool: ThreadPoolExecutor | None = None
         self._warned_no_set_deadline = False
         self._warned_no_set_explanation = False
         self.source_ids: dict[str, str] = {}
@@ -742,6 +746,9 @@ class VisecaWorker:
         self._task = None
         self._expiry.clear()
         self._rewrites.clear()
+        if self._tier3_pool is not None:
+            self._tier3_pool.shutdown(wait=False, cancel_futures=True)
+            self._tier3_pool = None
         self._state = "stopped"
         try:
             await asyncio.wait_for(
@@ -1600,13 +1607,18 @@ class VisecaWorker:
     async def _rewrite(
         self, ctx: PipelineContext, provider: Provider, data: dict[str, Any], live_id: str
     ) -> None:
-        """Tier 3 for one posted decision: the model call on its own thread, then one short
-        ledger session that stores the new message and reads it back for the listeners."""
+        """Tier 3 for one posted decision: the model call on a tier-3 thread
+        (``TIER3_THREADS``), then one short ledger session that stores the new message and
+        reads it back for the listeners."""
         try:
             entry = await self._engine(self.ledger.get, live_id)
             if entry is None or entry.explanation_source != "template":
                 return
-            message = await asyncio.to_thread(self._rewritten_message, ctx, provider, data, entry)
+            if self._tier3_pool is None:
+                self._tier3_pool = ThreadPoolExecutor(max_workers=TIER3_THREADS, thread_name_prefix="oneguard-tier3")
+            message = await asyncio.get_running_loop().run_in_executor(
+                self._tier3_pool, self._rewritten_message, ctx, provider, data, entry
+            )
             if message == entry.message:
                 return
             stored, view = await self._engine(self._store_rewrite, live_id, message, period_days_of(ctx.policy))

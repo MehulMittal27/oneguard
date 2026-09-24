@@ -1012,7 +1012,8 @@ class Rephrases:
 
 def test_d5_switches_tier3_rewrites_on_and_off(db_url: str) -> None:
     """With the models on, C6 shows the template first and the rewrite on a later poll
-    (``explanation_source: model``); D5 off stops rewrites of later decisions."""
+    (``explanation_source: model``); D5 off stops rewrites of later decisions. The worker
+    schedules a decision's rewrite as it notifies, so the test awaits those tasks."""
 
     async def scenario() -> None:
         provider = Rephrases()
@@ -1021,32 +1022,28 @@ def test_d5_switches_tier3_rewrites_on_and_off(db_url: str) -> None:
             db_url, fake=FakeViseca(fast()), provider=provider, implementations=engine,
             stubbed=TEST_STUBBED - {"rewrite_explanation"},
         ) as run:
+            worker = run.services.worker
+            seen: list[Any] = []
+            worker.add_listener(seen.append)
             assert run.services.live_models() is False  # signals off: models off until D5
             assert (await run.post("/api/dev/soft-signals", json={"enabled": True})).json() == {"enabled": True}
             await confirm_form(run)
             r = await run.post("/api/dev/runs", json={"scenario_id": "SCEN0000", "card_id": "CA0001"})
             assert r.status_code == 200, r.text
-
-            async def rewritten() -> list[dict[str, Any]]:
-                rows = await run.decisions()
-                return [d for d in rows if d["explanation_source"] == "model"]
-
-            (row,) = await until(rewritten)
-            assert row["message"].startswith("Quick note: ") and f"CHF {row['billing_amount_chf']:.2f}" in row["message"]
+            await until(lambda: len(seen) >= 1)  # the posted decision; its rewrite may follow at once
+            await asyncio.wait_for(asyncio.gather(*worker._rewrites), 30)
+            (row,) = await run.decisions()
+            assert row["explanation_source"] == "model" and row["message"].startswith("Quick note: ")
+            assert f"CHF {row['billing_amount_chf']:.2f}" in row["message"]
             assert provider.calls == 1
 
             assert (await run.post("/api/dev/soft-signals", json={"enabled": False})).json() == {"enabled": False}
             r = await run.post("/api/dev/runs", json={"scenario_id": "SCEN0001", "card_id": "CA0001"})
             assert r.status_code == 200, r.text
-
-            async def all_in() -> bool:
-                return len(await run.decisions()) == 11
-
-            await until(all_in)
-            await asyncio.sleep(0.5)
+            await until(lambda: len({d.authorization_id for d in seen}) == 11)
+            assert not worker._rewrites and provider.calls == 1
             rows = await run.decisions()
-            assert sum(d["explanation_source"] == "model" for d in rows) == 1
-            assert provider.calls == 1
+            assert len(rows) == 11 and sum(d["explanation_source"] == "model" for d in rows) == 1
 
     asyncio.run(scenario())
 

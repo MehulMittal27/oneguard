@@ -229,11 +229,7 @@ expire — that is a broken state, not a degraded one.
   `POST /v1/mandates/{draft_id}/confirm`. The returned `TM…` id is stored; our `mandate_id`
   is our own and maps to it.
 - The instruction is stored **verbatim** and sent to Viseca verbatim.
-- Relative dates in the instruction ("must arrive by Friday", M13(b)) count from the
-  confirmation: C2 supplies its confirmation time as `compile_instruction(...,
-  confirmed_at=…)`, whose Europe/Zurich date is "today". Without it (C1's preview) the
-  compiler counts from the card's simulated present, its latest history row (M6). The
-  check text shows the resolved date.
+- C2 does not pass the real clock; date phrases resolve from the card's simulated date.
 - A confirmed draft replaces the card's active mandate, which is revoked (C5 semantics).
 - C4 `add_checks` are ids of checks proposed by this card's drafts; their text is ignored.
   Changing a check already in force is 409 `not_pure_addition`; an unknown id is 422.

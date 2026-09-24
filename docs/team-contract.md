@@ -92,7 +92,7 @@ def explain(decision: EngineDecision, facts: Facts, policy: Policy,
 def rewrite_explanation(explanation: Explanation, facts: Facts, provider, timeout_s: float,
                         *, instruction: str | None = None) -> str: ...  # P4 tier3.py; the worker calls it after posting
 def compile_instruction(text: str, history: "HistoryIndex", card_id: str, provider,
-                        *, confirmed_at: datetime | None = None) -> CompiledDraft: ...  # P4 compiler/; C2 passes confirmed_at
+                        *, confirmed_at: datetime | None = None) -> CompiledDraft: ...  # P4 compiler/; confirmed_at kept for later, no route passes it
 ```
 
 ```python

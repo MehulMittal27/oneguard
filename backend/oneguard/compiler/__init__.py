@@ -45,11 +45,12 @@ def compile_instruction(
     *, confirmed_at: datetime | None = None, today: date | None = None,
     preferences: str | None = None,
 ) -> CompiledDraft:
-    """api-contract §3.2 C1 with ``instruction``, and C2 with the confirmation time.
+    """api-contract §3.2 C1 with ``instruction``.
 
-    Relative dates ("by Friday", M13(b)) count from ``today``: the Europe/Zurich date of
-    ``confirmed_at`` when C2 supplies it, else the card's simulated present (its latest
-    history row, M6). An explicit ``today`` wins over both."""
+    Relative dates ("by Friday") count from ``today``: the card's simulated present (its
+    latest history row, M6), or the Europe/Zurich date of ``confirmed_at`` when a caller
+    gives one (no route does: C2 does not pass the real clock). An explicit ``today``
+    wins over both."""
     if today is None:
         today = confirmation_date(confirmed_at) if confirmed_at else simulated_today(history, card_id)
 

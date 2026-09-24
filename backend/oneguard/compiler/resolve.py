@@ -1,10 +1,10 @@
 """Values the instruction points at but does not state (oracle ``value_from``).
 
 "Same price as last time" is the customer's last approved price at the shop they mean,
-read from HistoryIndex, never from text (A2). "By Friday" is a date counted from the day
-the customer confirms the instruction (``confirmed_at``, its Europe/Zurich date); without
-it, from the card's simulated present (M6: the latest history row). The check text shows
-the date so the customer confirms it (T5).
+read from HistoryIndex, never from text (A2). "By Friday" is a date counted from the
+card's simulated present (M6: the latest history row), or from a ``confirmed_at`` a caller
+gives (its Europe/Zurich date; no route does). The check text shows the date so the
+customer confirms it (T5).
 """
 
 from __future__ import annotations

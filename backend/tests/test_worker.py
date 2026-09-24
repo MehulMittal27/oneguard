@@ -773,6 +773,10 @@ def test_start_reseeds_history_when_viseca_serves_a_different_file(
 
 
 # Tier 3 ------------------------------------------------------------------------------------
+#
+# The worker schedules a decision's tier-3 task in the same event-loop step as it notifies
+# the listeners, so once a listener has seen a decision its task is in ``worker._rewrites``.
+# The tests await those tasks rather than a clock.
 
 REWRITE = "We need your OK before this purchase goes through."
 WITH_TIER3 = {
@@ -791,10 +795,14 @@ class SlowRewriter:
 
     def complete_json(self, schema: dict, system: str, user: str, timeout_s: float) -> dict:
         self.calls.append(timeout_s)
-        self.release.wait(10)
+        self.release.wait(30)
         if self.fail:
             raise ProviderUnavailable("timed out")
         return {"message": REWRITE}
+
+
+async def messages(worker: VisecaWorker, live_ids: list[str]) -> set[tuple[str, str]]:
+    return {(e.message, e.explanation_source) for e in await worker.ledger_entries(live_ids)}
 
 
 def test_tier3_rewrites_the_posted_message_later_without_holding_up_decisions(
@@ -812,23 +820,19 @@ def test_tier3_rewrites_the_posted_message_later_without_holding_up_decisions(
             _, run_id = await start_run(client, worker, "SCEN0001")
             auths = fake.runs[run_id].auths
             live_ids = [a.live_id for a in auths]
-            # all ten decided and posted with the template while every rewrite still waits
-            await wait_until(lambda: all(a.decisions for a in auths) and len(provider.calls) == 10)
+            # all ten decided and posted with the template while no rewrite can finish
+            await wait_until(lambda: len(seen) == 10)
+            tasks = list(worker._rewrites)
+            assert len(tasks) == 10 and not any(t.done() for t in tasks)
+            assert len(provider.calls) <= worker_module.TIER3_THREADS
             assert [a.decisions[0]["customer_message"] for a in auths] == ["stub"] * 10
-            entries = await worker.ledger_entries(live_ids)
-            assert {(e.message, e.explanation_source) for e in entries} == {("stub", "template")}
-            assert provider.calls == [TIER3_TIMEOUT_S] * 10
+            assert await messages(worker, live_ids) == {("stub", "template")}
 
             provider.release.set()
+            await asyncio.wait_for(asyncio.gather(*tasks), 60)
 
-            async def rewritten() -> bool:
-                entries = await worker.ledger_entries(live_ids)
-                return {(e.message, e.explanation_source) for e in entries} == {(REWRITE, "model")}
-
-            deadline = time.monotonic() + 10
-            while not await rewritten():
-                assert time.monotonic() < deadline, "the rewrites never reached the ledger"
-                await asyncio.sleep(0.02)
+            assert await messages(worker, live_ids) == {(REWRITE, "model")}
+            assert provider.calls == [TIER3_TIMEOUT_S] * 10
             # listeners get the rewritten decision too; nothing was posted again
             latest = {d.authorization_id: d for d in seen}
             assert {(d.message, d.explanation_source) for d in latest.values()} == {(REWRITE, "model")}
@@ -851,16 +855,17 @@ def test_tier3_is_not_scheduled_without_a_provider(
 
     async def scenario() -> None:
         functions = {**stubs.STUBS, "rewrite_explanation": spy}
+        seen: list[api.Decision] = []
         async with harness(
             db, fast(), history=history, provider=provider, implementations=functions
         ) as (fake, client, worker):
+            worker.add_listener(seen.append)
             await worker.start()
             _, run_id = await start_run(client, worker, "SCEN0001")
-            auths = fake.runs[run_id].auths
-            await wait_until(lambda: all(a.decisions for a in auths))
+            await wait_until(lambda: len(seen) == 10)
             assert not worker._rewrites
-            entries = await worker.ledger_entries([a.live_id for a in auths])
-            assert {(e.message, e.explanation_source) for e in entries} == {("stub", "template")}
+            live_ids = [a.live_id for a in fake.runs[run_id].auths]
+            assert await messages(worker, live_ids) == {("stub", "template")}
         assert not calls
 
     asyncio.run(scenario())
@@ -869,14 +874,18 @@ def test_tier3_is_not_scheduled_without_a_provider(
 def test_a_tier3_provider_failure_leaves_the_template(db: Engine, history: StoreHistoryIndex) -> None:
     async def scenario() -> None:
         provider = SlowRewriter(fail=True)
-        provider.release.set()
+        seen: list[api.Decision] = []
         async with harness(db, fast(), history=history, provider=provider, **WITH_TIER3) as (fake, client, worker):
+            worker.add_listener(seen.append)
             await worker.start()
             _, run_id = await start_run(client, worker, "SCEN0001")
-            auths = fake.runs[run_id].auths
-            await wait_until(lambda: all(a.decisions for a in auths) and len(provider.calls) == 10)
-            await wait_until(lambda: not worker._rewrites)
-            entries = await worker.ledger_entries([a.live_id for a in auths])
-            assert {(e.message, e.explanation_source) for e in entries} == {("stub", "template")}
+            await wait_until(lambda: len(seen) == 10)
+            tasks = list(worker._rewrites)
+            provider.release.set()
+            await asyncio.wait_for(asyncio.gather(*tasks), 60)  # the ones not already finished
+            assert not worker._rewrites and provider.calls == [TIER3_TIMEOUT_S] * 10
+            live_ids = [a.live_id for a in fake.runs[run_id].auths]
+            assert await messages(worker, live_ids) == {("stub", "template")}
+            assert len(seen) == 10  # no rewritten decision was announced
 
     asyncio.run(scenario())
