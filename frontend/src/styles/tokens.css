@@ -1,0 +1,95 @@
+/*
+ * Design tokens — Ink and signal theme only (DESIGN.md §Color tokens / §Spacing.../ §Typography).
+ * Security print is deferred (D-018, D-020); these names match DESIGN.md's token
+ * names exactly so adding it later is a values-only change, per DESIGN.md's own
+ * "build against Ink and signal first" guidance.
+ */
+:root {
+  /* Color */
+  --ground: #f4f1ea;
+  --surface: #ffffff;
+  --surface-sunken: #efebdf;
+  --surface-active: #e7e2d6;
+  --surface-expired: #ece8de;
+  /* New token, not from the original DESIGN.md artifacts (see D-022): a
+     blue-ish pill background for the active tab-bar item, split off from
+     `surface-active` so the Sandbox chip (which shares that token) doesn't
+     also turn blue. */
+  --tab-active: #e9e1f6;
+  --ink: #14213d;
+  --ink-soft: #3b4458;
+  --ink-muted: #5b6478;
+  --ink-tab: #5f6779;
+  --hairline: #e2ddd1;
+  --border-quiet: #dad4c5;
+  --border-dashed: #c9c2b1;
+  --card-icon-gray: #b7b0a0;
+  --on-ink: #f4f1ea;
+  --on-ink-soft: #d5dbea;
+  --on-ink-muted: #aeb7cc;
+  --on-ink-rule: #f4f1ea29;
+  --approved: #1b7a4b;
+  --approved-tint: #e3f3ea;
+  --approved-on-ink: #5fd39a;
+  --stopped: #b42318;
+  --stopped-tint: #fbe9e7;
+  --stopped-border: #e7c4bf;
+  --stopped-on-ink: #ff8f86;
+  --asked: #8a5300;
+  --asked-ink: #6f4200;
+  --asked-tint: #fdf0d5;
+  --asked-border: #e6c46f;
+  --asked-track: #f0dda8;
+  --asked-hatch: #f7e2ae;
+  --asked-dot: #b26b00;
+  --asked-on-ink: #f5b942;
+  --asked-on-ink-fill: #f5b94238;
+  --leash-fill: #14213d;
+  --leash-fill-on-ink: #f4f1ea;
+  --leash-limit: #e0561b;
+  --leash-limit-on-ink: #ff7a3d;
+  --cord-accent: #7c3aed;
+  --cord-accent-on-ink: #b794f6;
+  /* Dedicated to CountdownBar — kept separate from asked-track/asked-dot
+     (the "uncertain" decision-color family) so retuning the ticking-clock
+     color never implies a change to the uncertain/asked semantic. */
+  --countdown-track: #eae1f6;
+  --countdown-fill: var(--cord-accent);
+  --alert-badge: #b42318;
+  --destructive: #b42318;
+  --destructive-border: #e7c4bf;
+  --scrim: #14213d8c;
+  /* Presentational only — the phone-frame bezel/backdrop shown around the
+     app at desktop widths (D-065, `DeviceFrame`), never seen on an actual
+     phone viewport. `-backdrop` aliases `ink` on purpose, one value. */
+  --device-bezel: #0e1524;
+  --device-backdrop: var(--ground);
+
+  /* Spacing (DESIGN.md space-1..9) */
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 8px;
+  --space-4: 10px;
+  --space-5: 12px;
+  --space-6: 14px;
+  --space-7: 16px;
+  --space-8: 20px;
+  --space-9: 24px;
+
+  /* Radius (DESIGN.md radius-*; named --corner-* here to avoid colliding
+     with Tailwind's own --radius-* theme namespace when mapped in index.css) */
+  --corner-stamp: 3px;
+  --corner-meter: 7px;
+  --corner-quote: 10px;
+  --corner-tile: 12px;
+  --corner-button: 14px;
+  --corner-row: 16px;
+  --corner-card: 20px;
+  --corner-hero: 24px;
+  --corner-sheet: 28px;
+  --corner-pill: 999px;
+
+  /* Type faces (DESIGN.md §Typography) */
+  --typeface-display: 'Bricolage Grotesque', 'Avenir Next', system-ui, sans-serif;
+  --typeface-body: 'Instrument Sans', 'Avenir Next', system-ui, sans-serif;
+}

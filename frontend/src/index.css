@@ -1,0 +1,150 @@
+@import 'tailwindcss';
+@import './styles/tokens.css';
+
+/*
+ * Maps DESIGN.md tokens into Tailwind's theme namespace by reference
+ * (var(--x)), not by value, so the values stay defined once in tokens.css.
+ */
+@theme {
+  --color-ground: var(--ground);
+  --color-surface: var(--surface);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-surface-active: var(--surface-active);
+  --color-surface-expired: var(--surface-expired);
+  --color-tab-active: var(--tab-active);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-tab: var(--ink-tab);
+  --color-hairline: var(--hairline);
+  --color-border-quiet: var(--border-quiet);
+  --color-border-dashed: var(--border-dashed);
+  --color-card-icon-gray: var(--card-icon-gray);
+  --color-on-ink: var(--on-ink);
+  --color-on-ink-soft: var(--on-ink-soft);
+  --color-on-ink-muted: var(--on-ink-muted);
+  --color-on-ink-rule: var(--on-ink-rule);
+  --color-approved: var(--approved);
+  --color-approved-tint: var(--approved-tint);
+  --color-approved-on-ink: var(--approved-on-ink);
+  --color-stopped: var(--stopped);
+  --color-stopped-tint: var(--stopped-tint);
+  --color-stopped-border: var(--stopped-border);
+  --color-stopped-on-ink: var(--stopped-on-ink);
+  --color-asked: var(--asked);
+  --color-asked-ink: var(--asked-ink);
+  --color-asked-tint: var(--asked-tint);
+  --color-asked-border: var(--asked-border);
+  --color-asked-track: var(--asked-track);
+  --color-asked-hatch: var(--asked-hatch);
+  --color-asked-dot: var(--asked-dot);
+  --color-countdown-track: var(--countdown-track);
+  --color-countdown-fill: var(--countdown-fill);
+  --color-asked-on-ink: var(--asked-on-ink);
+  --color-leash-fill: var(--leash-fill);
+  --color-leash-fill-on-ink: var(--leash-fill-on-ink);
+  --color-leash-limit: var(--leash-limit);
+  --color-leash-limit-on-ink: var(--leash-limit-on-ink);
+  --color-cord-accent: var(--cord-accent);
+  --color-cord-accent-on-ink: var(--cord-accent-on-ink);
+  --color-alert-badge: var(--alert-badge);
+  --color-destructive: var(--destructive);
+  --color-destructive-border: var(--destructive-border);
+  --color-scrim: var(--scrim);
+  --color-device-bezel: var(--device-bezel);
+  --color-device-backdrop: var(--device-backdrop);
+
+  /* DESIGN.md's own 9-step scale (4,6,8,10,12,14,16,20,24), replacing
+     Tailwind's default numeric spacing scale on purpose — this project
+     only ever uses this scale, so p-8/gap-7/etc. mean DESIGN.md's space-8/7. */
+  --spacing-1: var(--space-1);
+  --spacing-2: var(--space-2);
+  --spacing-3: var(--space-3);
+  --spacing-4: var(--space-4);
+  --spacing-5: var(--space-5);
+  --spacing-6: var(--space-6);
+  --spacing-7: var(--space-7);
+  --spacing-8: var(--space-8);
+  --spacing-9: var(--space-9);
+
+  --radius-stamp: var(--corner-stamp);
+  --radius-meter: var(--corner-meter);
+  --radius-quote: var(--corner-quote);
+  --radius-tile: var(--corner-tile);
+  --radius-button: var(--corner-button);
+  --radius-row: var(--corner-row);
+  --radius-card: var(--corner-card);
+  --radius-hero: var(--corner-hero);
+  --radius-sheet: var(--corner-sheet);
+  --radius-pill: var(--corner-pill);
+
+  --font-display: var(--typeface-display);
+  --font-sans: var(--typeface-body);
+}
+
+html,
+body {
+  margin: 0;
+  /* Belt-and-braces: the page itself is never meant to scroll (every
+     screen's own content lives inside a capped-height DeviceFrame with
+     its own internal scroll regions), so nothing here should ever
+     rubber-band/bounce. The scroll regions below are the real fix; this
+     is a backstop in case some content is ever taller than expected. */
+  overscroll-behavior: none;
+}
+
+body {
+  background: var(--color-ground);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * Applied to every real scrollable region in the app (D-066/D-067).
+ * `scrollbar-width`/`-ms-overflow-style`/`::-webkit-scrollbar` hide the
+ * OS/browser scrollbar without disabling scroll — a real phone doesn't
+ * show a persistent one, and inside `DeviceFrame` a visible one breaks
+ * the illusion. `overscroll-behavior: contain` stops this element's own
+ * scroll from chaining to its parent once it hits the top or bottom —
+ * without it, scrolling past this element's own limit bounces the whole
+ * page/phone-frame (reported as "the whole mobile figure scrolls or
+ * shows bumps"), because the browser's default is to hand the leftover
+ * scroll delta up to the next scrollable ancestor. No plugin needed for
+ * either (project convention: ask before adding a dependency) — five
+ * standard CSS properties.
+ */
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior: contain;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/*
+ * Sign-in background (D-072) — proposed in place of flat `bg-ink`, which
+ * read as too heavy/dark on its own. Two soft `cord-accent` glows over
+ * the same `ink` base, not a new color: the brand accent already used
+ * throughout (cord diagram, buttons, Live pill) now also does a little
+ * work in the background instead of introducing an unrelated color.
+ * Plain `background: var(--ink)` first as a fallback — if `color-mix()`
+ * isn't supported, that earlier declaration is what's left in effect,
+ * so this degrades to exactly the old flat background, never to nothing.
+ */
+.signin-backdrop {
+  background: var(--ink);
+  background:
+    radial-gradient(
+      620px circle at 12% -12%,
+      color-mix(in srgb, var(--cord-accent-on-ink) 30%, transparent),
+      transparent 60%
+    ),
+    radial-gradient(
+      520px circle at 115% 38%,
+      color-mix(in srgb, var(--cord-accent) 40%, transparent),
+      transparent 55%
+    ),
+    var(--ink);
+}

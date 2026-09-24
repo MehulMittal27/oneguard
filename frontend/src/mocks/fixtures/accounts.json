@@ -1,0 +1,125 @@
+{
+  "mock": true,
+  "accounts": [
+    {
+      "mock": true,
+      "account_id": "AC0001",
+      "customer_id": "CU0001",
+      "account_type": "debit",
+      "account_purpose": "daily_spending",
+      "status": "active",
+      "per_transaction_limit_chf": 1200.0,
+      "monthly_limit_chf": 4500.0,
+      "cards": [
+        {
+          "card_id": "CA0001",
+          "card_type": "debit",
+          "card_purpose": "everyday",
+          "status": "active"
+        },
+        {
+          "card_id": "CA0002",
+          "card_type": "debit",
+          "card_purpose": "mobile_and_online",
+          "status": "active"
+        }
+      ]
+    },
+    {
+      "mock": true,
+      "account_id": "AC0009",
+      "customer_id": "CU0006",
+      "account_type": "debit",
+      "account_purpose": "daily_spending",
+      "status": "active",
+      "per_transaction_limit_chf": 1400.0,
+      "monthly_limit_chf": 5000.0,
+      "cards": [
+        {
+          "card_id": "CA0011",
+          "card_type": "debit",
+          "card_purpose": "everyday",
+          "status": "active"
+        },
+        {
+          "card_id": "CA0012",
+          "card_type": "debit",
+          "card_purpose": "mobile_and_online",
+          "status": "active"
+        }
+      ]
+    },
+    {
+      "mock": true,
+      "account_id": "AC0018",
+      "customer_id": "CU0012",
+      "account_type": "debit",
+      "account_purpose": "daily_spending",
+      "status": "active",
+      "per_transaction_limit_chf": 1000.0,
+      "monthly_limit_chf": 4000.0,
+      "cards": [
+        {
+          "card_id": "CA0023",
+          "card_type": "debit",
+          "card_purpose": "everyday",
+          "status": "active"
+        }
+      ]
+    },
+    {
+      "mock": true,
+      "account_id": "AC0019",
+      "customer_id": "CU0012",
+      "account_type": "prepaid",
+      "account_purpose": "travel",
+      "status": "active",
+      "per_transaction_limit_chf": 800.0,
+      "monthly_limit_chf": 2800.0,
+      "cards": [
+        {
+          "card_id": "CA0024",
+          "card_type": "prepaid",
+          "card_purpose": "travel",
+          "status": "active"
+        }
+      ]
+    },
+    {
+      "mock": true,
+      "account_id": "AC0029",
+      "customer_id": "CU0019",
+      "account_type": "debit",
+      "account_purpose": "daily_spending",
+      "status": "active",
+      "per_transaction_limit_chf": 1600.0,
+      "monthly_limit_chf": 5500.0,
+      "cards": [
+        {
+          "card_id": "CA0038",
+          "card_type": "debit",
+          "card_purpose": "everyday",
+          "status": "active"
+        }
+      ]
+    },
+    {
+      "mock": true,
+      "account_id": "AC0030",
+      "customer_id": "CU0019",
+      "account_type": "prepaid",
+      "account_purpose": "online",
+      "status": "active",
+      "per_transaction_limit_chf": 900.0,
+      "monthly_limit_chf": 3200.0,
+      "cards": [
+        {
+          "card_id": "CA0039",
+          "card_type": "prepaid",
+          "card_purpose": "online",
+          "status": "active"
+        }
+      ]
+    }
+  ]
+}

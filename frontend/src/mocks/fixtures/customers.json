@@ -1,0 +1,166 @@
+{
+  "mock": true,
+  "source": "data/customers.csv + scenario_authorities.csv (live flag)",
+  "customers": [
+    {
+      "customer_id": "CU0001",
+      "name": "Alex Meier",
+      "home_region": "Zurich region",
+      "card_id": "CA0001",
+      "scenario_id": "SCEN0001",
+      "live": true
+    },
+    {
+      "customer_id": "CU0002",
+      "name": "Sofia Keller",
+      "home_region": "Basel region",
+      "card_id": null,
+      "scenario_id": null,
+      "live": false
+    },
+    {
+      "customer_id": "CU0003",
+      "name": "Luca Bernasconi",
+      "home_region": "Lugano region",
+      "card_id": null,
+      "scenario_id": null,
+      "live": false
+    },
+    {
+      "customer_id": "CU0004",
+      "name": "Noor Haddad",
+      "home_region": "Geneva region",
+      "card_id": null,
+      "scenario_id": null,
+      "live": false
+    },
+    {
+      "customer_id": "CU0005",
+      "name": "Emma Roth",
+      "home_region": "Bern region",
+      "card_id": null,
+      "scenario_id": null,
+      "live": false
+    },
+    {
+      "customer_id": "CU0006",
+      "name": "Jonas Frei",
+      "home_region": "Lucerne region",
+      "card_id": "CA0011",
+      "scenario_id": "SCEN0002",
+      "live": true
+    },
+    {
+      "customer_id": "CU0007",
+      "name": "Camille Dubois",
+      "home_region": "Lausanne region",
+      "card_id": null,
+      "scenario_id": null,
+      "live": false
+    },
+    {
+      "customer_id": "CU0008",
+      "name": "Priya Nair",
+      "home_region": "Zurich region",
+      "card_id": null,
+      "scenario_id": null,
+      "live": false
+    },
+    {
+      "customer_id": "CU0009",
+      "name": "Mateo Silva",
+      "home_region": "Basel region",
+      "card_id": null,
+      "scenario_id": null,
+      "live": false
+    },
+    {
+      "customer_id": "CU0010",
+      "name": "Lea Baumann",
+      "home_region": "Winterthur region",
+      "card_id": null,
+      "scenario_id": null,
+      "live": false
+    },
+    {
+      "customer_id": "CU0011",
+      "name": "Daniel Schmid",
+      "home_region": "St. Gallen region",
+      "card_id": null,
+      "scenario_id": null,
+      "live": false
+    },
+    {
+      "customer_id": "CU0012",
+      "name": "Giulia Rossi",
+      "home_region": "Lugano region",
+      "card_id": "CA0023",
+      "scenario_id": "SCEN0003",
+      "live": true
+    },
+    {
+      "customer_id": "CU0013",
+      "name": "Sami El-Amin",
+      "home_region": "Neuchatel region",
+      "card_id": null,
+      "scenario_id": null,
+      "live": false
+    },
+    {
+      "customer_id": "CU0014",
+      "name": "Hannah Weber",
+      "home_region": "Bern region",
+      "card_id": null,
+      "scenario_id": null,
+      "live": false
+    },
+    {
+      "customer_id": "CU0015",
+      "name": "Tomas Pereira",
+      "home_region": "Fribourg region",
+      "card_id": null,
+      "scenario_id": null,
+      "live": false
+    },
+    {
+      "customer_id": "CU0016",
+      "name": "Amina Diallo",
+      "home_region": "Geneva region",
+      "card_id": null,
+      "scenario_id": null,
+      "live": false
+    },
+    {
+      "customer_id": "CU0017",
+      "name": "Nils Andersson",
+      "home_region": "Lausanne region",
+      "card_id": null,
+      "scenario_id": null,
+      "live": false
+    },
+    {
+      "customer_id": "CU0018",
+      "name": "Mei Chen",
+      "home_region": "Zurich region",
+      "card_id": null,
+      "scenario_id": null,
+      "live": false
+    },
+    {
+      "customer_id": "CU0019",
+      "name": "Oliver Graf",
+      "home_region": "Basel region",
+      "card_id": "CA0039",
+      "scenario_id": "SCEN0004",
+      "live": true
+    },
+    {
+      "customer_id": "CU0020",
+      "name": "Elif Kaya",
+      "home_region": "Winterthur region",
+      "card_id": null,
+      "scenario_id": null,
+      "live": false
+    }
+  ]
+}

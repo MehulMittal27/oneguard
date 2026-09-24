@@ -1,0 +1,17 @@
+{
+  "name": "Agent on a Leash",
+  "short_name": "Agent Leash",
+  "description": "Wallet control layer for an AI shopping agent; set, review and control what it may spend.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F4F1EA",
+  "theme_color": "#14213D",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

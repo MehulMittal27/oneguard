@@ -1,0 +1,72 @@
+import {
+  Bell,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  Clock,
+  CreditCard,
+  Home,
+  HelpCircle,
+  LoaderCircle,
+  LogOut,
+  Plus,
+  ShieldCheck,
+  X,
+} from 'lucide-react'
+import type { IconProps } from './IconProps'
+
+export function ShieldIcon({ size = 28, strokeWidth = 1.8 }: IconProps) {
+  return <ShieldCheck size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+}
+
+export function HomeIcon({ size = 22, strokeWidth = 1.8 }: IconProps) {
+  return <Home size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+}
+
+export function AccountsIcon({ size = 22, strokeWidth = 1.8 }: IconProps) {
+  return <CreditCard size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+}
+
+export function BellIcon({ size = 22, strokeWidth = 1.8 }: IconProps) {
+  return <Bell size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+}
+
+export function BackChevronIcon({ size = 20, strokeWidth = 2 }: IconProps) {
+  return <ChevronLeft size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+}
+
+export function ChevronDownIcon({ size = 20, strokeWidth = 2 }: IconProps) {
+  return <ChevronDown size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+}
+
+export function CheckIcon({ size = 18, strokeWidth = 2.4 }: IconProps) {
+  return <Check size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+}
+
+export function CrossIcon({ size = 18, strokeWidth = 2.4 }: IconProps) {
+  return <X size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+}
+
+export function ClockIcon({ size = 20, strokeWidth = 2.2 }: IconProps) {
+  return <Clock size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+}
+
+export function HelpCircleIcon({ size = 20, strokeWidth = 2.2 }: IconProps) {
+  return <HelpCircle size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+}
+
+export function LogOutIcon({ size = 20, strokeWidth = 1.8 }: IconProps) {
+  return <LogOut size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+}
+
+export function PlusIcon({ size = 16, strokeWidth = 2.4 }: IconProps) {
+  return <Plus size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+}
+
+export function SpinnerIcon({ size = 28, strokeWidth = 2.5 }: IconProps) {
+  return (
+    <LoaderCircle size={size} strokeWidth={strokeWidth} aria-hidden="true" className="animate-spin" />
+  )
+}
+
+export type { IconProps } from './IconProps'

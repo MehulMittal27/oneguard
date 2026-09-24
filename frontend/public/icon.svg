@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!--
+    Placeholder app icon — no branded asset exists yet (ROADMAP.md slice 9,
+    CLAUDE.md already noted this as a future polish item). Ink-and-signal
+    theme colors: ink navy background, cord-accent orange shield glyph
+    (same silhouette family as the Activity tab's ShieldIcon).
+  -->
+  <rect width="512" height="512" rx="112" fill="#14213D" />
+  <path
+    d="M256 96 L372 138 V246 C372 328 322 390 256 420 C190 390 140 328 140 246 V138 Z"
+    fill="none"
+    stroke="#E0561B"
+    stroke-width="26"
+    stroke-linejoin="round"
+    stroke-linecap="round"
+  />
+  <path
+    d="M210 252 L242 286 L308 210"
+    fill="none"
+    stroke="#E0561B"
+    stroke-width="26"
+    stroke-linejoin="round"
+    stroke-linecap="round"
+  />
+</svg>

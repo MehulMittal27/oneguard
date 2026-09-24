@@ -1,0 +1,66 @@
+import type { Decision, RuleCheck } from '../api/types'
+
+const PER_ORDER_PATTERN = /total at or below chf\s*([\d,]+(?:\.\d+)?)\s*per order/i
+const PERIOD_PATTERN = /total at or below chf\s*([\d,]+(?:\.\d+)?)\s*across any (\d+) days/i
+
+export interface PolicyLimits {
+  perOrder: number | null
+  period: { limitChf: number; days: number } | null
+}
+
+/** Reads the customer's own chosen limits back out of a mandate's plain-language checks. */
+export function parseLimits(checks: RuleCheck[]): PolicyLimits {
+  let perOrder: number | null = null
+  let period: PolicyLimits['period'] = null
+  for (const check of checks) {
+    const perOrderMatch = check.text.match(PER_ORDER_PATTERN)
+    if (perOrderMatch) perOrder = Number(perOrderMatch[1].replace(/,/g, ''))
+    const periodMatch = check.text.match(PERIOD_PATTERN)
+    if (periodMatch) {
+      period = { limitChf: Number(periodMatch[1].replace(/,/g, '')), days: Number(periodMatch[2]) }
+    }
+  }
+  return { perOrder, period }
+}
+
+/**
+ * Spend so far in a card's rolling period window (docs/rules.md M4:
+ * "Only final approvals are spend"). The window
+ * ends at the most recent approved purchase's own simulated timestamp, not
+ * the real clock — these are demo/historical dates, not "today".
+ */
+export function computePeriodSpend(decisions: Decision[], cardId: string, days: number): number {
+  const approved = decisions.filter((d) => d.card_id === cardId && d.decision === 'approved')
+  if (approved.length === 0) return 0
+  const windowEnd = approved.reduce(
+    (latest, d) => (d.occurred_at > latest ? d.occurred_at : latest),
+    approved[0].occurred_at,
+  )
+  const windowStartMs = new Date(windowEnd).getTime() - days * 24 * 60 * 60 * 1000
+  return approved
+    .filter((d) => new Date(d.occurred_at).getTime() > windowStartMs)
+    .reduce((sum, d) => sum + d.billing_amount_chf, 0)
+}
+
+/** The dashed "ghost" preview: what the meter would read if pending purchases on this card were approved. */
+export function computePendingChf(decisions: Decision[], cardId: string): number {
+  return decisions
+    .filter((d) => d.card_id === cardId && d.status === 'pending_human')
+    .reduce((sum, d) => sum + d.billing_amount_chf, 0)
+}
+
+/**
+ * `OverviewHero`'s rolling window — every decision (not just approved,
+ * unlike computePeriodSpend: this total is proposals, not spend), windowed
+ * the same way: ending at the most recent decision's own simulated
+ * timestamp, not the real clock.
+ */
+export function recentDecisions(decisions: Decision[], days: number): Decision[] {
+  if (decisions.length === 0) return []
+  const windowEnd = decisions.reduce(
+    (latest, d) => (d.occurred_at > latest ? d.occurred_at : latest),
+    decisions[0].occurred_at,
+  )
+  const windowStartMs = new Date(windowEnd).getTime() - days * 24 * 60 * 60 * 1000
+  return decisions.filter((d) => new Date(d.occurred_at).getTime() > windowStartMs)
+}
