@@ -352,6 +352,23 @@ def confirmable(entry: LedgerEntry, policy: Policy) -> api.Confirmable | None:
     return api.Confirmable(rule_id=rule.id, phrase=phrase)
 
 
+def policy_applied(event: dict, entry: LedgerEntry, policy: Policy) -> api.PolicyApplied | None:
+    """The rules this decision was checked against, as the customer reads them. ``platform``
+    when the policy is the platform mandate's snapshot (no confirmed policy was bound to it:
+    its id is the event's mandate id). None for a policy with no rules (an unknown replay)."""
+    if not policy.rules:
+        return None
+    platform = policy.mandate_id == (event.get("mandate") or {}).get("mandate_id")
+    return api.PolicyApplied(
+        mandate_id=entry.mandate_id,
+        source="platform" if platform else "confirmed",
+        checks=[
+            api.RuleCheck(id=r.id, text=r.text, source=r.source, uncertainty=r.uncertainty, kind=r.kind)
+            for r in policy.rules
+        ],
+    )
+
+
 def to_api_decision(
     event: dict,
     entry: LedgerEntry,
@@ -418,6 +435,7 @@ def to_api_decision(
         explanation_source=entry.explanation_source,
         resolved_by=entry.resolved_by,
         confirmable=confirmable(entry, policy),
+        policy_applied=policy_applied(event, entry, policy),
         run_id=entry.run_id,
         run_started_at=run_started_at,
     )

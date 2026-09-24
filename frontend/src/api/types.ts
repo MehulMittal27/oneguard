@@ -217,6 +217,14 @@ export interface Decision {
   // newest run and fold older ones away (`lib/runs.ts`).
   run_id?: string
   run_started_at?: string
+  // The rules this decision was checked against (`../docs/api-contract.md` §2,
+  // §6 item 17). `platform` = the Viseca mandate's own rules, used when no
+  // confirmed policy was bound to it. Absent: show the card's current policy.
+  policy_applied?: {
+    mandate_id: string
+    source: 'confirmed' | 'platform'
+    checks: RuleCheck[]
+  } | null
 }
 
 // Operator-only shapes (`../docs/api-contract.md` §1.1 D1–D6), for the `?demo=1`

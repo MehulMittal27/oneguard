@@ -436,6 +436,16 @@ def _rule_kind(raw: Mapping[str, Any]) -> RuleKind:
 
 
 def _rule_text(raw: Mapping[str, Any]) -> str:
+    """The check's customer wording ("Each item at or below CHF 300"), as the compiler
+    writes it; the raw ``field operator value`` only for a rule outside the vocabulary."""
+    from oneguard.compiler.draft import describe_rule
+
+    described = describe_rule(
+        str(raw["field"]), str(raw["operator"]), raw["value"], currency=raw.get("currency"),
+        scope=raw.get("scope"), period_days=raw.get("period_days"), on_fail=raw.get("on_fail") or "decline",
+    )
+    if described:
+        return described
     value = raw["value"]
     shown = ", ".join(value) if isinstance(value, list) else str(value)
     text = f"{raw['field']} {raw['operator']} {shown}"
