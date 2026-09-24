@@ -63,10 +63,10 @@
         "per_order_limit_chf": 20,
         "period_limit_chf": null,
         "period_days": null,
-        "period_spent_chf": 0,
+        "period_spent_chf": 254.5,
         "period_window_start": "2026-08-09T10:04:00Z",
-        "pending_chf": 0,
-        "as_of": "2026-08-09T10:04:00Z"
+        "pending_chf": 65.0,
+        "as_of": "2026-08-18T10:00:00Z"
       }
     },
     {
@@ -138,10 +138,10 @@
         "per_order_limit_chf": 120,
         "period_limit_chf": 300,
         "period_days": 7,
-        "period_spent_chf": 0,
-        "period_window_start": "2026-08-10T09:12:00Z",
-        "pending_chf": 0,
-        "as_of": "2026-08-10T09:12:00Z"
+        "period_spent_chf": 254.5,
+        "period_window_start": "2026-08-06T17:20:00Z",
+        "pending_chf": 65.0,
+        "as_of": "2026-08-18T10:00:00Z"
       }
     },
     {
@@ -219,10 +219,10 @@
         "per_order_limit_chf": 200,
         "period_limit_chf": null,
         "period_days": null,
-        "period_spent_chf": 0,
+        "period_spent_chf": 165.0,
         "period_window_start": "2026-08-11T10:15:00Z",
-        "pending_chf": 0,
-        "as_of": "2026-08-11T10:15:00Z"
+        "pending_chf": 194.0,
+        "as_of": "2026-08-17T11:00:00Z"
       }
     },
     {
@@ -293,10 +293,10 @@
         "per_order_limit_chf": 250,
         "period_limit_chf": null,
         "period_days": null,
-        "period_spent_chf": 0,
+        "period_spent_chf": 393.0,
         "period_window_start": "2026-08-14T18:20:00Z",
         "pending_chf": 0,
-        "as_of": "2026-08-14T18:20:00Z"
+        "as_of": "2026-08-22T15:20:00Z"
       }
     },
     {
@@ -367,10 +367,10 @@
         "per_order_limit_chf": 400,
         "period_limit_chf": null,
         "period_days": null,
-        "period_spent_chf": 0,
+        "period_spent_chf": 639.0,
         "period_window_start": "2026-08-12T09:40:00Z",
-        "pending_chf": 0,
-        "as_of": "2026-08-12T09:40:00Z"
+        "pending_chf": 299.0,
+        "as_of": "2026-08-17T15:00:00Z"
       }
     }
   ]

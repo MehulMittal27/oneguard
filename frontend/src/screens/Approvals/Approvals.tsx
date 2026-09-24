@@ -8,7 +8,7 @@ import { OrderCapLeashMeter, PeriodLeashMeter } from '../../components/LeashMete
 import { RevokeSheet } from '../../components/RevokeSheet'
 import { formatShortDate } from '../../lib/datetime'
 import { formatChf } from '../../lib/money'
-import { computePendingChf, computePeriodSpend, limitsFromMandate } from '../../lib/spend'
+import { limitsFromMandate, spendFromMandate } from '../../lib/spend'
 import { useDecisions } from '../../state/DecisionsContext'
 import { usePolicy } from '../../state/PolicyContext'
 import { DecisionDetail } from '../DecisionDetail/DecisionDetail'
@@ -64,6 +64,10 @@ function PendingCard({
   // A revoked mandate has no live limit to preview against.
   const { perOrder, period } =
     mandate && mandate.status === 'active' ? limitsFromMandate(mandate) : { perOrder: null, period: null }
+  // Ledger-first: `usage` when the engine sent it, the client sum only in mock mode.
+  const spend = period
+    ? spendFromMandate(mandate, decisions, decision.card_id, period.days)
+    : null
   const cardDecisions = decisions
     .filter((d) => d.card_id === decision.card_id)
     .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))
@@ -170,8 +174,8 @@ function PendingCard({
             {period ? (
               <PeriodLeashMeter
                 limitChf={period.limitChf}
-                spentChf={computePeriodSpend(decisions, decision.card_id, period.days)}
-                pendingChf={computePendingChf(decisions, decision.card_id)}
+                spentChf={spend?.spentChf ?? 0}
+                pendingChf={spend?.pendingChf ?? 0}
                 days={period.days}
               />
             ) : perOrder ? (
