@@ -285,6 +285,8 @@ async def healthz(request: Request) -> JSONResponse:
             decision_deadline_s=status.decision_deadline_s,
             pending_step_ups=status.pending_step_ups,
             history_reseeded=status.history_reseeded,
+            fx_rates_match=status.fx_rates_match,
+            fx_rates_mismatch=status.fx_rates_mismatch,
             runs=len(status.runs),
             last_error=sanitise(s.worker_error or status.last_error),
         )

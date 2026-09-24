@@ -26,10 +26,11 @@ behaviour the worker depends on:
   plus any served-only rows a test adds (``served_extra``), whose scenarios replay a pack
   scenario's purchases (``served_scenarios``) under the served id, on the card of their
   fixture profile (``fixture_profiles``) when one is set;
+- ``tables.fx_rates`` can be replaced (``FakeConfig.fx_rates``) to serve rates that differ;
 - the team keeps one active mandate: confirming a draft supersedes the active one
   (``status: "superseded"``, as the live sandbox showed on 25 Sep 2026); revoking a
   superseded mandate is 409 ``mandate_inactive`` (assumed, like PATCH and scenario runs);
-- knobs for redelivery, corrupt or rewritten events, a served history file that differs, a
+- knobs for redelivery, corrupt or rewritten events, a served history file or fx rates that differ, a
   context / event-feed that disagrees with the worker, whether team reset is enabled, a
   new pack (``pack_version``, ``served_extra`` changed while running), the long-poll cap
   and slow or failing reference data.
@@ -99,6 +100,9 @@ class FakeConfig:
     feed_status_override: dict[str, str] = field(default_factory=dict)
     """Source id → status the event feed reports for it, whatever really happened."""
     history_csv: str | None = None
+    fx_rates: list[dict[str, Any]] | None = None
+    """``tables.fx_rates`` rows served instead of the pack's (which, like every served table,
+    are CSV strings)."""
     """History file served instead of data/authorization_history.csv."""
     reset_enabled: bool = True
     """``features.reset``; the live sandbox has it off (403 ``reset_disabled``)."""
@@ -523,7 +527,7 @@ class FakeViseca:
                 "classification": "SYNTHETIC TEST DATA",
                 "tables": {
                     **{name: table(name) for name in ("customers", "accounts", "cards", "merchants", "items")},
-                    "fx_rates": table("fx_rates"),
+                    "fx_rates": table("fx_rates") if fake.config.fx_rates is None else fake.config.fx_rates,
                     "scenario_catalogue": catalogue(),
                 },
                 "history": {

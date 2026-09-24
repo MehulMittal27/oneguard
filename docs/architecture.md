@@ -78,7 +78,10 @@ oneguard/
   ledger, every run and the API hold the same object). No
   history-file hash is served, so it downloads
   `/v1/reference-data/authorization-history.csv`, and if its SHA-256 differs from
-  `data/metadata.json` it re-seeds `authorization_history` and logs it loudly. The sync runs
+  `data/metadata.json` it re-seeds `authorization_history` and logs it loudly. The served
+  `tables.fx_rates` must equal the engine's `facts.FX_TO_CHF` exactly (decimal compare, at
+  every sync); a mismatch or a missing table is logged loudly and keeps the worker `ok: false`
+  (`/healthz` `degraded`) while it keeps polling; decisions still use `FX_TO_CHF`. The sync runs
   again while polling (lease holder only; concurrent triggers join the one in flight; a
   failure is logged and never blocks a decision): when a bootstrap re-read shows a new
   `pack_version`, when `/v1/reference-data` (read every 5 min) shows another pack version,
@@ -99,7 +102,8 @@ oneguard/
   serves the step-up again on every poll (`status: "pending_step_up"`); the worker posts
   nothing for it and pauses briefly. At the deadline the expiry reads the platform's state
   first and posts the timeout `/resolve` (rules Q2) only if it is still pending; at most one
-  `/resolve` per live id. Ledger calls run in short `ScopedStoreLedger` sessions.
+  `/resolve` per live id. After a restart the expiry is re-armed only for pending step-ups
+  of live runs (`runs.kind = live`); a replay step-up was never posted to Viseca. Ledger calls run in short `ScopedStoreLedger` sessions.
   All ledger and pipeline calls run on one dedicated thread. The event feed cursor is
   stored in `worker_state` once a page is processed and resumed on start (0 only on first
   boot), so a restart does not re-scan the team-wide feed. The feed is read after each
@@ -109,8 +113,14 @@ oneguard/
   `error` when the platform no longer knows the run). `VisecaWorker.status()` is the
   `/healthz` worker block: `state` (`starting`, `standby`, `polling`, `degraded`,
   `stopped`), `ok` (polling without failures), `last_poll_at`, `events_cursor`,
-  `human_window_s`, `pending_step_ups`, `history_reseeded`, `last_error`, `runs`; every
-  field, `last_error` included, comes from the worker's own state.
+  `human_window_s`, `pending_step_ups`, `history_reseeded`, `fx_rates_match`,
+  `fx_rates_mismatch`, `last_error`, `runs`; every field, `last_error` included, comes from
+  the worker's own state. A run's `state` changes in memory before its `runs` row is
+  written; `recorded_state` is the committed one, and
+  `await VisecaWorker.wait_run_recorded(viseca_run_id)` returns once the final (done/error)
+  row has committed. `add_handled_listener` is called with the live id once a delivered
+  request is fully handled (decision posted and recorded, `events_raw` and `runs` rows
+  committed).
 - Viseca call logging is off by default. With `ONEGUARD_LOG_VISECA_CALLS=true` (debugging
   only; unset in `fly.toml`) every call is summarised in `viseca_calls` (no key, bodies
   ≤ 4 KB) by `oneguard/viseca/client.py` (`call_sink`); nothing reads the table to decide or
@@ -157,8 +167,9 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
   soft signals if enabled, then starts the worker in the background only when
   `VISECA_API_KEY` is set, after binding every stored mandate's policy to it.
 - `/healthz` (never names a secret or URL): `status` (`ok` when the database answers and the
-  worker, if configured, is polling), `worker` (`VisecaWorker.status()`: state, polling,
-  last poll, events cursor, human window, pending step-ups, last error), `events_cursor`,
+  worker, if configured, is `ok`: polling without errors and the served fx rates equal
+  `FX_TO_CHF`), `worker` (`VisecaWorker.status()`: state, polling, last poll, events
+  cursor, human window, pending step-ups, fx rates match and mismatch lines, last error), `events_cursor`,
   `provider` (name, configured), `signals` (backend, enabled, model loaded), `database`
   (engine name `sqlite`/`postgresql`, `SELECT 1` round trip in ms), `engine.stubbed`.
   503 only when the database does not answer.
