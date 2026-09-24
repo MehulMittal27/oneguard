@@ -111,7 +111,7 @@ def test_c1_fail_names_numbers_and_counterfactual():
     r = only(evaluate_rules(f, policy(rules=[rule("C1", ORDER, "<=", 120, scope="purchase")])), "C1")
     assert r.outcome == "fail"
     assert "CHF 126.00" in r.detail and "CHF 120.00" in r.detail
-    assert r.counterfactual == "would pass with order total at or below CHF 120.00"
+    assert r.counterfactual == "Would approve with order total at or below CHF 120.00"
 
 
 def test_c1_limit_in_foreign_currency_is_converted():
@@ -139,7 +139,7 @@ def test_c3_every_line_must_be_allowed():
                      {"item_name": "Perfume gift set", "item_category": "cosmetics", "item_details": ""}])
     r = only(evaluate_rules(f, policy(allowed_item_categories=["groceries"])), "C3")
     assert r.outcome == "fail" and "Perfume gift set" in r.detail
-    assert r.counterfactual == "would pass without Perfume gift set"
+    assert r.counterfactual == "Would approve without Perfume gift set"
 
 
 def test_c3_shop_category_does_not_prove_basket():
@@ -270,7 +270,7 @@ def test_c10_extra_line_fails_and_says_what_to_remove():
         {"item_name": "Extended protection plan", "item_category": "subscriptions", "item_details": ""},
     ])
     r = only(evaluate_rules(f, policy(requested_item="27-inch monitor", nothing_extra=True)), "C10")
-    assert r.outcome == "fail" and r.counterfactual == "would pass without Extended protection plan"
+    assert r.outcome == "fail" and r.counterfactual == "Would approve without Extended protection plan"
 
 
 def test_c10_only_requested_item_passes():
@@ -350,4 +350,4 @@ def test_period_fail_only_because_of_reservation_is_marked():
 def test_period_headroom_counterfactual():
     f = facts(amount=138.0, billing_amount_chf=138.0)
     r = evaluate_period_rule(WEEK, f, spent_chf=255.50, reserved_chf=0)
-    assert r.outcome == "fail" and r.counterfactual == "would pass at CHF 44.50 or less in this 7-day window"
+    assert r.outcome == "fail" and r.counterfactual == "Would approve at CHF 44.50 or less in this 7-day window"
