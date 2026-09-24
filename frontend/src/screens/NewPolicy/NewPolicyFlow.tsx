@@ -50,8 +50,8 @@ export function NewPolicyFlow({
   // Which card the policy applies to — starts at whichever card this flow
   // was opened for (Home/Accounts/Card detail), but the customer can pick a
   // sibling card on the same account before compiling (D-050). Only fetched
-  // for the "Applies to" picker; a failed or still-loading fetch just means
-  // no other cards to offer yet, not a blocked flow.
+  // for the "Applies to" picker; while it loads or after it fails the picker
+  // shows that state with a retry, and the flow itself is not blocked.
   const [account, setAccount] = useState<Account | null>(null)
   const [accountStatus, setAccountStatus] = useState<AccountStatus>('loading')
   const [accountAttempt, setAccountAttempt] = useState(0)

@@ -336,8 +336,9 @@ export function DecisionDetail({
           <button
             type="button"
             onClick={() => onViewPolicy(decision.card_id)}
-            className={`flex w-full flex-col items-start gap-2 rounded-card border p-4 text-left ${mandate.status === 'revoked' ? 'border-stopped-border bg-surface' : 'border-hairline bg-surface'
-              }`}
+            className={`flex w-full flex-col items-start gap-2 rounded-card border p-4 text-left ${
+              mandate.status === 'revoked' ? 'border-stopped-border bg-surface' : 'border-hairline bg-surface'
+            }`}
           >
             <span className="flex items-center gap-2">
               {mandate.status === 'revoked' && (
