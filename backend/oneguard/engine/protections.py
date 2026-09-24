@@ -42,6 +42,8 @@ SPLIT_WINDOW = timedelta(minutes=10)
 LOOKALIKE_MAX_DISTANCE = 2
 RECURRING_CATEGORIES = frozenset({"subscriptions", "membership"})
 _LIMIT_FIELD = "authorization.billing_amount_chf"
+FLAGGED_SHOP_DETAIL = "An earlier purchase at this shop contained instructions aimed at the agent; this one does not."
+INSTRUCTIONS_IGNORED = "The shop's text contains instructions aimed at the agent; they were ignored."
 
 # A1: imperatives aimed at the agent or the payment system (rules.md §7 examples plus
 # common variants). Reused by signals.KeywordSignals. Matching is case-insensitive.
@@ -88,7 +90,7 @@ def _a1(facts: Facts, ledger: LedgerView) -> Signal:
             source="merchant_text",
         )  # fmt: skip
     if facts.merchant_id in ledger.flagged_merchant_ids:
-        detail = "An earlier purchase at this shop contained instructions aimed at the agent; this one does not."
+        detail = FLAGGED_SHOP_DETAIL
     else:
         detail = "No instructions aimed at the agent in the shop's text."
     return Signal(
@@ -154,13 +156,14 @@ def _a3(facts: Facts, ledger: LedgerView, requoted: str | None) -> Signal:
         gap = abs(facts.billing_amount_chf - prior.billing_amount_chf) / prior.billing_amount_chf
         if gap > DUPLICATE_AMOUNT_BAND:
             continue
-        hours = (facts.timestamp - prior.timestamp).total_seconds() / 3600
+        minutes = (facts.timestamp - prior.timestamp).total_seconds() / 60
+        ago = f"{minutes:.0f} min" if minutes < 120 else f"{minutes / 60:.1f} h"
         if requoted:
             break
         return Signal(
             id="A3", triggered=True, strength="protection", outcome_if_triggered="ask",
             detail=(
-                f"Same shop and items as {prior.authorization_id} {hours:.1f} h earlier "
+                f"Same shop and items as {prior.authorization_id} {ago} earlier "
                 f"(CHF {prior.billing_amount_chf:.2f} then, CHF {facts.billing_amount_chf:.2f} now)."
             ),
             source="ledger", related=(prior.authorization_id, "duplicate_of"),
