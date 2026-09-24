@@ -86,7 +86,7 @@ def test_every_table_in_database_md_exists(engine: Engine) -> None:
     expected = {
         "customers", "accounts", "cards", "merchants", "items", "fx_rates",
         "authorization_history", "scenario_catalogue", "scenario_authorities",
-        "policy_drafts", "mandates", "runs", "events_raw", "decisions",
+        "policy_drafts", "mandates", "runs", "events_raw", "decisions", "decision_checkpoints",
         "merchant_flags", "worker_state", "scenario_profiles", "viseca_calls",
     }  # fmt: skip
     assert set(Base.metadata.tables) == expected

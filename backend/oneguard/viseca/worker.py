@@ -95,7 +95,7 @@ from sqlalchemy import Engine, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from oneguard import __version__
+from oneguard import __version__, checkpoints
 from oneguard.api import models as api
 from oneguard.engine.explain import expired_message
 from oneguard.engine.ledger import StoreLedger
@@ -1555,6 +1555,7 @@ class VisecaWorker:
             implementations=self._implementations,
             stubbed=self._stubbed,
             now=self._now,
+            on_checkpoints=checkpoints.sink(self._db_engine),
         )
         return run
 

@@ -22,10 +22,14 @@ const UNCERTAIN_STYLE: Record<UncertainOutcome, { label: string; discBg: string;
 export function DecisionMark({
   decision,
   onClick,
+  showChecks = false,
 }: {
   decision: Decision
   onClick?: () => void
+  // Activity's log view: a one-line summary of the checkpoint log under the message.
+  showChecks?: boolean
 }) {
+  const checks = decision.checkpoints?.filter((c) => c.outcome !== 'done').length ?? 0
   const isUncertain = decision.decision === 'uncertain'
   const { label, discBg, fg } =
     decision.decision === 'uncertain'
@@ -56,6 +60,12 @@ export function DecisionMark({
           {decision.merchant.name}
         </span>
         <span className="block truncate text-[13px] text-ink-muted">{decision.message}</span>
+        {showChecks && checks > 0 && (
+          <span className="block text-[11px] text-ink-muted tabular-nums">
+            {checks} checks
+            {decision.latency_ms !== undefined ? ` · ${decision.latency_ms.toFixed(1)} ms` : ''}
+          </span>
+        )}
       </span>
       <span className="shrink-0 text-right">
         <span className="block text-[15px] font-semibold text-ink tabular-nums">

@@ -36,10 +36,13 @@ from typing import Any
 
 from oneguard import __version__
 from oneguard.api import models as api
+from oneguard.api.models import Checkpoint
+from oneguard.checkpoints import Recorder
 from oneguard.engine import stubs
 from oneguard.engine.ledger_base import Ledger, LedgerEntry
 from oneguard.engine.policy import COUNT_FIELD, add_ledger_results
 from oneguard.engine.types import (
+    STEP1_RULE_IDS,
     EngineDecision,
     EvidenceRow,
     Explanation,
@@ -114,6 +117,8 @@ class PipelineContext:
     implementations: Mapping[str, Callable[..., Any]] | None = None
     stubbed: frozenset[str] | None = None
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+    on_checkpoints: Callable[[str, list[Checkpoint], datetime], None] | None = None
+    """Stores a new decision's checkpoint log (``checkpoints.save``); None keeps none."""
 
     @property
     def functions(self) -> Mapping[str, Callable[..., Any]]:
@@ -206,14 +211,21 @@ def decide_event(
     def remaining_s() -> float:
         return max(0.0, ctx.budget_ms / 1000 - (time.perf_counter() - started))
 
-    facts: Facts = fn["build_facts"](event, ctx.history)
-    view: LedgerView = ctx.ledger.view(
-        run_id=ctx.run_id,
-        customer_id=customer_id,
-        card_id=card_id,
-        at=facts.timestamp,
-        period_days=period_days_of(ctx.policy),
-    )
+    log_ = Recorder()
+    with log_.stage("facts"):
+        facts: Facts = fn["build_facts"](event, ctx.history)
+        view: LedgerView = ctx.ledger.view(
+            run_id=ctx.run_id,
+            customer_id=customer_id,
+            card_id=card_id,
+            at=facts.timestamp,
+            period_days=period_days_of(ctx.policy),
+        )
+        log_.add(
+            "facts", "Purchase read", "done",
+            f"CHF {facts.billing_amount_chf:,.2f} at {facts.merchant_name} ({facts.merchant_id}), "
+            f"{len(facts.items)} line(s); shop text read for facts only.",
+        )
     facts = facts.model_copy(
         update={
             "merchant_known": facts.merchant_id in view.known_merchant_ids,
@@ -222,35 +234,65 @@ def decide_event(
     )
     if ctx.policy.status != "active":
         engine, explanation = _inactive_policy(ctx.policy)
-        return _record(event, ctx, facts, view, engine, explanation, extra_evidence, started, [])
+        with log_.stage("status"):
+            log_.add("status", "Policy active", "fail", explanation.evidence[0].detail)
+        log_.decision(engine)
+        return _record(event, ctx, facts, view, engine, explanation, extra_evidence, started, [], log_)
 
+    rules_started = time.perf_counter()
     rules: list[RuleResult] = fn["evaluate_rules"](facts, ctx.policy)
+    rules_s = time.perf_counter() - rules_started
 
     if any(r.outcome == "unknown" for r in rules) and provider_available(ctx.provider):
         budget = min(TIER2_MAX_S, remaining_s())
-        resolved = _optional_stage(
-            "resolve_unknowns",
-            lambda: fn["resolve_unknowns"](facts, rules, ctx.provider, budget),
-            facts,
-        )
+        with log_.stage("model"):
+            resolved = _optional_stage(
+                "resolve_unknowns",
+                lambda: fn["resolve_unknowns"](facts, rules, ctx.provider, budget),
+                facts,
+            )
+            log_.add(
+                "model", "Model read missing facts", "done" if resolved is not facts else "info",
+                "Filled facts from the shop's text; rules checked again."
+                if resolved is not facts
+                else "No fact could be read; the rules stay as they were.",
+            )
         if resolved is not facts:
             facts = resolved
+            rules_started = time.perf_counter()
             rules = fn["evaluate_rules"](facts, ctx.policy)
+            rules_s += time.perf_counter() - rules_started
 
+    rules_started = time.perf_counter()
     rules = add_ledger_results(rules, facts, ctx.policy, view)  # C2 + remembered answers (P2)
+    rules_s += time.perf_counter() - rules_started
+    log_.rules([r for r in rules if r.rule_id in STEP1_RULE_IDS], ctx.policy)
+    first_rule = len(log_.rows)
+    log_.rules([r for r in rules if r.rule_id not in STEP1_RULE_IDS], ctx.policy)
+    log_.stamp(first_rule, rules_s)
 
-    protections: list[Signal] = fn["protections"](facts, ctx.policy, view)
-    warnings: list[Signal] = fn["warning_signs"](facts, view, ctx.policy)
+    with log_.stage("protections"):
+        protections: list[Signal] = fn["protections"](facts, ctx.policy, view)
+        log_.signals(protections, "protections")
+    with log_.stage("warnings"):
+        warnings: list[Signal] = fn["warning_signs"](facts, view, ctx.policy)
+        log_.signals(warnings, "warnings")
     soft: list[Signal] = []
     if ctx.signals_enabled:
         budget = min(signal_budget_s_from_env(), remaining_s())
-        soft = _optional_stage("soft_signals", lambda: fn["soft_signals"](facts, budget), [])
+        with log_.stage("signals"):
+            soft = _optional_stage("soft_signals", lambda: fn["soft_signals"](facts, budget), [])
+            log_.signals(soft, "signals")
 
-    engine: EngineDecision = fn["decide"](rules, protections, warnings, soft, ctx.policy, view)
-    explanation: Explanation = fn["explain"](
-        engine, facts, ctx.policy, rules, [*protections, *warnings, *soft]
-    )
-    return _record(event, ctx, facts, view, engine, explanation, extra_evidence, started, protections)
+    with log_.stage("decide"):
+        engine: EngineDecision = fn["decide"](rules, protections, warnings, soft, ctx.policy, view)
+        log_.decision(engine)
+    with log_.stage("explain"):
+        explanation: Explanation = fn["explain"](
+            engine, facts, ctx.policy, rules, [*protections, *warnings, *soft]
+        )
+        log_.add("explain", "Explanation written", "done", explanation.message)
+    return _record(event, ctx, facts, view, engine, explanation, extra_evidence, started, protections, log_)
 
 
 def _record(
@@ -263,6 +305,7 @@ def _record(
     extra_evidence: Sequence[EvidenceRow],
     started: float,
     protections: list[Signal],
+    log_: Recorder | None = None,
 ) -> tuple[EngineDecision, Explanation, api.Decision]:
     card_id = event["authorization"]["card_id"]
     customer_id = event["mandate"]["customer_id"]
@@ -300,13 +343,31 @@ def _record(
         decided_at=decided_at,
         deadline_at=decided_at + timedelta(seconds=ctx.human_window_s) if pending else None,
     )
+    recording = time.perf_counter()
     stored = ctx.ledger.record(entry)
     for signal in protections:
         if signal.id == "A1" and signal.triggered:
             ctx.ledger.flag_merchant(ctx.run_id, facts.merchant_id, signal.detail, decided_at)
 
+    ours = stored.decided_at == entry.decided_at and stored.latency_ms == entry.latency_ms
+    if log_ is not None and ours:
+        log_.add(
+            "record", "Recorded", "done",
+            f"Stored in the ledger; engine time {latency_ms:.1f} ms in total"
+            + (" (a step-up counts as reserved, not spent)." if pending else "."),
+        )
+        log_.rows[-1] = log_.rows[-1].model_copy(
+            update={"ms": round((time.perf_counter() - recording) * 1000, 3)}
+        )
+        if ctx.on_checkpoints is not None:
+            _optional_stage(
+                "checkpoints", lambda: ctx.on_checkpoints(stored.live_authorization_id, log_.rows, decided_at), None
+            )
+
     # The stored entry is the truth: under a concurrent redelivery it is the first one.
     engine, explanation = _from_entry(stored)
+    # The log is read back from the store (C6), never returned here: a redelivery must
+    # return exactly the first answer, and it has no log of its own (M7).
     return engine, explanation, to_api_decision(event, stored, view, ctx.policy)
 
 
@@ -358,11 +419,12 @@ def to_api_decision(
     view: LedgerView,
     policy: Policy,
     run_started_at: datetime | None = None,
+    checkpoints: list[Checkpoint] | None = None,
 ) -> api.Decision:
     """The contract's ``Decision`` for a stored entry and the event it decided.
 
     ``run_started_at`` is the real-clock start of the entry's run, when the caller has read
-    its ``runs`` row (C6 does).
+    its ``runs`` row (C6 does). ``checkpoints`` is the stored checkpoint log, if any.
     """
     auth = event["authorization"]
     merchant = auth["merchant"]
@@ -420,4 +482,5 @@ def to_api_decision(
         confirmable=confirmable(entry, policy),
         run_id=entry.run_id,
         run_started_at=run_started_at,
+        checkpoints=checkpoints,
     )

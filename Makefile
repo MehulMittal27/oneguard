@@ -40,6 +40,11 @@ build-frontend:
 serve: build-frontend
 	cd backend && . .venv/bin/activate && uvicorn oneguard.api.app:app --port 8000
 
+# Loads .env (VISECA_API_KEY is required), builds the UI and serves the app on :8000.
+run: build-frontend
+	set -a; [ -f .env ] && . ./.env; set +a; \
+	cd backend && . .venv/bin/activate && uvicorn oneguard.api.app:app --port 8000
+
 demo-offline: SCEN ?= SCEN0000
 demo-offline:
 	curl -s -X POST localhost:8000/api/dev/replay/restart -H 'Content-Type: application/json' \
@@ -61,4 +66,4 @@ deploy:
 logs:
 	fly logs -a oneguard
 
-.PHONY: setup test lint check seed reset-db replay replay-all dev build-frontend serve demo-offline demo-live image deploy logs
+.PHONY: setup test lint check seed reset-db replay replay-all dev build-frontend serve run demo-offline demo-live image deploy logs

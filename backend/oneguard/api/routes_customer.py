@@ -168,7 +168,9 @@ def build_decisions(
         policy = decided_under.get(item.entry.mandate_id) or Policy(
             mandate_id=item.entry.mandate_id, status="active", instruction="", rules=[], uncertainty_policy="ask"
         )
-        decisions.append(to_api_decision(item.event, item.entry, view, policy, item.run_started_at))
+        decisions.append(
+            to_api_decision(item.event, item.entry, view, policy, item.run_started_at, checkpoints=item.checkpoints)
+        )
     return decisions
 
 

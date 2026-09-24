@@ -373,6 +373,21 @@ class Decision(Base):
     resolved_by: Mapped[str | None]
 
 
+class DecisionCheckpoints(Base):
+    """The engine's checkpoint log for one decision (api-contract §3.10), in its own
+    table so ``decisions`` keeps its columns (no migrations, docs/database.md §4).
+
+    Written once, when the decision is first recorded; a redelivery writes nothing.
+    ``checkpoints`` is the list of ``api.models.Checkpoint`` rows as JSON.
+    """
+
+    __tablename__ = "decision_checkpoints"
+
+    live_authorization_id: Mapped[str] = mapped_column(primary_key=True)
+    checkpoints: Mapped[list[Any]] = mapped_column(Json)
+    recorded_at: Mapped[datetime]
+
+
 class MerchantFlag(Base):
     """A1 info evidence for later purchases at a shop in the same run."""
 

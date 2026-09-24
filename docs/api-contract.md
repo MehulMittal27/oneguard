@@ -190,6 +190,7 @@ Decision {
                                               // "Explained by OneGuard", model → "Wording refined by AI · decision made by your rules"
   resolved_by?: 'customer' | 'timeout',       // NEW: resolved step-ups only (§3.5)
   confirmable?: { rule_id: string, phrase: string } | null,  // NEW: step-up decided by one `unverifiable` rule
+  checkpoints?: Checkpoint[],                 // NEW: the engine's step-by-step log (§3.10); absent on older decisions
                                               // (§3.3); phrase = its value. Approving can be remembered for the shop
   run_id?: string,                            // NEW: the run this decision belongs to (decisions.run_id); C6 sends it
   run_started_at?: string                     // NEW: that run's start, REAL clock (runs.started_at); C6 sends it
@@ -400,6 +401,28 @@ Total at or below CHF <amount> across any <n> days
 The backend emits both this wording and `usage`.
 
 ---
+
+### 3.10 Checkpoint log
+
+`Decision.checkpoints` lists every step the engine took on the purchase, in the order it
+ran (rules.md §4), for the Activity detail's log view:
+
+```ts
+Checkpoint { stage: 'facts' | 'status' | 'rules' | 'model' | 'protections' | 'warnings'
+                   | 'signals' | 'decide' | 'explain' | 'record',
+             check: string,          // the rule's text, or the protection / sign's name
+             outcome: 'pass' | 'fail' | 'uncertain' | 'info' | 'clear' | 'done',
+             detail: string,
+             ms?: number }           // the stage's wall time, on its first row only
+```
+
+- `clear`: a protection (A1–A7) or warning sign (W1–W6) that ran and found nothing. The
+  evidence rows leave these out; the log keeps them, so every check is visible.
+- `done`: a stage with no verdict of its own (purchase read, decision, explanation,
+  recorded). `decide` names the outcome and the §4 step that decided it.
+- The log is written once, when the decision is first recorded (`decision_checkpoints`,
+  database.md), for every decision the engine makes. A redelivery writes nothing. It describes the decision and never takes part in it: storing it can fail
+  without changing or delaying the decision.
 
 ## 4. Reason codes (shared vocabulary)
 

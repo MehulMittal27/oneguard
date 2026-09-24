@@ -187,6 +187,28 @@ class Mandate(ApiModel):
     usage: MandateUsage | None = None
 
 
+CheckpointStage = Literal[
+    "status", "facts", "rules", "model", "protections", "warnings", "signals", "decide", "explain", "record"
+]
+
+
+class Checkpoint(ApiModel):
+    """One step of the engine's work on a purchase, in the order it ran (§3.10).
+
+    ``outcome`` is the check's result (``clear`` = a protection or warning sign that ran
+    and did not trigger; ``done`` = a stage with no verdict of its own). ``ms`` is the
+    stage's wall time, on the first row of each stage only.
+    """
+
+    _omit_if_none = frozenset({"ms"})
+
+    stage: CheckpointStage
+    check: str
+    outcome: Literal["pass", "fail", "uncertain", "info", "clear", "done"]
+    detail: str
+    ms: float | None = Field(default=None, ge=0)
+
+
 class Evidence(ApiModel):
     _omit_if_none = frozenset({"source"})
 
@@ -269,6 +291,7 @@ class Decision(ApiModel):
             "resolved_by",
             "run_id",
             "run_started_at",
+            "checkpoints",
         }
     )
 
@@ -302,6 +325,7 @@ class Decision(ApiModel):
     explanation_source: Literal["template", "model"] | None = None
     resolved_by: Literal["customer", "timeout"] | None = None
     confirmable: Confirmable | None = None
+    checkpoints: list[Checkpoint] | None = None
     run_id: str | None = None
     run_started_at: Timestamp | None = None
 

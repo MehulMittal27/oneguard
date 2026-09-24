@@ -282,6 +282,8 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
     api.ReplayRestartRequest: {"scenario_id": "S1", "card_id": "CA0001", "speed_ms": 4000},
     api.CreateRunRequest: {"scenario_id": "S1", "card_id": "CA0001", "force": True},
     api.SoftSignalsToggle: {"enabled": True},
+    api.Checkpoint: {"stage": "rules", "check": "Total at or below CHF 20 per order", "outcome": "pass",
+                     "detail": "Order total: CHF 20.00", "ms": 0.12},
     api.ErrorBody: {"code": "lint_failed", "message": "No per-order cap.", "detail": {"missing": ["amount"]}},
     api.ErrorResponse: {"error": {"code": "not_found", "message": "No such card."}},
 }

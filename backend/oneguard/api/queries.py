@@ -17,6 +17,8 @@ from typing import Any
 from sqlalchemy import Engine, select, text, update
 from sqlalchemy.orm import Session
 
+from oneguard import checkpoints
+from oneguard.api.models import Checkpoint
 from oneguard.engine.ledger_base import LedgerEntry
 from oneguard.store.db import session
 from oneguard.store.schema import (
@@ -61,6 +63,7 @@ class StoredDecision:
     event: dict[str, Any] | None
     run_kind: str | None
     run_started_at: datetime | None = None
+    checkpoints: list[Checkpoint] | None = None
 
 
 # Reference data -------------------------------------------------------------------------
@@ -147,9 +150,14 @@ def _runs(s: Session, run_ids: Iterable[str]) -> dict[str, tuple[str, datetime]]
     return {run_id: (kind, started_at) for run_id, kind, started_at in rows}
 
 
-def _stored(entry: LedgerEntry, event: dict[str, Any] | None, run: tuple[str, datetime] | None) -> StoredDecision:
+def _stored(
+    entry: LedgerEntry,
+    event: dict[str, Any] | None,
+    run: tuple[str, datetime] | None,
+    logs: dict[str, list[Checkpoint]] | None = None,
+) -> StoredDecision:
     kind, started_at = run if run is not None else (None, None)
-    return StoredDecision(entry, event, kind, started_at)
+    return StoredDecision(entry, event, kind, started_at, (logs or {}).get(entry.live_authorization_id))
 
 
 def _events(s: Session, live_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
@@ -177,7 +185,8 @@ def customer_decisions(db: Engine, customer_id: str) -> list[StoredDecision]:
         entries = [entry_of(r) for r in rows]
         events = _events(s, (e.live_authorization_id for e in entries))
         runs = _runs(s, (e.run_id for e in entries))
-    return [_stored(e, events.get(e.live_authorization_id), runs.get(e.run_id)) for e in entries]
+        logs = checkpoints.load(s, (e.live_authorization_id for e in entries))
+    return [_stored(e, events.get(e.live_authorization_id), runs.get(e.run_id), logs) for e in entries]
 
 
 def decision(db: Engine, live_id: str) -> StoredDecision | None:
@@ -188,7 +197,8 @@ def decision(db: Engine, live_id: str) -> StoredDecision | None:
         entry = entry_of(row)
         event = _events(s, [live_id]).get(live_id)
         run = _runs(s, [entry.run_id]).get(entry.run_id)
-    return _stored(entry, event, run)
+        logs = checkpoints.load(s, [live_id])
+    return _stored(entry, event, run, logs)
 
 
 def latest_run_decisions(db: Engine, *, card_id: str, mandate_id: str | None = None) -> list[LedgerEntry]:

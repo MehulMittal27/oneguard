@@ -52,12 +52,16 @@ flowchart TB
 
 ```bash
 git clone <this repo> && cd oneguard
-cp .env.example .env                 # add VISECA_API_KEY on event day
+cp .env.example .env                 # add VISECA_API_KEY (required)
 make setup                           # python venv + npm install
 make test                            # engine + oracle + contract tests
-make replay SCEN=SCEN0004            # offline replay, prints the decision table
+make replay SCEN=SCEN0004            # prints a scenario's purchases as a table
 make dev                             # backend :8000 + frontend :5173 (proxy /api)
+make run                             # the app on :8000 (needs VISECA_API_KEY in .env)
 ```
+
+Every decision in Activity opens a checkpoint log of each check the engine ran, with
+timings (docs/api-contract.md §3.10).
 
 Deployment (one container on Fly, Plan C): see `docs/architecture.md` § Deployment.
 

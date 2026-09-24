@@ -217,6 +217,33 @@ export interface Decision {
   // newest run and fold older ones away (`lib/runs.ts`).
   run_id?: string
   run_started_at?: string
+  // The engine's step-by-step log for this purchase (`../docs/api-contract.md`
+  // §3.10): every check in the order it ran, including protections that ran and
+  // stayed clear. Absent on decisions recorded before the log existed.
+  checkpoints?: Checkpoint[]
+}
+
+export type CheckpointStage =
+  | 'status'
+  | 'facts'
+  | 'rules'
+  | 'model'
+  | 'protections'
+  | 'warnings'
+  | 'signals'
+  | 'decide'
+  | 'explain'
+  | 'record'
+
+export interface Checkpoint {
+  stage: CheckpointStage
+  check: string
+  // 'clear' = a protection or warning sign that ran and found nothing;
+  // 'done' = a stage with no verdict of its own.
+  outcome: 'pass' | 'fail' | 'uncertain' | 'info' | 'clear' | 'done'
+  detail: string
+  // Wall time of the stage, on its first row only.
+  ms?: number
 }
 
 // Operator-only shapes (`../docs/api-contract.md` §1.1 D1–D6), for the `?demo=1`

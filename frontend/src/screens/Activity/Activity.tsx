@@ -199,6 +199,7 @@ export function Activity({
                   key={decision.authorization_id}
                   decision={decision}
                   onClick={() => selectDecision(decision)}
+                  showChecks
                 />
               ))}
             </div>

@@ -1,5 +1,6 @@
 import type { ComponentType } from 'react'
 import type { Decision, DecisionRelation, EvidenceItem, UncertainOutcome } from '../../api/types'
+import { CheckpointLog } from '../../components/CheckpointLog'
 import { DecisionMark } from '../../components/DecisionMark'
 import type { IconProps } from '../../components/icons/IconProps'
 import {
@@ -326,6 +327,10 @@ export function DecisionDetail({
           Decided by your own rules — not by us, and not by the shop.
         </p>
       </section>
+
+      {decision.checkpoints && decision.checkpoints.length > 0 && (
+        <CheckpointLog checkpoints={decision.checkpoints} latencyMs={decision.latency_ms} />
+      )}
 
       <section>
         <p className="mb-3 text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">

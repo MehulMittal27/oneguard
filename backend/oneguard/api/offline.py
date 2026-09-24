@@ -32,6 +32,7 @@ from typing import Any, Literal, TypeVar
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
+from oneguard import checkpoints
 from oneguard.api import models as api
 from oneguard.engine.explain import expired_message
 from oneguard.engine.ledger import StoreLedger
@@ -172,6 +173,7 @@ class OfflineRunner:
             implementations=self._implementations,
             stubbed=self._stubbed,
             now=self._now,
+            on_checkpoints=checkpoints.sink(self._db),
         )
         state.ctx = ctx
         self._state = state

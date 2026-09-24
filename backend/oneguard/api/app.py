@@ -107,9 +107,9 @@ def signals_backend(value: str | None) -> SignalsBackend:
 
 
 def _default_client(db: Engine) -> VisecaClient | None:
+    """The Viseca client. The app always answers Viseca, so the key is required."""
     if not os.environ.get(API_KEY_ENV, "").strip():
-        log.info("%s is not set: no Viseca worker (offline replay only)", API_KEY_ENV)
-        return None
+        raise RuntimeError(f"{API_KEY_ENV} is not set; the app needs it to answer Viseca")
     return VisecaClient(sink=store_sink(db))
 
 
