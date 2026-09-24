@@ -96,7 +96,10 @@ def _numbers_in(text: str) -> set[Decimal]:
 
 
 def _has_amount_cap(rules: list[Rule]) -> bool:
-    return any(r.field == "authorization.billing_amount_chf" and r.scope != "period" for r in rules)
+    return any(
+        r.field == "authorization.billing_amount_chf" and r.operator in ("<", "<=") and r.scope != "period"
+        for r in rules
+    )
 
 
 def _check_boundaries(draft: ParsedDraft) -> list[LintIssue]:

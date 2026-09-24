@@ -42,6 +42,16 @@ def test_a_period_limit_is_not_a_per_order_cap():
     assert lint_accepted_ids([PERIOD], ["C2"])[0] == ["per_order_limit"]
 
 
+def test_only_an_upper_bound_is_a_per_order_cap():
+    def amount(operator: str) -> Rule:
+        return Rule(id="C1", field="authorization.billing_amount_chf", operator=operator, value=20, currency="CHF",
+                    scope="purchase", text=f"Total {operator} CHF 20", source="inferred", kind="amount")
+
+    assert lint_accepted_ids([amount(">=")], ["C1"])[0] == ["per_order_limit"]
+    assert lint_accepted_ids([amount("<")], ["C1"]) == ([], [])
+    assert lint_accepted_ids([amount("<=")], ["C1"]) == ([], [])
+
+
 def _row(n: int, day: int, chf: float, merchant: str) -> HistoryRow:
     return HistoryRow(
         authorization_id=f"TR_T{n:03d}", customer_id="CU_T1", card_id=CARD, initiator_type="human",
