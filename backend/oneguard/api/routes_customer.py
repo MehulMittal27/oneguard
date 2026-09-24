@@ -23,7 +23,7 @@ from oneguard.api import policies, queries
 from oneguard.api.errors import ApiError, not_found
 from oneguard.api.services import Services
 from oneguard.engine.ledger_base import LedgerEntry
-from oneguard.engine.types import CompiledDraft, HistoryIndex, LedgerView, Rule
+from oneguard.engine.types import CompiledDraft, HistoryIndex, LedgerView, Policy, Rule
 from oneguard.pipeline import to_api_decision
 from oneguard.store.schema import Mandate, PolicyDraft
 from oneguard.viseca.client import VisecaError
@@ -135,8 +135,20 @@ def merchant_view(entry: LedgerEntry, earlier: list[LedgerEntry], history: Histo
     )
 
 
-def build_decisions(stored: list[queries.StoredDecision], history: HistoryIndex) -> list[api.Decision]:
-    """Contract ``Decision`` rows in the order given; one without its event is left out."""
+def mandate_policy(row: Mandate) -> Policy:
+    rules, flags = policies.load_rules(row.rules, row.checks)
+    return policies.policy_of(row.mandate_id, row.status, row.instruction, rules, flags, row.uncertainty_policy)
+
+
+def build_decisions(
+    stored: list[queries.StoredDecision], history: HistoryIndex, mandates: dict[str, Mandate]
+) -> list[api.Decision]:
+    """Contract ``Decision`` rows in the order given; one without its event is left out.
+
+    Each is mapped with the policy it was decided under (``Decision.confirmable``); a
+    replay's policy that was never stored as a mandate maps as one without rules.
+    """
+    decided_under = {mandate_id: mandate_policy(row) for mandate_id, row in mandates.items()}
     by_run: dict[str, list[LedgerEntry]] = defaultdict(list)
     for item in stored:
         by_run[item.entry.run_id].append(item.entry)
@@ -146,7 +158,10 @@ def build_decisions(stored: list[queries.StoredDecision], history: HistoryIndex)
             log.error("decision %s has no stored event; left out of C6", item.entry.live_authorization_id)
             continue
         view = merchant_view(item.entry, by_run[item.entry.run_id], history)
-        decisions.append(to_api_decision(item.event, item.entry, view))
+        policy = decided_under.get(item.entry.mandate_id) or Policy(
+            mandate_id=item.entry.mandate_id, status="active", instruction="", rules=[], uncertainty_policy="ask"
+        )
+        decisions.append(to_api_decision(item.event, item.entry, view, policy))
     return decisions
 
 
@@ -158,7 +173,8 @@ async def list_decisions(customer_id: str, request: Request) -> JSONResponse:
     stored = await s.db(queries.customer_decisions, s.db_engine, customer_id)
     if await s.close_lapsed(stored):
         stored = await s.db(queries.customer_decisions, s.db_engine, customer_id)
-    return reply(api.DecisionsResponse(decisions=build_decisions(stored, s.history)))
+    mandates = await s.db(queries.mandates_by_id, s.db_engine, {d.entry.mandate_id for d in stored})
+    return reply(api.DecisionsResponse(decisions=build_decisions(stored, s.history, mandates)))
 
 
 # C1 -------------------------------------------------------------------------------------

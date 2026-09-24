@@ -194,6 +194,14 @@ def latest_mandate(db: Engine, card_id: str) -> Mandate | None:
     return (active or rows or [None])[0]
 
 
+def mandates_by_id(db: Engine, mandate_ids: Iterable[str]) -> dict[str, Mandate]:
+    ids = sorted(set(mandate_ids))
+    if not ids:
+        return {}
+    with session(db) as s:
+        return {m.mandate_id: m for m in s.scalars(select(Mandate).where(Mandate.mandate_id.in_(ids)))}
+
+
 def mandates(db: Engine, status: str | None = None) -> list[Mandate]:
     with session(db) as s:
         query = select(Mandate).order_by(Mandate.confirmed_at)
