@@ -118,7 +118,7 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 - **W-rule 1** One strong sign → Ask.
 - **W-rule 2** Two or more weak signs → Ask. One weak sign alone → no effect.
 - **W-rule 3** "Pause anything that looks like someone else is driving" confirms this section is wanted; it does not lower the bar.
-- **W-rule 4** Recovery: signs are evaluated per purchase. Known device back and burst over → judged normally. Earlier signs don't carry over (they remain visible as evidence).
+- **W-rule 4** Recovery: after a burst (session watch on), the next otherwise-clean purchase asks once; the customer's approval turns the watch off; a no or a timeout keeps it on. The watch is per card and carries into later live sessions.
 
 ## 9. Explanations
 
