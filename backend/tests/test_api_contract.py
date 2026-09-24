@@ -1128,12 +1128,13 @@ def test_d7_shows_the_newest_run_live_or_replay(db_url: str, monkeypatch: pytest
             live = (await run.post("/api/dev/runs", json={"scenario_id": "SCEN0000", "card_id": "CA0001"})).json()
             current = (await run.get("/api/dev/runs/current")).json()
             assert current["run_id"] == live["run_id"]
-            assert current == (await run.get(f"/api/dev/runs/{live['run_id']}")).json()
 
             async def decided() -> bool:
                 return (await run.get("/api/dev/runs/current")).json()["decided"] == 1
 
-            await until(decided)
+            await until(decided)  # counters settled: D7 and D4 read the same run alike
+            current = (await run.get("/api/dev/runs/current")).json()
+            assert current == (await run.get(f"/api/dev/runs/{live['run_id']}")).json()
             await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
             current = (await run.get("/api/dev/runs/current")).json()
             assert set(current) == {"scenario_id", "card_id", "delivered", "total", "running", "next_at"}

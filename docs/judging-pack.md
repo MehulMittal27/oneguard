@@ -7,10 +7,27 @@ read-only (two GETs; no run started, no reset). The instructions are verbatim.
 
 - The local pack's SCEN0000 to SCEN0004 are not served any more. The ids run from
   SCEN0101 to SCEN0136 with gaps: 10 scenarios, 111 events in all.
-- The catalogue names no card and no customer. A run's `fixture_profiles` says which
-  card it uses.
+- The catalogue names no card and no customer. Each scenario runs on its own fixture
+  profile (customer and card); the bootstrap `profile` names SCEN0101's only, and a run's
+  `fixture_profiles` and its authorizations name the others. The worker stores every
+  binding it sees (`scenario_profiles`, api-contract.md §1.2 "Scenario bindings"); D8
+  lists them and C12 marks their customers live.
 - At start the worker syncs these rows into `scenario_catalogue` (`seed.sync_served`),
   so D3 and `make demo-live SCEN=<id>` accept these ids. The store keeps the local rows too.
+
+## Scenario → customer and card
+
+As the platform named them by 24 Sep 2026 (bootstrap profile, and `GET /v1/authorizations`
+for the runs so far). The served reference data adds ten customers, one card each (CU1016,
+CU1052, CU1217, CU1308, CU1363, CU1373, CU1376, CU1415, CU1448, CU1475); a scenario not run
+yet is bound to one of them by its first run, and nothing names which before that.
+
+| Scenario | Customer | Card | Profile | Named by |
+|---|---|---|---|---|
+| SCEN0101 | CU1217 Omar Chen | CA1331 | PROFILE_AUTH0101 | bootstrap, run |
+| SCEN0104 | CU1415 Hannah Chen | CA1643 | PROFILE_AUTH0104 | run |
+| SCEN0106 | CU1376 Elias Egli | CA1576 | PROFILE_AUTH0106 | run |
+| SCEN0113, SCEN0117, SCEN0122, SCEN0124, SCEN0130, SCEN0135, SCEN0136 | not run yet | | | |
 
 | Scenario | Name | Events | Cardholder instruction |
 |---|---|---:|---|
