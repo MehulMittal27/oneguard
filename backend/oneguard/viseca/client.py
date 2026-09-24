@@ -6,9 +6,11 @@ The key is sent only in the ``Authorization`` header: it is never logged, never 
 in an exception and never written to ``viseca_calls`` (CLAUDE.md rule 8).
 
 Every call, successful or not, is summarised as a ``CallRecord`` and handed to the
-client's sink; ``store_sink`` appends it to the ``viseca_calls`` table (docs/database.md
-§2) with request and response bodies capped at 4 KB. Sinks run off the event loop so
-logging never delays a decision.
+client's sink, if it has one; ``store_sink`` appends it to the ``viseca_calls`` table
+(docs/database.md §2) with request and response bodies capped at 4 KB. Sinks run off the
+event loop so logging never delays a decision. The app and ``make demo-live`` log calls
+only when ``ONEGUARD_LOG_VISECA_CALLS=true`` (``call_sink``; debugging only, off by
+default): nothing reads the table to decide or to report health.
 
 A non-2xx response raises ``VisecaError`` with the HTTP status and the ``code`` from the
 platform's JSON error envelope ``{"error": {"code", "message", "details"?}}`` (the live
@@ -39,6 +41,7 @@ log = logging.getLogger(__name__)
 BASE_URL_ENV = "VISECA_BASE_URL"
 API_KEY_ENV = "VISECA_API_KEY"
 ALLOW_RUNS_ENV = "ONEGUARD_ALLOW_RUNS"
+LOG_CALLS_ENV = "ONEGUARD_LOG_VISECA_CALLS"
 RUNS_DISABLED_MESSAGE = (
     f"Starting scenario runs is switched off ({ALLOW_RUNS_ENV}=false); nothing was started."
 )
@@ -113,6 +116,17 @@ def store_sink(engine: Engine | None = None) -> CallSink:
             )
 
     return write
+
+
+def call_logging_enabled() -> bool:
+    """True only when ``ONEGUARD_LOG_VISECA_CALLS`` is ``true``: a debugging switch."""
+    return os.environ.get(LOG_CALLS_ENV, "").strip().lower() == "true"
+
+
+def call_sink(engine: Engine | None = None) -> CallSink | None:
+    """``store_sink`` when call logging is switched on (``ONEGUARD_LOG_VISECA_CALLS=true``),
+    else None: no ``viseca_calls`` row is written."""
+    return store_sink(engine) if call_logging_enabled() else None
 
 
 def cap(text: str | None, limit: int = SUMMARY_LIMIT) -> str | None:

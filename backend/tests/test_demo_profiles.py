@@ -263,6 +263,33 @@ def test_demo_live_starts_through_the_server_and_prints_whom_to_sign_in_as(
     asyncio.run(scenario())
 
 
+def test_follow_prints_this_runs_decisions_even_when_decided_before_its_first_read() -> None:
+    """The server's worker can decide the first purchase before ``follow`` reads anything;
+    the customer's decisions from other runs are still left out."""
+
+    def decision(live_id: str, run_id: str) -> dict[str, Any]:
+        return {"authorization_id": live_id, "run_id": run_id, "decision": "approved", "status": "final",
+                "billing_amount_chf": 20.0, "reason_codes": ["within_limits"], "message": "Approved."}
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/dev/runs/run_1":
+            return httpx.Response(200, json={"run_id": "run_1", "state": "done", "decided": 1,
+                                             "pending_human": 0, "total": 1})
+        assert request.url.path == "/api/customers/CU1/decisions"
+        return httpx.Response(200, json={"decisions": [decision("AU0001-1", "live-run_1"),
+                                                       decision("AU0001-0", "live-run_0")]})
+
+    async def scenario() -> list[str]:
+        lines: list[str] = []
+        async with httpx.AsyncClient(base_url=API, transport=httpx.MockTransport(reply)) as http:
+            assert await demo.follow(http, "run_1", "CU1", out=lines.append, max_seconds=5) == 0
+        return lines
+
+    lines = asyncio.run(scenario())
+    assert [line.split()[0] for line in lines if line.startswith("  AU")] == ["AU0001-1"]
+    assert lines[-1] == "Summary: {'approved': 1}"
+
+
 def test_demo_live_changes_nothing_while_a_run_is_active(
     db_url: str,  # noqa: F811
     no_local_worker: list[str],
@@ -408,5 +435,33 @@ def test_demo_live_names_the_run_in_progress_and_starts_another_only_with_force(
             )
             assert "Sign in as Test Served (CU9001, card CA9001)" in lines
             assert len(fake.runs) == 2 and no_local_worker == []
+
+    asyncio.run(scenario())
+
+
+def test_a_run_started_after_a_pack_change_compiles_its_new_instruction(
+    db_url: str,  # noqa: F811
+    no_local_worker: list[str],
+) -> None:
+    """A judge serves a new pack (new ``pack_version``, a changed instruction) while the
+    server runs: D8 re-reads the bootstrap, the worker syncs the catalogue first, and
+    demo-live compiles and confirms the new instruction."""
+    new = "Buy one loaf of bread for CHF 10 or less. Ask me when uncertain."
+
+    async def scenario() -> None:
+        fake = two_profiles()
+        lines: list[str] = []
+        async with running(db_url, fake=fake, **REAL_ENGINE) as run:
+            assert await demo_live(run, "SCEN9001", lines) == 0
+            assert "Instruction: Buy one ordinary grocery item for CHF 20 or less. Ask me when uncertain." in lines
+
+            fake.config.pack_version = "saw27"
+            fake.config.served_extra["scenario_catalogue"][0]["cardholder_instruction"] = new
+            lines.clear()
+            assert await demo_live(run, "SCEN9001", lines) == 0
+            assert f"Instruction: {new}" in lines
+            latest = max(fake.mandates.values(), key=lambda m: m["created_at"])
+            assert latest["instruction"] == new
+            assert run.services.worker.pack_version == "saw27"
 
     asyncio.run(scenario())

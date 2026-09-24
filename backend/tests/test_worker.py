@@ -50,6 +50,7 @@ from oneguard.viseca.worker import (
     VisecaWorker,
     WindowClosed,
     default_ledger,
+    fx_rate_mismatches,
     overrun_setting,
     timeout_message,
 )
@@ -226,7 +227,9 @@ def test_all_45_events_are_decided_and_expire_unanswered(
                 return len(auths) == 45 and all(a.status in ("approved", "declined") for a in auths)
 
             await wait_until(all_closed, timeout=40)
-            await wait_until(lambda: all(r.state == "done" for r in worker.status().runs))
+            # the runs rows read below are committed (in-memory state flips before the write)
+            recorded = [worker.wait_run_recorded(r) for r in runs.values()]
+            await asyncio.wait_for(asyncio.gather(*recorded), timeout=20)
 
             auths = fake.all_auths()
             assert not any(a.auto_declined for a in auths)
@@ -270,6 +273,7 @@ def test_all_45_events_are_decided_and_expire_unanswered(
             assert s.scalar(select(func.count()).select_from(EventRaw)) == 45
             stored = {r.viseca_run_id: r for r in s.scalars(select(Run))}
         assert {r.state for r in stored.values()} == {"done"}
+        assert {r.kind for r in stored.values()} == {"live"}
         assert stored[runs["SCEN0001"]].decided == 10
 
     asyncio.run(scenario())
@@ -379,7 +383,7 @@ def test_a_restart_resumes_the_event_feed_from_the_stored_cursor(
             _, run_id = await start_run(client, worker, "SCEN0001")
             auths = fake.runs[run_id].auths
             await wait_until(lambda: all(a.decisions for a in auths))
-            await wait_until(lambda: stored_cursor(db) == len(fake.feed))
+            await wait_until(lambda: worker.events_cursor == len(fake.feed))  # stored first
             await worker.stop()
             cursor = stored_cursor(db)
             assert isinstance(cursor, int) and cursor >= 10
@@ -392,13 +396,55 @@ def test_a_restart_resumes_the_event_feed_from_the_stored_cursor(
                 assert restarted.events_cursor == cursor
                 _, next_run = await start_run(client, restarted, "SCEN0000")
                 await wait_until(lambda: all(a.decisions for a in fake.runs[next_run].auths))
-                await wait_until(lambda: stored_cursor(db) == len(fake.feed) > cursor)
+                await wait_until(lambda: restarted.events_cursor == len(fake.feed) > cursor)
+                assert stored_cursor(db) == restarted.events_cursor
             finally:
                 await restarted.stop()
             assert feed[0][0] == cursor
             assert all(since >= cursor for since, _ in feed)
             items = [item["event_id"] for _, reply in feed for item in reply["events"]]
             assert items and min(items) == cursor + 1
+
+    asyncio.run(scenario())
+
+
+def test_wait_run_recorded_returns_only_after_the_final_runs_row_commits(
+    db: Engine, history: StoreHistoryIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run is done in memory before its row is written; the signal waits for the commit."""
+
+    async def scenario() -> None:
+        async with harness(db, fast(), history=history) as (_, _, worker):
+            run = worker._run("vr-signal")
+            worker._runs["vr-signal"] = run
+            gate = threading.Event()
+            save = worker._save_run
+
+            def gated_save(state: Any) -> None:
+                gate.wait(10)
+                save(state)
+
+            monkeypatch.setattr(worker, "_save_run", gated_save)
+
+            def stored_state() -> str | None:
+                with session(db) as s:
+                    row = s.get(Run, run.run_id)
+                    return row and row.state
+
+            run.platform_done = True
+            worker._maybe_done(run)
+            assert worker.run_status("vr-signal").state == "done"
+            persist = asyncio.create_task(worker._persist_run(run))
+            waiter = asyncio.create_task(worker.wait_run_recorded("vr-signal"))
+            await asyncio.sleep(0.2)
+            assert not waiter.done() and stored_state() is None
+            assert worker.run_status("vr-signal").recorded_state is None
+            gate.set()
+            status = await asyncio.wait_for(waiter, timeout=5)
+            await persist
+            assert status.recorded_state == "done" and stored_state() == "done"
+            with pytest.raises(KeyError):
+                await worker.wait_run_recorded("vr-unknown")
 
     asyncio.run(scenario())
 
@@ -600,25 +646,125 @@ def test_a_stale_pending_step_up_envelope_never_sends_a_second_resolve(
     asyncio.run(scenario())
 
 
+def test_stop_waits_for_store_work_a_cancelled_task_left_running(db: Engine, history: StoreHistoryIndex) -> None:
+    """Cancelling the task that awaits a store call does not stop its thread: ``stop`` waits
+    for it, so its pooled connection is back before ``stop`` returns."""
+
+    async def scenario() -> None:
+        async with harness(db, fast(), history=history) as (_, _client, worker):
+            await worker.start()
+            started, finished = threading.Event(), threading.Event()
+
+            def slow_write() -> None:
+                started.set()
+                time.sleep(0.3)
+                finished.set()
+
+            write = asyncio.create_task(worker._store(slow_write))
+            await asyncio.to_thread(started.wait, 5)
+            write.cancel()
+            await worker.stop()
+            assert finished.is_set()
+
+    asyncio.run(scenario())
+
+
 def test_the_ledger_holds_no_connection_between_decisions_or_after_stop(
     db: Engine, history: StoreHistoryIndex, ledger_kind: str
 ) -> None:
     async def scenario() -> None:
         async with harness(db, fast(), history=history) as (fake, client, worker):
             await worker.start()
-            _, run_id = await start_run(client, worker, "SCEN0001")
-            auths = fake.runs[run_id].auths
-            await wait_until(lambda: all(a.decisions for a in auths), timeout=15)
-            # between decisions (the poll loop keeps reading the ledger) no session stays open
-            await wait_until(lambda: db.pool.checkedout() == 0, timeout=5)
-            if ledger_kind == "store":
-                ledger = worker.ledger
-                assert isinstance(ledger, ScopedStoreLedger)
-                await wait_until(lambda: ledger.open_sessions == 0, timeout=5)
+            ledger = worker.ledger
+            assert isinstance(ledger, ScopedStoreLedger) == (ledger_kind == "store")
+            # per handled request: (ledger sessions open, pooled connections out, call
+            # summaries still being written, its events_raw row there, runs row counts it)
+            at_rest: list[tuple[int, int, int, bool, bool]] = []
+            seen: set[str] = set()
+            all_handled = asyncio.Event()
+            run_ids: list[str] = []
+
+            def handled(live_id: str) -> None:
+                sessions = ledger.open_sessions if isinstance(ledger, ScopedStoreLedger) else 0
+                checked_out, summaries = db.pool.checkedout(), len(client._pending_logs)
+                seen.add(live_id)
+                with session(db) as s:
+                    event_row = s.get(EventRaw, live_id) is not None
+                    run_row = s.scalars(select(Run).where(Run.viseca_run_id == run_ids[0])).one()
+                at_rest.append((sessions, checked_out, summaries, event_row, run_row.decided >= len(seen)))
+                if len(seen) == 10:
+                    all_handled.set()
+
+            worker.add_handled_listener(handled)
+            draft = await client.create_mandate("Test instruction.", [], "ask")
+            mandate = await client.confirm_mandate(draft["draft_id"])
+            run_id = (await client.create_run("SCEN0001", mandate["mandate_id"]))["run_id"]
+            run_ids.append(run_id)
+            worker.track_run(run_id, scenario_id="SCEN0001", viseca_mandate_id=mandate["mandate_id"])
+            await asyncio.wait_for(all_handled.wait(), timeout=120)  # a hang guard, not a wait
+            assert all(a.decisions for a in fake.runs[run_id].auths)
+            # between decisions the ledger holds no session and the only connections out are
+            # call summaries still being written (each holds at most one); the signal comes
+            # after the request's events_raw and runs rows committed
+            assert len(at_rest) == 10
+            for sessions, checked_out, summaries, event_row, run_counted in at_rest:
+                assert sessions == 0 and checked_out <= summaries, at_rest
+                assert event_row and run_counted, at_rest
             await worker.stop()
             assert db.pool.checkedout() == 0
             if ledger_kind == "store":
                 assert ledger.open_sessions == 0
+
+    asyncio.run(scenario())
+
+
+def test_a_restart_rearms_expiry_only_for_live_step_ups(
+    db: Engine, history: StoreHistoryIndex, ledger_kind: str
+) -> None:
+    """A replay step-up was never posted to Viseca: after a restart it gets no expiry (so no
+    timeout ``/resolve``, which Viseca would refuse); the live one does."""
+
+    async def scenario() -> None:
+        async with harness(db, fast(), history=history) as (fake, client, first):
+            await first.start()
+            _, run_id = await start_run(client, first, "SCEN0000")
+            (auth,) = fake.runs[run_id].auths
+            await wait_until(lambda: auth.status == "pending")
+            (live,) = await first.ledger_entries([auth.live_id])
+            assert live.outcome == "step_up" and not live.final
+            await first.stop()
+
+            # the same purchase, pending in a replay run (runs.kind = replay)
+            replay_id, replay_run = "replay-" + auth.live_id, "run_replay"
+            with session(db) as s:
+                live_run = s.get(Run, live.run_id)
+                live_event = s.get(EventRaw, auth.live_id)
+                assert live_run is not None and live_run.kind == "live" and live_event is not None
+                s.add(Run(run_id=replay_run, viseca_run_id=None, kind="replay",
+                          scenario_id=live_run.scenario_id, mandate_id=live_run.mandate_id,
+                          card_id=live_run.card_id, state="running", delivered=1, decided=1,
+                          pending_human=1, total=1, started_at=live_run.started_at))  # fmt: skip
+                s.add(EventRaw(live_authorization_id=replay_id, run_id=replay_run,
+                               source_authorization_id=live_event.source_authorization_id,
+                               received_at=live_event.received_at, deadline_at=live_event.deadline_at,
+                               event=live_event.event))  # fmt: skip
+            ledger = first.ledger if ledger_kind == "memory" else worker_module.default_ledger(db, history)
+            ledger.record(live.model_copy(update={"live_authorization_id": replay_id, "run_id": replay_run}))
+            pending = [ledger.get(i) for i in (auth.live_id, replay_id)]
+            assert all(e is not None and e.outcome == "step_up" and not e.final for e in pending)
+
+            second = VisecaWorker(
+                fake_client(fake, db), db=db, history=history, ledger=ledger,
+                **ALL_STUBS, poll_wait_s=0.2,
+            )  # fmt: skip
+            try:
+                await second.start()
+                assert set(second._expiry) == {auth.live_id}
+                assert second.status().pending_step_ups == 1
+            finally:
+                await second.stop()
+                await second.client.aclose()
+            assert not auth.resolutions
 
     asyncio.run(scenario())
 
@@ -657,20 +803,35 @@ def test_a_revoked_mandate_declines_everything_delivered_afterwards(
 ) -> None:
     async def scenario() -> None:
         async with harness(db, fast(), history=history) as (fake, client, worker):
+            # Revoke right after the worker has handled the second purchase: revoke's local
+            # part runs before the next request can be decided (the loop's next step is a
+            # poll), so the first two are decided under the policy and the rest after revoke.
+            handled: list[str] = []
+            revoked: list[asyncio.Task[None]] = []
+            all_handled = asyncio.Event()
+
+            def on_handled(live_id: str) -> None:
+                if live_id in handled:
+                    return  # a waiting step-up served again
+                handled.append(live_id)
+                if len(handled) == 2:
+                    revoked.append(asyncio.create_task(worker.revoke(mandate_id)))
+                if len(handled) == 10:
+                    all_handled.set()
+
+            worker.add_handled_listener(on_handled)
             await worker.start()
             mandate_id, run_id = await start_run(client, worker, "SCEN0001")
             auths = fake.runs[run_id].auths
-            await wait_until(lambda: sum(bool(a.decisions) for a in auths) >= 2)
-            before = datetime.now(UTC)
-            await worker.revoke(mandate_id)
-            after = datetime.now(UTC)
+            await asyncio.wait_for(all_handled.wait(), timeout=120)  # a hang guard, not a wait
+            await revoked[0]
             assert fake.mandates[mandate_id]["status"] == "revoked"
-            await wait_until(lambda: all(a.decisions for a in auths), timeout=15)
+            assert all(a.decisions for a in auths)
 
-            entries = await worker.ledger_entries([a.live_id for a in auths])
-            earlier = [e for e in entries if e.decided_at < before]
-            later = [e for e in entries if e.decided_at > after]
-            assert len(earlier) >= 2 and len(later) >= 5
+            by_id = {e.live_authorization_id: e for e in await worker.ledger_entries(handled)}
+            earlier = [by_id[i] for i in handled[:2]]
+            later = [by_id[i] for i in handled[2:]]
+            assert len(later) == 8
             assert {e.outcome for e in earlier} == {"step_up"}
             for entry in later:
                 assert entry.outcome == "decline" and entry.step == 1
@@ -724,7 +885,9 @@ def test_a_request_failing_the_event_schema_is_declined(db: Engine, history: Sto
             await wait_until(lambda: bool(auth.decisions))
             posted = auth.decisions[0]
             assert posted["decision"] == "decline" and posted["reason_codes"] == ["unevaluable"]
-            assert posted["evidence"][0]["rule"] == "event_schema"
+            assert posted["evidence"] == [
+                {"rule": "event_schema", "outcome": "fail", "detail": "authorization.merchant is missing", "source": "policy"}
+            ]
             assert await worker.ledger_entries([auth.live_id]) == []
             assert "schema" in (worker.status().last_error or "")
 
@@ -921,6 +1084,83 @@ def test_start_reseeds_history_when_viseca_serves_a_different_file(
         assert s.scalar(select(func.count()).select_from(AuthorizationHistory)) == 4696
 
 
+PACK_FX = [
+    {"from_currency": c, "to_currency": "CHF", "rate": r, "rate_date": "2026-08-01", "source": "synthetic_fixed"}
+    for c, r in (("CHF", 1.0), ("EUR", 0.95), ("GBP", 1.12), ("USD", 0.87))
+]
+
+
+def _with_rate(currency: str, rate: Any) -> list[dict[str, Any]]:
+    return [{**row, "rate": rate} if row["from_currency"] == currency else row for row in PACK_FX]
+
+
+def test_served_fx_rates_are_compared_exactly_with_the_engines_rates() -> None:
+    assert fx_rate_mismatches({"tables": {"fx_rates": PACK_FX}}) == []
+    # a rate served as a string or with other trailing zeros is the same decimal
+    as_strings = [{**row, "rate": f"{row['rate']:.6f}"} for row in PACK_FX]
+    assert fx_rate_mismatches({"tables": {"fx_rates": as_strings}}) == []
+    # no tolerance: one ten-thousandth off is a mismatch
+    assert fx_rate_mismatches({"tables": {"fx_rates": _with_rate("EUR", 0.9501)}}) == [
+        "EUR: served 0.9501, the engine uses 0.950000"
+    ]
+    assert fx_rate_mismatches({"tables": {"fx_rates": PACK_FX[:3]}}) == [
+        "USD: not served, the engine uses 0.870000"
+    ]
+    extra = [*PACK_FX, {"from_currency": "JPY", "to_currency": "CHF", "rate": 0.006}]
+    assert fx_rate_mismatches({"tables": {"fx_rates": extra}}) == ["JPY: served 0.006, the engine has no rate"]
+    wrong_target = [{**row, "to_currency": "EUR"} if row["from_currency"] == "GBP" else row for row in PACK_FX]
+    assert fx_rate_mismatches({"tables": {"fx_rates": wrong_target}}) == ["GBP: converts to 'EUR', not CHF"]
+    assert fx_rate_mismatches({"tables": {"fx_rates": _with_rate("GBP", "n/a")}}) == ["GBP: unreadable rate 'n/a'"]
+    assert fx_rate_mismatches({"tables": {"fx_rates": _with_rate("GBP", None)}}) == ["GBP: unreadable rate None"]
+    assert fx_rate_mismatches({"tables": {"fx_rates": [*PACK_FX, PACK_FX[1]]}}) == ["EUR: served twice"]
+    # missing is never a pass
+    assert fx_rate_mismatches({"tables": {}}) == ["no fx_rates table served"]
+    assert fx_rate_mismatches(None) == ["no fx_rates table served"]
+
+
+def test_start_checks_the_served_fx_rates_and_healthz_is_ok_when_they_match(db: Engine) -> None:
+    async def scenario() -> None:
+        async with harness(db, fast()) as (_, _, worker):
+            assert worker.status().fx_rates_match is None  # not checked before start
+            await worker.start()
+            await wait_until(lambda: worker.status().last_poll_at is not None)
+            status = worker.status()
+            assert (status.fx_rates_match, status.fx_rates_mismatch) == (True, [])
+            assert status.ok and status.state == "polling"
+
+    asyncio.run(scenario())
+
+
+def test_served_fx_rates_that_differ_are_logged_loudly_and_keep_healthz_degraded(
+    db: Engine, history: StoreHistoryIndex, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("ERROR")
+
+    async def scenario() -> None:
+        async with harness(db, fast(fx_rates=_with_rate("EUR", "0.96")), history=history) as (
+            _,
+            client,
+            worker,
+        ):
+            await worker.start()
+            await wait_until(lambda: worker.status().last_poll_at is not None)
+            status = worker.status()
+            assert status.fx_rates_match is False
+            assert status.fx_rates_mismatch == ["EUR: served 0.96, the engine uses 0.950000"]
+            assert not status.ok and status.state == "polling"  # it polls, but is not healthy
+            assert "fx rates differ" in (status.last_error or "")
+            # the worker still decides (the engine's rates stand); it just is not healthy
+            _, run_id = await start_run(client, worker, "SCEN0000")
+            await wait_until(lambda: worker.run_status(run_id) is not None
+                             and worker.run_status(run_id).decided == 1)  # fmt: skip
+            assert not worker.status().ok
+            assert worker.live_run(run_id).worker_ok is False
+
+    asyncio.run(scenario())
+    assert "VISECA SERVES DIFFERENT FX RATES FROM THE ENGINE'S FX_TO_CHF" in caplog.text
+    assert "EUR: served 0.96, the engine uses 0.950000" in caplog.text
+
+
 def test_start_syncs_a_served_superset_of_the_reference_tables_once(
     db: Engine, history: StoreHistoryIndex, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -936,7 +1176,7 @@ def test_start_syncs_a_served_superset_of_the_reference_tables_once(
     assert "reference table customers          served  21, store  20 ->  21 rows (1 added, 0 updated)" in caplog.text
     assert "reference tables not served, kept as stored: scenario_authorities" in caplog.text
     # the in-memory history index was reloaded with the served merchant
-    assert worker.history is not history
+    assert worker.history.current is not history
     assert worker.history.merchant_names(["ME9001"]) == {"ME9001": "Served Corner Shop"}
     with session(db) as s:
         assert s.get(Card, "CA9001") is not None
@@ -946,7 +1186,7 @@ def test_start_syncs_a_served_superset_of_the_reference_tables_once(
     caplog.clear()
     worker = asyncio.run(scenario(history=history))
     assert [t.table for t in worker.served_tables if t.changed] == []
-    assert worker.history is history  # nothing changed: nothing reloaded
+    assert worker.history.current is history  # nothing changed: nothing reloaded
     assert "reference table customers          served  21, store  21 ->  21 rows (0 added, 0 updated), unchanged" in caplog.text
 
 
@@ -1075,7 +1315,7 @@ def test_a_worker_that_loses_the_lease_stands_by_and_polls_again_once_it_is_free
             lease.owner = None
             await wait_until(lambda: worker.status().state == "polling")
             await wait_until(lambda: worker.status().pending_step_ups == 1)  # recovered
-            assert fake.polls > polls
+            await wait_until(lambda: fake.polls > polls)  # "polling" is set just before the first poll
             assert len(fake.runs[run_id].auths[0].decisions) == 1
 
     asyncio.run(scenario())

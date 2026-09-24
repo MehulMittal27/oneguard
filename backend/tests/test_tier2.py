@@ -16,7 +16,7 @@ from oneguard.engine.facts import CONTRADICTORY, SELLER_STATED_UNKNOWN, build_fa
 from oneguard.engine.interfaces import IMPLEMENTATIONS, load_implementations
 from oneguard.engine.policy import evaluate_rules
 from oneguard.engine.tier2 import SCHEMA, resolve_unknowns
-from oneguard.engine.types import Policy
+from oneguard.engine.types import Policy, RuleResult
 from oneguard.llm.provider import NullProvider, ProviderUnavailable
 from oneguard.replay.events import all_events
 
@@ -118,6 +118,31 @@ def test_week_and_month_wording_is_grounded():
     facts = _facts("Laufschuh Größe 43, 2 Wochen Rückgabe")
     resolved = resolve_unknowns(facts, evaluate_rules(facts, SHOES), Answers(_line(days=14)), 1.5)
     assert resolved.items[0].return_window_days.value == 14
+
+
+def test_the_strictest_line_still_decides_the_order_window():
+    """A model-read 30 days on one line does not lift a regex-read 7 days on another."""
+    event = _shoe_event()
+    socks = copy.deepcopy(event["authorization"]["items"][0])
+    socks.update(line_no=2, item_id="IT_SOCKS", item_details="Socks; returns accepted within 7 days")
+    event["authorization"]["items"].append(socks)
+    facts = build_facts(event).model_copy(update={"merchant_known": True})
+    assert facts.return_window_days.value == 7 and not facts.items[0].return_window_days.known
+    waiting = [RuleResult(rule_id="C7", outcome="unknown", detail="Return window unknown", source="regex")]
+    resolved = resolve_unknowns(facts, waiting, Answers(_line(days=30)), 1.5)
+    assert (resolved.items[0].return_window_days.value, resolved.items[0].return_window_days.source) == (30, "model")
+    assert (resolved.return_window_days.value, resolved.return_window_days.source) == (7, "regex")
+
+
+def test_tier_2_cannot_produce_a_recurring_fact():
+    """The schema has no recurring field, so no answer can set it (CLAUDE.md rule 2)."""
+    assert "recurring" not in SCHEMA["properties"]["lines"]["items"]["properties"]
+    facts = _facts("Laufschuh Größe 43, monatlich abgerechnet")
+    assert facts.items[0].recurring.known is False
+    provider = Answers(_line(size_eu=43))
+    resolved = resolve_unknowns(facts, evaluate_rules(facts, SHOES), provider, 1.5)
+    assert "recurring" not in provider.calls[0][0]
+    assert resolved.items[0].recurring == facts.items[0].recurring
 
 
 def test_amounts_merchant_categories_and_terms_are_never_touched():

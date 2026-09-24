@@ -2,6 +2,7 @@
 
 ``decide_event`` calls the lane functions in this order:
 
+0. ``Ledger.note_event``: the ledger keeps the purchase's device and shop country (W1, W3)
 1. redelivery of a stored live ``authorization_id`` → the stored result, nothing counted (M7)
 2. ``build_facts``
 3. ``Ledger.view``; ``facts.merchant_known`` / ``merchant_known_on_card`` from it (Q7, C9)
@@ -191,6 +192,7 @@ def decide_event(
     customer_id = event["mandate"]["customer_id"]
     card_id = auth["card_id"]
 
+    ctx.ledger.note_event(event)  # W1, W3 learn this purchase's device and country if approved
     stored = ctx.ledger.get(auth["authorization_id"])
     if stored is not None:
         view = ctx.ledger.view(

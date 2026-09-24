@@ -44,7 +44,8 @@ export function NewPolicyTimeout({
         </span>
         <p className="text-[17px] font-semibold text-ink">The AI took too long</p>
         <p className="text-[13px] text-ink-muted">
-          We stopped reading and saved nothing. No rule is active. Your words are still here.
+          We stopped reading and saved nothing. Nothing was approved while we were offline. No
+          rule is active. Your words are still here.
         </p>
       </div>
 

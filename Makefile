@@ -23,12 +23,17 @@ reset-db:
 	cd backend && . .venv/bin/activate && python -m oneguard.store.seed --reset
 
 # Offline targets replay the local data pack; demo-live runs a scenario Viseca serves.
+# `make replay DB=sqlite:///./oneguard.sqlite` keeps the recorded run (kind = replay) in that store.
 replay: SCEN ?= SCEN0000
 replay:
-	cd backend && . .venv/bin/activate && python -m oneguard.replay.runner --scenario $(SCEN) --policy tests/fixtures/policies/$(SCEN).yaml
+	cd backend && . .venv/bin/activate && python -m oneguard.replay.runner --scenario $(SCEN) --policy tests/fixtures/policies/$(SCEN).yaml $(if $(DB),--database-url $(DB))
 
 replay-all:
 	cd backend && . .venv/bin/activate && python -m oneguard.replay.runner --all
+
+# Regenerates docs/replay-matrix.md; fails when a purchase leaves the oracle or signals off moves one.
+matrix:
+	cd backend && . .venv/bin/activate && python -m oneguard.replay.matrix --out ../docs/replay-matrix.md
 
 dev:
 	cd backend && . .venv/bin/activate && uvicorn oneguard.api.app:app --reload --port 8000 &
@@ -61,4 +66,4 @@ deploy:
 logs:
 	fly logs -a oneguard
 
-.PHONY: setup test lint check seed reset-db replay replay-all dev build-frontend serve demo-offline demo-live image deploy logs
+.PHONY: setup test lint check seed reset-db replay replay-all matrix dev build-frontend serve demo-offline demo-live image deploy logs
