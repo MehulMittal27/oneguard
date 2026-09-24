@@ -67,7 +67,7 @@ def test_openai_returns_validated_json_with_strict_schema_mode():
     fmt = client.kwargs["response_format"]
     assert fmt["type"] == "json_schema" and fmt["json_schema"]["strict"] is True
     assert fmt["json_schema"]["schema"] is SCHEMA
-    assert client.kwargs["model"] == "gpt-4o-mini" and client.kwargs["timeout"] == 2.0
+    assert client.kwargs["model"] == "gpt-4.1" and client.kwargs["timeout"] == 2.0
     assert client.kwargs["temperature"] == 0
 
 

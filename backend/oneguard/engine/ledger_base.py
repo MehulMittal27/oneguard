@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
@@ -83,9 +84,58 @@ def is_final_approval(outcome: str, final: bool, uncertain_outcome: str | None) 
     return outcome == "approve" or (final and uncertain_outcome == "approved")
 
 
+def is_pending(outcome: str, final: bool) -> bool:
+    """A step-up still waiting for the customer's answer: reserved, not yet spend (M5)."""
+    return outcome == "step_up" and not final
+
+
+def period_counts(in_window: Iterable[Any]) -> dict[str, Any]:
+    """``LedgerView.period_count`` and its companions over the period window's decisions.
+
+    Final approvals plus pending step-ups count; declines and expired step-ups never do
+    (M4, M5). Each decision is one live id, so a redelivery counts nothing (M7).
+    """
+    approved = [d for d in in_window if is_final_approval(d.outcome, d.final, d.uncertain_outcome)]
+    pending = [d for d in in_window if is_pending(d.outcome, d.final)]
+    return {
+        "period_count": len(approved) + len(pending),
+        "period_reserved_count": len(pending),
+        "period_last_approved_at": max((d.ts_sim for d in approved), default=None),
+    }
+
+
+def check_resolution(
+    decision: Literal["approve", "decline"], resolved_by: Literal["customer", "timeout"], message: str | None
+) -> None:
+    """A timeout only ever declines and always re-renders the message (rules.md Q2);
+    a customer's answer keeps the message it was asked with."""
+    if resolved_by == "timeout" and decision != "decline":
+        raise ValueError("a timeout only ever declines (rules.md Q2)")
+    if (resolved_by == "timeout") != (message is not None):
+        raise ValueError("a timeout, and only a timeout, replaces the message (rules.md Q2)")
+
+
 def confirmation_key(rule_id: str, merchant_id: str, item_id: str) -> str:
     """One remembered answer: this rule, at this shop, for this item (``confirmed_keys``)."""
     return f"{rule_id}|{merchant_id}|{item_id}"
+
+
+def shop_confirmation_key(rule_id: str, merchant_id: str) -> str:
+    """One remembered answer for this rule at this shop, whatever the items (C9 known shop)."""
+    return f"{rule_id}|{merchant_id}|*"
+
+
+def confirmation_keys(rule_ids: Iterable[str], merchant_id: str, item_ids: Iterable[str]) -> set[str]:
+    """What one step-up the customer approved leaves in ``confirmed_keys``: every deciding
+    rule per item and per shop. The reader picks the grain: ``policy.add_ledger_results``
+    reads the shop key only for a known-shop check (C9), the item keys only for a
+    restriction no data can check."""
+    items = list(item_ids)
+    keys: set[str] = set()
+    for rule_id in rule_ids:
+        keys.add(shop_confirmation_key(rule_id, merchant_id))
+        keys.update(confirmation_key(rule_id, merchant_id, item_id) for item_id in items)
+    return keys
 
 
 def known_merchant_names(history: HistoryIndex | None, merchant_ids: set[str]) -> dict[str, str]:
@@ -142,11 +192,16 @@ class Ledger(ABC):
         decision: Literal["approve", "decline"],
         resolved_by: Literal["customer", "timeout"],
         at: datetime,
+        *,
+        message: str | None = None,
     ) -> LedgerEntry:
         """Close a pending step-up: approve moves reserved → spent, decline releases.
 
-        ``resolved_by="timeout"`` records ``uncertain_outcome="expired"`` (Q2). ``at``
-        is the real clock. Raises KeyError if unknown, ValueError if not pending.
+        ``resolved_by="timeout"`` records ``uncertain_outcome="expired"`` (Q2) and needs
+        ``message`` (``explain.expired_message``): it replaces the stored "Waiting for you"
+        message and the counterfactual is dropped; ``explanation_source`` is unchanged. A
+        customer's answer keeps the message and takes none. ``at`` is the real clock.
+        Raises KeyError if unknown, ValueError if not pending or ``message`` does not fit.
         """
 
     @abstractmethod
@@ -230,6 +285,7 @@ class InMemoryLedger(Ledger):
             period_spent_chf=round(sum(e.spent_chf for e in in_window), 2),
             period_reserved_chf=round(sum(e.reserved_chf for e in in_window), 2),
             period_window_start=window_start,
+            **period_counts(in_window),
             priors=[
                 PriorDecision(
                     authorization_id=e.live_authorization_id,
@@ -256,11 +312,10 @@ class InMemoryLedger(Ledger):
             flagged_merchant_ids=set(self.flags.get(run_id, set())),
             frozen=False,
             confirmed_keys={
-                confirmation_key(rule_id, e.merchant_id, item_id)
+                key
                 for e in run
                 if e.outcome == "step_up" and e.uncertain_outcome == "approved" and e.resolved_by == "customer"
-                for rule_id in e.deciding_ids
-                for item_id in e.item_ids
+                for key in confirmation_keys(e.deciding_ids, e.merchant_id, e.item_ids)
             },
         )
 
@@ -280,17 +335,20 @@ class InMemoryLedger(Ledger):
         decision: Literal["approve", "decline"],
         resolved_by: Literal["customer", "timeout"],
         at: datetime,
+        *,
+        message: str | None = None,
     ) -> LedgerEntry:
         with self._lock:
             entry = self.entries[authorization_id]
             if entry.outcome != "step_up" or entry.final:
                 raise ValueError(f"{authorization_id} is not awaiting an answer")
-            if resolved_by == "timeout" and decision != "decline":
-                raise ValueError("a timeout only ever declines (rules.md Q2)")
+            check_resolution(decision, resolved_by, message)
             approved = decision == "approve"
             outcome = "expired" if resolved_by == "timeout" else ("approved" if approved else "declined")
+            expired = {"message": message, "counterfactual": None} if message is not None else {}
             resolved = entry.model_copy(
                 update={
+                    **expired,
                     "final": True,
                     "uncertain_outcome": outcome,
                     "reserved_chf": 0.0,

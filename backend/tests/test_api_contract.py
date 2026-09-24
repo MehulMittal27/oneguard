@@ -31,7 +31,12 @@ from sqlalchemy import select
 
 from oneguard.api import queries
 from oneguard.api.app import AppConfig, create_app, sanitise
-from oneguard.api.policies import NO_CAP_QUESTION, per_order_cap
+from oneguard.api.policies import (
+    FORM_INSTRUCTION,
+    NO_CAP_QUESTION,
+    NO_CHECKS_QUESTION,
+    per_order_cap,
+)
 from oneguard.api.services import Services
 from oneguard.engine import stubs
 from oneguard.engine.interfaces import load_implementations
@@ -521,6 +526,9 @@ def test_decisions_across_their_lifecycle(db_url: str) -> None:
             for lapsed in (c, e):
                 row = final[lapsed["authorization_id"]]
                 assert (row["uncertain_outcome"], row["status"], row["resolved_by"]) == ("expired", "final", "timeout")
+                # rules.md Q2, with the platform's 60 s window
+                assert row["message"] == "Expired: no answer within 60 s; nothing was approved."
+                assert row["counterfactual"] is None and row["explanation_source"] == lapsed["explanation_source"]
             for d in final.values():
                 assert (d["decision"], d["uncertain_outcome"], d["status"]) in MATRIX
                 assert ("deadline_at" in d) == (d["status"] == "pending_human")
@@ -693,6 +701,9 @@ def test_a_lapsed_step_up_reads_as_expired_after_a_restart(db_url: str) -> None:
             rows = {d["authorization_id"]: d for d in await run.decisions()}
             for live_id in pending:
                 assert (rows[live_id]["uncertain_outcome"], rows[live_id]["resolved_by"]) == ("expired", "timeout")
+                # the offline expiry re-renders the message too (rules.md Q2, default 120 s window)
+                assert rows[live_id]["message"] == "Expired: no answer within 120 s; nothing was approved."
+                assert rows[live_id]["counterfactual"] is None
         async with running(db_url, clock=clock) as run:
             rows = {d["authorization_id"]: d for d in await run.decisions()}
             assert all(rows[i]["uncertain_outcome"] == "expired" for i in pending)
@@ -865,14 +876,14 @@ def test_policy_drafts_and_the_viseca_dance(db_url: str) -> None:
             assert r.status_code == 200
             compiled = r.json()
             assert compiled["instruction"] == instruction and compiled["compiler"] == "fallback"
-            assert NO_CAP_QUESTION in compiled["open_questions"]
+            assert compiled["checks"] == [] and compiled["open_questions"][0] == NO_CHECKS_QUESTION
             r = await run.post(
                 f"/api/policy-drafts/{compiled['draft_id']}/confirm",
                 json={"checks": [], "uncertainty_policy": "ask", "open_questions": []},
             )
             assert r.status_code == 409 and r.json()["error"] == {
                 "code": "lint_failed",
-                "message": "Not confirmed: the policy needs a limit on what one purchase may cost.",
+                "message": "Not confirmed: no restriction could be read.",
                 "detail": {"missing": ["per_order_limit"]},
             }
 
@@ -897,8 +908,8 @@ def test_policy_drafts_and_the_viseca_dance(db_url: str) -> None:
             at_viseca = run.fake.mandates[tm]
             with session(run.services.db_engine) as s:
                 row = s.scalar(select(Mandate))
-                assert row.viseca_mandate_id == tm and row.instruction == draft["instruction"]
-            assert at_viseca["instruction"] == draft["instruction"]
+                assert row.viseca_mandate_id == tm and row.instruction == draft["instruction"] == FORM_INSTRUCTION
+            assert at_viseca["instruction"].endswith("Decline when uncertain.")
             assert at_viseca["uncertainty_policy"] == "decline"
             assert at_viseca["guidance"] == [c["text"] for c in draft["checks"]]
             assert [r["field"] for r in at_viseca["hard_rules"]] == [
@@ -913,6 +924,124 @@ def test_policy_drafts_and_the_viseca_dance(db_url: str) -> None:
             second = await confirm_form(run, per_order_limit_chf=80)
             assert (await run.get("/api/cards/CA0001/policy")).json()["mandate"]["mandate_id"] == second["mandate_id"]
             assert run.fake.mandates[tm]["status"] == "revoked"
+
+    asyncio.run(scenario())
+
+
+def test_the_customers_words_are_served_verbatim(db_url: str) -> None:
+    """C1 -> C2 -> C3 -> C4 keep the instruction exactly as typed (unicode, spacing, line
+    breaks); Viseca gets the same words. Checks and guidance never replace them."""
+    words = "  Groceries only, max CHF 120 per order.\nMüsli & café  okay - ask me first!  "
+
+    async def scenario() -> None:
+        engine = {**TEST_ENGINE, "compile_instruction": load_implementations()["compile_instruction"]}
+        async with running(db_url, fake=FakeViseca(fast()), implementations=engine) as run:
+            draft = (await run.post("/api/cards/CA0001/policy-drafts", json={"instruction": words})).json()
+            assert draft["instruction"] == words and draft["checks"], draft
+            r = await run.post(
+                f"/api/policy-drafts/{draft['draft_id']}/confirm",
+                json={"checks": draft["checks"], "uncertainty_policy": "ask", "open_questions": []},
+            )
+            assert r.status_code == 200, r.text
+            assert r.json()["instruction"] == words
+            (tm,) = run.fake.mandates
+            assert run.fake.mandates[tm]["instruction"] == words
+            assert (await run.get("/api/cards/CA0001/policy")).json()["mandate"]["instruction"] == words
+
+            proposal = (await run.post("/api/cards/CA0001/policy-drafts", json={"form": FORM})).json()
+            period = next(c for c in proposal["checks"] if c["id"] == "period_limit")
+            r = await run.post("/api/cards/CA0001/policy/tighten", json={"add_checks": [period]})
+            assert r.status_code == 200, r.text
+            assert r.json()["instruction"] == words
+            assert (await run.get("/api/cards/CA0001/policy")).json()["mandate"]["instruction"] == words
+            with session(run.services.db_engine) as s:
+                assert s.scalar(select(Mandate)).instruction == words
+
+    asyncio.run(scenario())
+
+
+def test_a_form_policy_serves_built_from_the_form(db_url: str) -> None:
+    """The form has no words of the customer's: C1, C2 and C3 serve "Built from the form",
+    never the joined check texts. Viseca still gets the accepted checks as text."""
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast())) as run:
+            draft = (await run.post("/api/cards/CA0001/policy-drafts", json={"form": FORM})).json()
+            assert draft["instruction"] == FORM_INSTRUCTION == "Built from the form"
+            mandate = await confirm_form(run)
+            assert mandate["instruction"] == FORM_INSTRUCTION
+            assert (await run.get("/api/cards/CA0001/policy")).json()["mandate"]["instruction"] == FORM_INSTRUCTION
+            (tm,) = run.fake.mandates
+            texts = [c["text"] for c in mandate["checks"]]
+            assert run.fake.mandates[tm]["instruction"] == " ".join([*(f"{t}." for t in texts), "Ask me when uncertain."])
+
+    asyncio.run(scenario())
+
+
+def test_form_policies_stored_with_joined_checks_serve_built_from_the_form(db_url: str) -> None:
+    """Rows written before the form path kept "Built from the form" held the joined check
+    texts; a start sets them (and only them) to it. A typed instruction is left alone."""
+    at = datetime(2026, 9, 20, 10, 0, tzinfo=UTC)
+    joined = "Total at or below CHF 20 per order. Ask me when uncertain."
+
+    def rows(card_id: str, compiler: str, instruction: str, confirmed_at: datetime) -> list[Any]:
+        common = {"card_id": card_id, "instruction": instruction, "rules": {}, "checks": [],
+                  "uncertainty_policy": "ask", "open_questions": []}  # fmt: skip
+        return [
+            PolicyDraft(draft_id=f"pd_{card_id}", customer_id="CU0001", dry_run={}, compiler=compiler,
+                        viseca_draft_id=None, created_at=confirmed_at, confirmed_at=confirmed_at, **common),
+            Mandate(mandate_id=f"md_{card_id}", viseca_mandate_id=None, customer_id="CU0001", status="active",
+                    confirmed_at=confirmed_at, revoked_at=None, **common),
+        ]  # fmt: skip
+
+    engine = make_engine(db_url)
+    with session(engine) as s:
+        s.add_all([*rows("CA0001", "form", joined, at), *rows("CA0002", "fallback", joined, at)])
+    engine.dispose()
+
+    async def scenario() -> None:
+        async with running(db_url) as run:
+            policy = (await run.get("/api/cards/CA0001/policy")).json()["mandate"]
+            assert policy["instruction"] == FORM_INSTRUCTION
+            typed = (await run.get("/api/cards/CA0002/policy")).json()["mandate"]
+            assert typed["instruction"] == joined
+            with session(run.services.db_engine) as s:
+                drafts = {d.card_id: d.instruction for d in s.scalars(select(PolicyDraft))}
+            assert drafts == {"CA0001": FORM_INSTRUCTION, "CA0002": joined}
+            assert queries.restore_form_instructions(run.services.db_engine, FORM_INSTRUCTION) == 0
+
+    asyncio.run(scenario())
+
+
+def test_a_draft_with_no_checks_asks_and_is_never_confirmed(db_url: str) -> None:
+    """C1 with nothing readable asks for a limit or item type; C2 refuses it (409 lint_failed),
+    sends nothing to Viseca and stores no mandate. A normal draft still confirms."""
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast())) as run:
+            r = await run.post("/api/cards/CA0001/policy-drafts", json={"instruction": "buy something nice"})
+            assert r.status_code == 200
+            draft = r.json()
+            assert draft["checks"] == []
+            assert draft["open_questions"][0] == NO_CHECKS_QUESTION
+            assert NO_CHECKS_QUESTION == "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'"
+            assert NO_CAP_QUESTION not in draft["open_questions"]
+            r = await run.post(
+                f"/api/policy-drafts/{draft['draft_id']}/confirm",
+                json={"checks": [], "uncertainty_policy": "ask", "open_questions": []},
+            )
+            assert r.status_code == 409 and r.json()["error"] == {
+                "code": "lint_failed",
+                "message": "Not confirmed: no restriction could be read.",
+                "detail": {"missing": ["per_order_limit"]},
+            }
+            assert run.fake.mandates == {}
+            with session(run.services.db_engine) as s:
+                assert s.scalar(select(Mandate)) is None
+            assert (await run.get("/api/cards/CA0001/policy")).json()["mandate"] is None
+
+            confirmed = await confirm_form(run)
+            assert confirmed["status"] == "active" and len(run.fake.mandates) == 1
 
     asyncio.run(scenario())
 

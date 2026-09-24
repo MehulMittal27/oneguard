@@ -21,7 +21,10 @@ behaviour the worker depends on:
   and can have it happen just before a ``/resolve`` (``expire_before_resolve``);
 - ``GET /v1/authorizations`` filters by ``run_id`` and ``status`` (as live) and ignores
   other parameters;
-- ``/v1/reference-data`` serves no history-file hash;
+- ``/v1/reference-data`` serves no history-file hash; ``tables`` holds the pack's reference
+  tables as the live sandbox serves them (CSV strings; the catalogue has four columns),
+  plus any served-only rows a test adds (``served_extra``), whose scenarios replay a pack
+  scenario's purchases (``served_scenarios``) on the bootstrap profile ``profile``;
 - knobs for redelivery, corrupt events, a served history file that differs, a
   context / event-feed that disagrees with the worker, and whether team reset is enabled.
 
@@ -33,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import csv
 import secrets
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -87,6 +91,101 @@ class FakeConfig:
     worker read the step-up as still pending), so that ``/resolve`` gets a 409."""
     pending_serve_delay_s: float = 0.0
     """Delay before a ``pending_step_up`` envelope is returned, so it can arrive stale."""
+    served_extra: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    """Table → rows ``/v1/reference-data`` serves on top of the pack's (a judging pack)."""
+    served_scenarios: dict[str, str] = field(default_factory=dict)
+    """Served-only scenario id → the pack scenario whose purchases its runs replay."""
+    profile: dict[str, Any] | None = None
+    """Bootstrap ``profile``; default: the pack's first profile, without its context."""
+
+
+JUDGING_EXTRA: dict[str, list[dict[str, Any]]] = {
+    "customers": [
+        {
+            "customer_id": "CU9001",
+            "persona_name": "Test Served",
+            "home_region": "Bern region",
+            "background": "A synthetic customer only the served pack has.",
+            "shopping_preferences": "Familiar supermarkets.",
+            "typical_spending": "Small grocery payments.",
+            "budget_style": "careful",
+            "travel_pattern": "Rarely travels.",
+        }
+    ],
+    "accounts": [
+        {
+            "account_id": "AC9001",
+            "customer_id": "CU9001",
+            "account_type": "debit",
+            "account_purpose": "daily_spending",
+            "base_currency": "CHF",
+            "status": "active",
+            "opened_on": "2020-01-02",
+            "per_transaction_limit_chf": "1000",
+            "monthly_limit_chf": "4000",
+        }
+    ],
+    "cards": [
+        {
+            "card_id": "CA9001",
+            "account_id": "AC9001",
+            "card_type": "debit",
+            "card_purpose": "everyday",
+            "status": "active",
+            "first_used_on": "2024-11-26",
+            "expires_on": "2029-11-01",
+            "online_enabled": "true",
+            "international_enabled": "true",
+            "virtual_card": "false",
+        }
+    ],
+    "merchants": [
+        {
+            "merchant_id": "ME9001",
+            "merchant_name": "Served Corner Shop",
+            "merchant_category": "groceries",
+            "merchant_mcc": "5411",
+            "merchant_country": "CH",
+            "merchant_city": "Bern",
+            "availability": "store_and_online",
+            "recurring_capable": "false",
+        }
+    ],
+    "items": [
+        {
+            "item_id": "IT9001",
+            "item_name": "Served bread",
+            "item_category": "groceries",
+            "item_description": "A loaf only the served pack lists.",
+            "unit_price_min_chf": "2.00",
+            "unit_price_typical_chf": "4.50",
+            "unit_price_max_chf": "9.00",
+        }
+    ],
+    "scenario_catalogue": [
+        {
+            "scenario_id": "SCEN9001",
+            "scenario_name": "Served connection check",
+            "cardholder_instruction": "Buy one ordinary grocery item for CHF 20 or less. Ask me when uncertain.",
+            "event_count": 1,
+        }
+    ],
+}
+"""Synthetic served-only rows: a judging pack that is a superset of ``data/``."""
+
+
+def judging_pack() -> dict[str, Any]:
+    """``FakeConfig`` fields for a sandbox serving ``JUDGING_EXTRA`` on top of the pack, with
+    SCEN9001 (replaying SCEN0000's purchase) on CU9001's card CA9001 as the bootstrap profile."""
+    return {
+        "served_extra": copy.deepcopy(JUDGING_EXTRA),
+        "served_scenarios": {"SCEN9001": "SCEN0000"},
+        "profile": {
+            "profile_id": "PROFILE_TEST9001",
+            "scenario_id": "SCEN9001",
+            "profile_context": {"customer_id": "CU9001", "account_id": "AC9001", "card_id": "CA9001"},
+        },
+    }
 
 
 @dataclass
@@ -357,7 +456,12 @@ class FakeViseca:
                     "event_count": int(s["event_count"]),
                 }
                 for s in fake.pack.scenarios.values()
-            ]
+            ] + fake.config.served_extra.get("scenario_catalogue", [])
+
+        def table(name: str) -> list[dict[str, Any]]:
+            with (data_dir() / f"{name}.csv").open(newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            return rows + fake.config.served_extra.get(name, [])
 
         @app.get("/v1/bootstrap")
         async def bootstrap() -> dict[str, Any]:
@@ -366,7 +470,7 @@ class FakeViseca:
                 "api_version": "0.1.0",
                 "pack_version": "saw26",
                 "team_id": "team-fake",
-                "profile": {"profile_id": "PROFILE_AUTH0001", "scenario_id": "SCEN0000"},
+                "profile": fake.config.profile or {"profile_id": "PROFILE_AUTH0001", "scenario_id": "SCEN0000"},
                 "scenarios": catalogue(),
                 "limits": {
                     "decision_timeout_seconds": fake.config.decision_deadline_s,
@@ -383,17 +487,16 @@ class FakeViseca:
                 "pack_version": "saw26",
                 "classification": "SYNTHETIC TEST DATA",
                 "tables": {
+                    **{name: table(name) for name in ("customers", "accounts", "cards", "merchants", "items")},
+                    "fx_rates": table("fx_rates"),
                     "scenario_catalogue": catalogue(),
-                    "fx_rates": [
-                        {"from_currency": c, "to_currency": "CHF"} for c in ("CHF", "EUR", "GBP", "USD")
-                    ],
                 },
                 "history": {
                     "path": "/v1/reference-data/authorization-history.csv",
                     "rows": fake.history_csv.count("\n") - 1,
                     "format": "csv",
                 },
-                "runtime": {"scenario_ids": fake.pack.scenario_ids()},
+                "runtime": {"scenario_ids": [s["scenario_id"] for s in catalogue()]},
             }
 
         @app.get("/v1/reference-data/authorization-history.csv")
@@ -482,16 +585,17 @@ class FakeViseca:
             if mandate["status"] != "active":
                 return _error(409, "mandate_inactive", "mandate is not active")
             scenario_id = body.get("scenario_id", "")
-            if scenario_id not in fake.pack.scenarios:
+            source = fake.config.served_scenarios.get(scenario_id, scenario_id)
+            if source not in fake.pack.scenarios:
                 return _error(404, "not_found", "unknown scenario")
             run_id = "run_" + secrets.token_hex(8)
             suffix = run_id[-8:]
             live = {
                 row["authorization_id"]: f"{row['authorization_id']}-{suffix}"
-                for row in fake.pack.attempts_for(scenario_id)
+                for row in fake.pack.attempts_for(source)
             }
             templates = build_events(
-                fake.pack, scenario_id, mandate_id=mandate["mandate_id"], live_id=live.__getitem__
+                fake.pack, source, mandate_id=mandate["mandate_id"], live_id=live.__getitem__
             )
             for template in templates:
                 snapshot = template["mandate"]

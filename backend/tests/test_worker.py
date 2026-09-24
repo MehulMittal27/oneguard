@@ -24,13 +24,23 @@ from sqlalchemy import Engine, func, select
 
 from oneguard.api import models as api
 from oneguard.engine import stubs
+from oneguard.engine.explain import (
+    expired_message,
+)
 from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import InMemoryLedger
 from oneguard.engine.types import Policy
 from oneguard.store import seed as seed_module
 from oneguard.store.db import make_engine, session
 from oneguard.store.history import StoreHistoryIndex
-from oneguard.store.schema import AuthorizationHistory, EventRaw, Run, WorkerState
+from oneguard.store.schema import (
+    AuthorizationHistory,
+    Card,
+    EventRaw,
+    Run,
+    ScenarioCatalogue,
+    WorkerState,
+)
 from oneguard.viseca import worker as worker_module
 from oneguard.viseca.client import VisecaClient, VisecaError, store_sink
 from oneguard.viseca.worker import (
@@ -42,7 +52,7 @@ from oneguard.viseca.worker import (
     overrun_setting,
     timeout_message,
 )
-from tests.fake_viseca import FakeConfig, FakeViseca
+from tests.fake_viseca import FakeConfig, FakeViseca, judging_pack
 
 REPO = Path(__file__).resolve().parents[2]
 ALL_STUBS = {"implementations": stubs.STUBS, "stubbed": frozenset(stubs.STUBS)}
@@ -343,9 +353,9 @@ def test_the_first_boot_reads_the_event_feed_from_0_and_stores_the_cursor(
             assert worker.events_cursor == 0 and stored_cursor(db) is None
             _, run_id = await start_run(client, worker, "SCEN0001")
             await wait_until(lambda: all(a.decisions for a in fake.runs[run_id].auths))
-            await wait_until(lambda: stored_cursor(db) == len(fake.feed) >= 10)
+            # The worker stores the cursor, then takes it in memory: wait for both, not the store alone.
+            await wait_until(lambda: worker.events_cursor == stored_cursor(db) == len(fake.feed) >= 10)
             assert feed[0][0] == 0
-            assert worker.events_cursor == stored_cursor(db)
 
     asyncio.run(scenario())
 
@@ -417,6 +427,11 @@ def test_an_unanswered_step_up_is_declined_at_the_window(db: Engine, history: St
             assert entry.reserved_chf == 0.0 and entry.spent_chf == 0.0
             assert (closed.decision, closed.uncertain_outcome, closed.status) == ("uncertain", "expired", "final")
             assert closed.resolved_by == "timeout" and closed.deadline_at is None
+            # rules.md Q2: the stored and served message is re-rendered with the configured window
+            assert pending.message != closed.message
+            assert entry.message == closed.message == "Expired: no answer within 1 s; nothing was approved."
+            assert entry.counterfactual is None and closed.counterfactual is None
+            assert entry.explanation_source == closed.explanation_source == pending.explanation_source
             # served again on every poll while it waited: nothing more posted, nothing counted
             assert auth.step_up_serves > 0 and len(auth.decisions) == 1
             assert worker.run_status(run_id).redeliveries == 0  # type: ignore[union-attr]
@@ -436,6 +451,8 @@ async def closed_by_the_window(
     assert (entry.final, entry.uncertain_outcome, entry.resolved_by) == (True, "expired", "timeout")
     assert entry.reserved_chf == 0.0 and entry.spent_chf == 0.0
     assert (seen[1].uncertain_outcome, seen[1].resolved_by) == ("expired", "timeout")
+    assert entry.message == seen[1].message == expired_message(1.0) and seen[1].counterfactual is None
+    assert seen[1].explanation_source == seen[0].explanation_source
     assert auth.status == "declined" and auth.platform_expired
     assert worker.status().last_error is None and worker.status().pending_step_ups == 0
     return auth, entry
@@ -841,3 +858,32 @@ def test_start_reseeds_history_when_viseca_serves_a_different_file(
     assert "RE-SEEDED authorization_history: 4696 rows" in caplog.text
     with session(db) as s:
         assert s.scalar(select(func.count()).select_from(AuthorizationHistory)) == 4696
+
+
+def test_start_syncs_a_served_superset_of_the_reference_tables_once(
+    db: Engine, history: StoreHistoryIndex, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def scenario(**options: Any) -> VisecaWorker:
+        async with harness(db, fast(**judging_pack()), **options) as (_, _, worker):
+            await worker.start()
+            return worker
+
+    caplog.set_level("INFO", logger="oneguard.viseca.worker")
+    worker = asyncio.run(scenario(history=history))
+    added = {t.table: t.inserted for t in worker.served_tables if t.changed}
+    assert added == {"customers": 1, "accounts": 1, "cards": 1, "merchants": 1, "items": 1, "scenario_catalogue": 1}
+    assert "reference table customers          served  21, store  20 ->  21 rows (1 added, 0 updated)" in caplog.text
+    assert "reference tables not served, kept as stored: scenario_authorities" in caplog.text
+    # the in-memory history index was reloaded with the served merchant
+    assert worker.history is not history
+    assert worker.history.merchant_names(["ME9001"]) == {"ME9001": "Served Corner Shop"}
+    with session(db) as s:
+        assert s.get(Card, "CA9001") is not None
+        assert s.get(ScenarioCatalogue, "SCEN0000") is not None  # the local pack's rows are kept
+        assert s.scalar(select(func.count()).select_from(AuthorizationHistory)) == 4701
+
+    caplog.clear()
+    worker = asyncio.run(scenario(history=history))
+    assert [t.table for t in worker.served_tables if t.changed] == []
+    assert worker.history is history  # nothing changed: nothing reloaded
+    assert "reference table customers          served  21, store  21 ->  21 rows (0 added, 0 updated), unchanged" in caplog.text

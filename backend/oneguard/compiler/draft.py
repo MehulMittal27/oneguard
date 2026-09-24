@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from oneguard.engine.policy import COUNT_FIELD
 from oneguard.engine.types import Currency, Rule, RuleKind, RuleOperator
 
 # rules.md M1: fixed rates to CHF.
@@ -30,8 +31,8 @@ FX_TO_CHF: dict[str, Decimal] = {
 ITEM_CATEGORIES: tuple[str, ...] = (
     "books", "clothing", "cosmetics", "dining", "electronics", "food_delivery", "fuel",
     "gift_card", "groceries", "home_improvement", "hotel", "household", "membership",
-    "sporting_goods", "subscriptions", "transport",
-)
+    "photography", "sporting_goods", "subscriptions", "transport", "travel",
+)  # the served pack's items (judging-pack.md) add photography and travel
 MERCHANT_CATEGORIES: tuple[str, ...] = (
     "books", "clothing", "dining", "electronics", "entertainment", "food_delivery", "fuel",
     "groceries", "health", "home_improvement", "hotel", "household", "kids_family",
@@ -53,6 +54,7 @@ FIELDS: dict[str, tuple[ValueType, tuple[str, ...], RuleKind]] = {
     "items[].unit_price_chf": ("number", ("<", "<=", "="), "amount"),
     "items[].quantity": ("number", ("<", "<=", "=", ">=", ">"), "item"),
     "cart.quantity": ("number", ("<", "<=", "=", ">=", ">"), "item"),
+    COUNT_FIELD: ("number", ("<", "<="), "period"),  # purchases per period_days on this card
     "items[].item_category": ("list", ("in", "not_in"), "item"),
     "items[].size_eu": ("number", ("=",), "item"),
     "items[].size_letter": ("text", ("=",), "item"),
@@ -160,6 +162,19 @@ def _limit_text(spec: RuleSpec, subject: str, tail: str) -> str:
     return text
 
 
+_COUNT_WORDS = ("no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten")
+
+
+def count_text(spec: RuleSpec) -> str:
+    """"At most one order a day", "Fewer than three orders a week", "At most 4 orders in any 30 days"."""
+    n = int(spec.value)
+    word = _COUNT_WORDS[n] if 0 <= n < len(_COUNT_WORDS) else str(n)
+    days = spec.period_days or 0
+    per = {1: "a day", 7: "a week"}.get(days, f"in any {days} days")
+    bound = "Fewer than" if spec.operator == "<" else "At most"
+    return f"{bound} {word} order{'' if n == 1 else 's'} {per}"
+
+
 def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
     """Plain-language RuleCheck text for one typed rule."""
     f, op, v = spec.field, spec.operator, spec.value
@@ -169,8 +184,10 @@ def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
         text = _limit_text(spec, "Total", " per order")
     elif f == "items[].unit_price_chf":
         text = _limit_text(spec, "Each item", "")
+    elif f == COUNT_FIELD:
+        text = count_text(spec)
     elif f in ("cart.quantity", "items[].quantity"):
-        what = requested_item or "items"
+        what = requested_item or ("item" if v == 1 else "items")
         bound = {"=": "Exactly", "<=": "At most", "<": "Fewer than", ">=": "At least", ">": "More than"}[op]
         text = f"{bound} {fmt_amount(v)} {what}" + (" per cart line" if f == "items[].quantity" else "")
     elif f == "items[].item_category":
@@ -243,7 +260,7 @@ def _base_id(spec: RuleSpec) -> str:
     if f == "unverifiable":
         return "U1"
     return {
-        "cart.quantity": "C12-qty", "items[].quantity": "C12-qty",
+        "cart.quantity": "C12-qty", "items[].quantity": "C12-qty", COUNT_FIELD: "C12-count",
         "items[].unit_price_chf": "C12-price", "merchant.merchant_country": "C12-country",
         "authorization.delivery_by": "C12-delivery", "authorization.weekday": "C12-day",
         "authorization.local_hour": "C12-hour", "cart.recurring": "C12-recurring",
