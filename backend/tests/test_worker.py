@@ -30,7 +30,14 @@ from oneguard.engine.types import Policy
 from oneguard.store import seed as seed_module
 from oneguard.store.db import make_engine, session
 from oneguard.store.history import StoreHistoryIndex
-from oneguard.store.schema import AuthorizationHistory, EventRaw, Run, WorkerState
+from oneguard.store.schema import (
+    AuthorizationHistory,
+    Card,
+    EventRaw,
+    Run,
+    ScenarioCatalogue,
+    WorkerState,
+)
 from oneguard.viseca import worker as worker_module
 from oneguard.viseca.client import VisecaClient, VisecaError, store_sink
 from oneguard.viseca.worker import (
@@ -42,7 +49,7 @@ from oneguard.viseca.worker import (
     overrun_setting,
     timeout_message,
 )
-from tests.fake_viseca import FakeConfig, FakeViseca
+from tests.fake_viseca import FakeConfig, FakeViseca, judging_pack
 
 REPO = Path(__file__).resolve().parents[2]
 ALL_STUBS = {"implementations": stubs.STUBS, "stubbed": frozenset(stubs.STUBS)}
@@ -841,3 +848,32 @@ def test_start_reseeds_history_when_viseca_serves_a_different_file(
     assert "RE-SEEDED authorization_history: 4696 rows" in caplog.text
     with session(db) as s:
         assert s.scalar(select(func.count()).select_from(AuthorizationHistory)) == 4696
+
+
+def test_start_syncs_a_served_superset_of_the_reference_tables_once(
+    db: Engine, history: StoreHistoryIndex, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def scenario(**options: Any) -> VisecaWorker:
+        async with harness(db, fast(**judging_pack()), **options) as (_, _, worker):
+            await worker.start()
+            return worker
+
+    caplog.set_level("INFO", logger="oneguard.viseca.worker")
+    worker = asyncio.run(scenario(history=history))
+    added = {t.table: t.inserted for t in worker.served_tables if t.changed}
+    assert added == {"customers": 1, "accounts": 1, "cards": 1, "merchants": 1, "items": 1, "scenario_catalogue": 1}
+    assert "reference table customers          served  21, store  20 ->  21 rows (1 added, 0 updated)" in caplog.text
+    assert "reference tables not served, kept as stored: scenario_authorities" in caplog.text
+    # the in-memory history index was reloaded with the served merchant
+    assert worker.history is not history
+    assert worker.history.merchant_names(["ME9001"]) == {"ME9001": "Served Corner Shop"}
+    with session(db) as s:
+        assert s.get(Card, "CA9001") is not None
+        assert s.get(ScenarioCatalogue, "SCEN0000") is not None  # the local pack's rows are kept
+        assert s.scalar(select(func.count()).select_from(AuthorizationHistory)) == 4701
+
+    caplog.clear()
+    worker = asyncio.run(scenario(history=history))
+    assert [t.table for t in worker.served_tables if t.changed] == []
+    assert worker.history is history  # nothing changed: nothing reloaded
+    assert "reference table customers          served  21, store  21 ->  21 rows (0 added, 0 updated), unchanged" in caplog.text

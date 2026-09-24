@@ -68,8 +68,9 @@ cp frontend/.env.example frontend/.env   # VITE_USE_MOCKS=true serves fixtures, 
 cd frontend && npm install && npm run dev
 ```
 
-Live run (event day): `make demo-live SCEN=SCEN0002` creates the mandate from the
-scenario instruction, starts the Viseca run and streams progress.
+Live run (event day): `make demo-live SCEN=SCEN0135` creates the mandate from the
+scenario instruction, starts the Viseca run and streams progress (default `SCEN0101`).
+The scenarios the sandbox serves are in `docs/judging-pack.md`.
 
 ## Layout
 
