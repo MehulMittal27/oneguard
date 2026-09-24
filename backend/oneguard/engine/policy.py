@@ -29,7 +29,8 @@ decide.py and explain.py both see them (P2 request to P1: one line in pipeline.p
 then decide.py treats a period rule with no result as unknown (P3).
 
 Pure function: no I/O, no CSV, no history lookups. Familiarity (C9) is read from
-``facts.merchant_known``, set by the pipeline from the LedgerView.
+``facts.merchant_known``, set by the pipeline from the LedgerView; ``add_ledger_results``
+makes it unknown when the customer has no purchase history yet (rules.md C9).
 """
 from __future__ import annotations
 
@@ -40,6 +41,7 @@ from typing import Any
 
 from oneguard.engine.facts import CONTRADICTORY, to_chf
 from oneguard.engine.interfaces import register
+from oneguard.engine.ledger_base import confirmation_key, shop_confirmation_key
 from oneguard.engine.types import (
     STEP1_RULE_IDS,
     Facts,
@@ -54,6 +56,10 @@ from oneguard.engine.types import (
 # Marker decide.py uses for M5: a period limit that fails only because of reservations.
 RESERVATION_ONLY = "fails only because of pending reservations"
 CONFIRMED = "You confirmed this"  # detail prefix of a rule passed from a remembered answer
+# C9 when the customer has no approved purchase at all, in history or in this run.
+NO_HISTORY = ("You have no purchase history yet, so I can't tell whether you've used this shop"
+              " - approve once and I'll remember it")
+KNOWN_SHOP_FIELDS = ("merchant.known_shop", "merchant.familiar_on_card")  # api-contract §3.3: the same check
 
 _NUMERIC_FIELDS = {
     "authorization.billing_amount_chf",
@@ -452,8 +458,23 @@ def is_unverifiable(rule: Rule, facts: Facts, policy: Policy) -> bool:
     return not rule.field or _facts_for(rule.field, facts, policy) is None
 
 
-def _confirmation_key(rule_id: str, merchant_id: str, item_id: str) -> str:
-    return f"{rule_id}|{merchant_id}|{item_id}"  # same format as ledger.confirmation_key
+def checks_known_shop(result: RuleResult, rule: Rule | None) -> bool:
+    """C9: the ``requires_known_shop`` flag's result, or a typed rule on a known-shop field."""
+    return rule.field in KNOWN_SHOP_FIELDS if rule is not None else result.rule_id == "C9"
+
+
+def _known_shop_with_ledger(res: RuleResult, facts: Facts, ledger: LedgerView, confirmed: set[str]) -> RuleResult:
+    """C9 with the ledger. No purchase history yet (no approved purchase in history or in
+    this run, on any card) -> unknown, not a fail: the uncertainty setting decides. An
+    unknown passes when the customer already approved this rule at this shop, whatever
+    the items (ask once, then remember the shop)."""
+    if res.outcome == "pass":
+        return res
+    if not ledger.known_merchant_ids:
+        res = RuleResult(rule_id=res.rule_id, outcome="unknown", source="history", detail=NO_HISTORY)
+    if res.outcome == "unknown" and shop_confirmation_key(res.rule_id, facts.merchant_id) in confirmed:
+        return RuleResult(rule_id=res.rule_id, outcome="pass", source="history", detail=f"{CONFIRMED} shop earlier")
+    return res
 
 
 def add_ledger_results(
@@ -464,6 +485,7 @@ def add_ledger_results(
     - C2: one result per period rule, from the LedgerView's spent and reserved amounts
       (M4, M5). The view covers one window (the shortest period); a period rule with a
       different window is unknown rather than checked against the wrong numbers (P3).
+    - C9: unknown with no purchase history yet; remembered per shop (``_known_shop_with_ledger``).
     - Ask once, then remember: an unknown restriction no data can check passes when the
       customer already approved it for this shop and every item in the cart.
     """
@@ -472,9 +494,11 @@ def add_ledger_results(
     out: list[RuleResult] = []
     for res in rules:
         rule = by_id.get(res.rule_id)
-        if (res.outcome == "unknown" and rule is not None and confirmed
+        if checks_known_shop(res, rule):
+            res = _known_shop_with_ledger(res, facts, ledger, confirmed)
+        elif (res.outcome == "unknown" and rule is not None and confirmed
                 and is_unverifiable(rule, facts, policy)
-                and all(_confirmation_key(rule.id, facts.merchant_id, ln.item_id) in confirmed
+                and all(confirmation_key(rule.id, facts.merchant_id, ln.item_id) in confirmed
                         for ln in facts.items)):
             res = RuleResult(rule_id=res.rule_id, outcome="pass", source="history",
                              detail=f'{CONFIRMED} for this shop and item earlier: "{rule.text or rule.id}"')

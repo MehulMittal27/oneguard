@@ -27,9 +27,11 @@ watch does.
 
 Remembered confirmations (PM decision "ask once, then remember"): when the customer
 approves a step-up, each of its ``deciding_ids`` is remembered for that shop and those
-items. For a live run, answers from earlier live runs under the same mandate count too;
-a new or changed instruction (new mandate) starts with no memory. Exposed as
-``LedgerView.confirmed_keys``; ``decide.py`` only uses it for restrictions no data can check.
+items, and for that shop whatever the items (``ledger_base.confirmation_keys``). For a
+live run, answers from earlier live runs under the same mandate count too; a new or
+changed instruction (new mandate) starts with no memory. Exposed as
+``LedgerView.confirmed_keys``; ``policy.add_ledger_results`` reads the shop keys only for
+a known-shop check (C9) and the item keys only for restrictions no data can check.
 
 Writes commit per call, so a decision is durable before it is posted to Viseca.
 """
@@ -46,7 +48,7 @@ from sqlalchemy.orm import Session
 from oneguard.engine.ledger_base import (
     PRIOR_WINDOW,
     LedgerEntry,
-    confirmation_key,
+    confirmation_keys,
     is_final_approval,
     known_merchant_names,
 )
@@ -222,8 +224,7 @@ class StoreLedger(LedgerBase):
         earlier = self._earlier_live_runs(run_id, "mandate")
         if earlier:
             rows += self.session.scalars(select(Decision).where(Decision.run_id.in_(earlier), *customer_ok))
-        return {confirmation_key(rule_id, d.merchant_id, item_id)
-                for d in rows for rule_id in d.deciding_ids for item_id in d.item_ids}
+        return {key for d in rows for key in confirmation_keys(d.deciding_ids, d.merchant_id, d.item_ids)}
 
     # --- writes (each commits: a decision is durable before it is posted) ---------------
     def record(self, entry: LedgerEntry) -> LedgerEntry:
