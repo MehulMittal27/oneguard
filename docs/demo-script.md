@@ -105,7 +105,9 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
    `status: "active"`. If a draft misses a check from the table (the rule-based fallback,
    for one, reads no item and no "nothing added" check for CA0039), do not confirm it: run
    `draft` again. The replay decides with this mandate, and the matrix outcomes assume those
-   checks. A card that already has an active policy from a rehearsal needs nothing; CA0023
+   checks. Keep this CA0039 check as a safety line even once the requested-item compiler
+   fix (in progress on `p4/requested-item`) lands: that fix should make the draft pass on
+   its own. A card that already has an active policy from a rehearsal needs nothing; CA0023
    is revoked on stage, so after each rehearsal it needs a new one.
 
 6. **Rehearsal replay** (at least 3 minutes before going on stage, so its step-ups have
@@ -145,11 +147,11 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
 | # | Beat | Signed in as | Time | Clock |
 |---|---|---|---:|---:|
 | 1 | Policy screen, typed live | Alex Meier (CU0001), card CA0001 | 0:50 | 0:50 |
-| 2 | Manipulated agent, SCEN0004 replay | Oliver Graf (CU0019), card CA0039 | 1:25 | 2:15 |
-| 3 | Session integrity + revoke, SCEN0003 replay | Giulia Rossi (CU0012), card CA0023 | 2:00 | 4:15 |
-| 4 | Chaos toggle off, same outcomes, /healthz | Oliver Graf (CU0019), card CA0039 | 0:35 | 4:50 |
-| 5 | Live judging run on record | Hannah Chen (CU1415), card CA1643 | 0:40 | 5:30 |
-| 6 | Closing | (none) | 0:30 | 6:00 |
+| 2 | Manipulated agent, SCEN0004 replay | Oliver Graf (CU0019), card CA0039 | 1:15 | 2:05 |
+| 3 | Session integrity + revoke, SCEN0003 replay | Giulia Rossi (CU0012), card CA0023 | 2:40 | 4:45 |
+| 4 | Chaos toggle off, same outcomes, /healthz | Oliver Graf (CU0019), card CA0039 | 0:30 | 5:15 |
+| 5 | Live judging run on record | Hannah Chen (CU1415), card CA1643 | 0:25 | 5:40 |
+| 6 | Closing | (none) | 0:20 | 6:00 |
 
 ### 1. Policy (0:50) - Alex Meier, CA0001, SCEN0001's instruction
 
@@ -181,7 +183,7 @@ CHF 120 per order and CHF 300 per 7 days, press **Review checks**, then **Confir
 and say the form path uses no model at all. If "AI reading unavailable - rule-based reading
 used" shows, the fallback compiler read it; confirm anyway.
 
-### 2. Manipulated agent (1:25) - Oliver Graf, CA0039, SCEN0004
+### 2. Manipulated agent (1:15) - Oliver Graf, CA0039, SCEN0004
 
 **Sign in**: **Account menu** → **Log out** → **+ 27 more customers** → Oliver Graf →
 **Done** → **Continue as Oliver Graf**. Open **Activity**.
@@ -221,47 +223,48 @@ timeout; say "no answer is never a yes" and move on. If the replay does not star
 says "no replay running" or curl returns an error), repeat the curl once; if it still fails,
 open the rehearsal run under **Earlier runs (n)** and walk the same rows there.
 
-### 3. Session integrity and control (2:00) - Giulia Rossi, CA0023, SCEN0003
+### 3. Session integrity and control (2:40) - Giulia Rossi, CA0023, SCEN0003
 
 **Sign in**: **Log out** → **+ 27 more customers** → Giulia Rossi → **Done** →
 **Continue as Giulia Rossi**. Open **Activity**.
 
-**Operator**:
+**Operator** (send it as soon as the customer presses **Log out**; the first two purchases
+are plain approvals and can land while the customer signs in):
 
 ```sh
 curl -s -X POST $API/api/dev/replay/restart -H 'Content-Type: application/json' \
-  -d '{"scenario_id":"SCEN0003","card_id":"CA0023","speed_ms":10000}' | jq -c
+  -d '{"scenario_id":"SCEN0003","card_id":"CA0023","speed_ms":15000}' | jq -c
 ```
 
-Eleven purchases, 10 s apart, 100 s in total. Seconds after the curl:
+Eleven purchases, 15 s apart, 150 s in total. Seconds after the curl:
 
 | t | Row (shop, CHF) | Outcome | Expected message | Customer / presenter |
 |---:|---|---|---|---|
 | 0 | Loom and Pine 145.00 (AU0024) | approve | Approved CHF 145.00: it is within the limits you set. | |
-| 10 | Milano Weave 189.05 (AU0025) | approve | Approved CHF 189.05: it is within the limits you set. | EUR converted to CHF |
-| 20 | Loom and Pine 165.00 (AU0026) | step_up | Waiting for you CHF 165.00: Made from a device you have not used before. | **Approvals** → **Reject** ("not my phone") |
-| 30-60 | RainThread 232.00, Cobalt Coatworks 245.00, Thames Weave 245.28, Cobalt Coatworks 248.00 (AU0027-AU0030) | decline ×4 | Declined CHF 232.00: You haven't bought from RainThread before. (and the same for each shop) | open one: the banner **Session under watch**, then **Session paused** from Thames Weave on ("Several warning signs at once; the next purchase needs your OK before it goes through.") |
-| 70 | Loom and Pine 95.00 (AU0031) | step_up | Waiting for you CHF 95.00: After recent unusual attempts on this card, we check with you until you approve one. | known device and shop, asked once: **Approvals** → **Approve** at once, within 10 s |
-| 80 | Milano Weave 247.00 (AU0032) | approve | Approved CHF 247.00: it is within the limits you set. (approve branch) | watch off after the customer's yes: escalate, check once, relax |
-| 80-90 | | | | **Revoke** now: **Accounts** → Card CA0023 → **Revoke** → sheet "Revoke this policy?" → **Revoke** |
-| 90, 100 | RainThread 138.00, Loom and Pine 268.00 (AU0033, AU0034) | decline | Declined: you revoked this policy, so nothing is approved under it. (after revoke) | counterfactual "Confirm a new policy to let purchases like this go ahead." |
+| 15 | Milano Weave 189.05 (AU0025) | approve | Approved CHF 189.05: it is within the limits you set. | EUR converted to CHF |
+| 30 | Loom and Pine 165.00 (AU0026) | step_up | Waiting for you CHF 165.00: Made from a device you have not used before. | **Approvals** → **Reject** ("not my phone") |
+| 45-90 | RainThread 232.00, Cobalt Coatworks 245.00, Thames Weave 245.28, Cobalt Coatworks 248.00 (AU0027-AU0030) | decline ×4 | Declined CHF 232.00: You haven't bought from RainThread before. (and the same for each shop) | open one: the banner **Session under watch**, then **Session paused** from Thames Weave on ("Several warning signs at once; the next purchase needs your OK before it goes through.") |
+| 105 | Loom and Pine 95.00 (AU0031) | step_up | Waiting for you CHF 95.00: After recent unusual attempts on this card, we check with you until you approve one. | known device and shop, asked once: **Approvals** → **Approve** at once, within 15 s |
+| 120 | Milano Weave 247.00 (AU0032) | approve | Approved CHF 247.00: it is within the limits you set. (approve branch) | watch off after the customer's yes: escalate, check once, relax |
+| 120-135 | | | | **Revoke** now (15 s): **Accounts** → Card CA0023 → **Revoke** → sheet "Revoke this policy?" → **Revoke** |
+| 135, 150 | RainThread 138.00, Loom and Pine 268.00 (AU0033, AU0034) | decline | Declined: you revoked this policy, so nothing is approved under it. (after revoke) | counterfactual "Confirm a new policy to let purchases like this go ahead." |
 
 **Say**: the burst was stopped by the customer's own rule (known shops only), the session
 watch made the next ordinary purchase ask once, and one yes relaxed it. Revoke takes effect
 on the very next purchase.
 
 **Fallback**:
-- AU0031 not answered before AU0032 arrives: AU0032 asks again ("Waiting for you CHF
+- AU0031 not answered within 15 s, before AU0032 arrives: AU0032 asks again ("Waiting for you CHF
   247.00: After recent unusual attempts on this card, we check with you until you approve
   one.", the matrix row). Approve it and say "a no or a timeout keeps the watch on".
 - Revoke lands after RainThread 138.00: that row is declined by the known-shops rule ("You
-  haven't bought from RainThread before."); point at Loom and Pine 268.00 instead. Revoke
+  haven't bought from RainThread before."); point at Loom and Pine 268.00, 15 s later, instead. Revoke
   lands after both: show Card CA0023 "Revoked" and the Accounts row "Policy revoked. The
   agent can't spend here." and say the next purchase is declined.
 - Revoke from **Approvals** is also possible (**Revoke policy** under a waiting purchase),
   but only while one is waiting.
 
-### 4. Predictable without AI (0:35) - Oliver Graf, CA0039
+### 4. Predictable without AI (0:30) - Oliver Graf, CA0039
 
 **Sign in**: **Log out** → **+ 27 more customers** → Oliver Graf → **Done** →
 **Continue as Oliver Graf** → **Activity**.
@@ -289,7 +292,7 @@ Press **Soft signals: off** again so it reads **Soft signals: on** before leavin
 (more cautious); say that. If `/healthz` shows `model_loaded: false`, say Laya did not load
 on this deploy and the soft signal fell back to keywords; the decisions are the same.
 
-### 5. The sandbox path: live judging run on record (0:40) - Hannah Chen, CA1643, SCEN0104
+### 5. The sandbox path: live judging run on record (0:25) - Hannah Chen, CA1643, SCEN0104
 
 **Sign in**: **Log out** → Hannah Chen is on the main list (**Live**) → **Continue as Hannah
 Chen** → **Activity**.
@@ -307,7 +310,7 @@ run holds the team's single delivery slot while a step-up waits.
 **Fallback**: if the newest run is not SCEN0104's record run, open it under
 **Earlier runs (n)** (Card CA1643).
 
-### 6. Closing (0:30)
+### 6. Closing (0:20)
 
 On the GitHub tab:
 
@@ -323,7 +326,7 @@ On the GitHub tab:
 
 ## Record: live judging runs (off stage)
 
-- **When**: after the last deploy of the day and before the pre-show checklist; never
+- **When**: on the captain's word, after all deploys and before the pre-show checklist; never
   during a deploy (a restart drops the worker mid-run), never during the show.
 - **One at a time**: `make demo-live SCEN=SCEN0104` (C1 → C2 → D3 on the cloud app; it
   prints `Sign in as Hannah Chen (CU1415, card CA1643)` and follows the run). It refuses
