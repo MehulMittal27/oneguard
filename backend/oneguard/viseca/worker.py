@@ -648,9 +648,10 @@ class VisecaWorker:
         self._policies[viseca_mandate_id] = policy
 
     def set_models(self, *, signals_enabled: bool, provider: Provider | None) -> None:
-        """Soft signals and the tier-2 provider for every later decision, in every run (D5).
+        """Soft signals and the tier-2/3 provider for every later decision, in every run (D5).
 
-        ``engine_version`` follows, so a decision records whether signals were on.
+        ``engine_version`` follows, so a decision records whether signals were on. With no
+        provider, tier 3 is not scheduled for decisions posted from now on.
         """
         self._signals_enabled = signals_enabled
         self._provider = provider
