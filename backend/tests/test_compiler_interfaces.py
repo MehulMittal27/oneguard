@@ -47,9 +47,10 @@ def test_only_an_upper_bound_is_a_per_order_cap():
         return Rule(id="C1", field="authorization.billing_amount_chf", operator=operator, value=20, currency="CHF",
                     scope="purchase", text=f"Total {operator} CHF 20", source="inferred", kind="amount")
 
-    assert lint_accepted_ids([amount(">=")], ["C1"])[0] == ["per_order_limit"]
-    assert lint_accepted_ids([amount("<")], ["C1"]) == ([], [])
-    assert lint_accepted_ids([amount("<=")], ["C1"]) == ([], [])
+    for floor in (">=", ">"):
+        assert lint_accepted_ids([amount(floor)], ["C1"])[0] == ["per_order_limit"]
+    for cap in ("<", "<=", "="):  # "=" is an exact price, e.g. the gym's "same price as last time"
+        assert lint_accepted_ids([amount(cap)], ["C1"]) == ([], [])
 
 
 def _row(n: int, day: int, chf: float, merchant: str) -> HistoryRow:
