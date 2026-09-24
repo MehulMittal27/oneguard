@@ -1,27 +1,35 @@
 """An in-process fake of the Viseca sandbox for worker tests.
 
 Implements every endpoint in vendor/viseca-2026/technical_details.md ("All API calls in
-one place") over the offline replay events of ``oneguard.replay.events`` (P5), with the
-live-run behaviour the worker depends on:
+one place") over the offline replay events of ``oneguard.replay.events`` (P5). Response
+shapes, status values and error codes follow the live sandbox as captured on 24 Sep 2026
+(docs/decisions.md); where the live run did not show a case (an ``approve`` reply, a
+successful ``/resolve`` or reset) the shape is our best guess and says so. Live-run
+behaviour the worker depends on:
 
 - a run queues its purchases one at a time: the next is queued when the previous gets a
   decision (or misses its deadline, which the platform records as a decline);
 - ``deadline_at`` is set when a request is queued (``decision_deadline_s``), live ids are
   fresh per run and ``related_authorization_id`` is rewritten to the live id;
 - ``context.approved_spend_in_period_chf`` is recomputed from the run's approvals;
-- step-ups wait for ``/resolve``; nothing expires them here, so the worker must;
-- knobs for redelivery, corrupt events, a served history file with another hash, and a
-  context / event-feed that disagrees with the worker.
+- a step-up is served again on every poll (envelope ``status: "pending_step_up"``, no
+  long-poll wait) while it waits for ``/resolve``; queued requests are served first
+  (the live run had only one purchase, so this order is assumed);
+- the platform expires a step-up itself at ``step_up_expires_at`` (accepted time + the
+  human window): decline, ``decision_source: "timeout"``; a later ``/resolve`` is 409
+  ``authorization_not_pending``;
+- ``/v1/reference-data`` serves no history-file hash;
+- knobs for redelivery, corrupt events, a served history file that differs, a
+  context / event-feed that disagrees with the worker, and whether team reset is enabled.
 
-Responses are plain JSON objects; errors use the ``{"error": {"code", "message"}}``
-envelope. Everything is on the real clock except the purchases' simulated timestamps.
+Errors use the ``{"error": {"code", "message", "details"?}}`` envelope. Everything is on
+the real clock except the purchases' simulated timestamps.
 """
 
 from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
 import secrets
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -66,6 +74,8 @@ class FakeConfig:
     """Source id → status the event feed reports for it, whatever really happened."""
     history_csv: str | None = None
     """History file served instead of data/authorization_history.csv."""
+    reset_enabled: bool = True
+    """``features.reset``; the live sandbox has it off (403 ``reset_disabled``)."""
 
 
 @dataclass
@@ -75,15 +85,23 @@ class FakeAuth:
     source_id: str
     template: dict[str, Any]
     status: str = "waiting"  # waiting, queued, delivered, pending, approved, declined
+    event_id: int = 0
+    """Feed id of its ``authorization.request`` event, repeated in every envelope."""
     queued_at: datetime | None = None
     deadline_at: datetime | None = None
     deliveries: int = 0
+    """Deliveries of the request to decide (not the re-serves of a waiting step-up)."""
+    step_up_serves: int = 0
+    """Times it was served again as ``pending_step_up``."""
     redeliver_pending: bool = False
     event: dict[str, Any] | None = None
     decisions: list[dict[str, Any]] = field(default_factory=list)
     accepted_at: datetime | None = None
+    expires_at: datetime | None = None
     resolutions: list[dict[str, Any]] = field(default_factory=list)
+    """Every /resolve attempt; a refused one carries ``rejected: True``."""
     auto_declined: bool = False
+    platform_expired: bool = False
 
 
 @dataclass
@@ -94,8 +112,26 @@ class FakeRun:
     auths: list[FakeAuth]
 
 
-def _error(status: int, code: str, message: str) -> JSONResponse:
-    return JSONResponse({"error": {"code": code, "message": message}}, status_code=status)
+def _error(status: int, code: str, message: str, details: list[Any] | None = None) -> JSONResponse:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if details is not None:
+        error["details"] = details
+    return JSONResponse({"error": error}, status_code=status)
+
+
+def _missing(*loc: str) -> JSONResponse:
+    detail = {"type": "missing", "loc": ["body", *loc], "msg": "Field required", "input": None}
+    return _error(422, "validation_error", "Request validation failed", [detail])
+
+
+PLATFORM_STATUS = {
+    "queued": "awaiting_decision",
+    "delivered": "awaiting_decision",
+    "pending": "pending_step_up",
+    "approved": "approved",
+    "declined": "declined",
+}
+"""Our internal auth status → the status the live sandbox reports."""
 
 
 def _now() -> datetime:
@@ -124,6 +160,7 @@ class FakeViseca:
         self.runs: dict[str, FakeRun] = {}
         self.auths: dict[str, FakeAuth] = {}
         self.feed: list[dict[str, Any]] = []
+        self.resets: list[dict[str, Any]] = []
         self.polls = 0
         self.authorization_headers: list[str] = []
 
@@ -171,23 +208,58 @@ class FakeViseca:
         spend = self._approved_spend(run, auth) + self.config.context_spend_offset
         event["context"]["approved_spend_in_period_chf"] = round(spend, 2)
         auth.event = event
+        auth.event_id = self._feed_add(
+            auth.run_id, "authorization.request", auth.live_id, "awaiting_decision", event, now
+        )
 
     def _queue_next(self, run: FakeRun, after: FakeAuth) -> None:
         index = run.auths.index(after)
         if index + 1 < len(run.auths) and run.auths[index + 1].status == "waiting":
             self._queue(run, run.auths[index + 1])
 
-    def _feed_event(self, auth: FakeAuth, kind: str, status: str) -> None:
-        status = self.config.feed_status_override.get(auth.source_id, status)
+    def _feed_add(
+        self,
+        run_id: str,
+        kind: str,
+        live_id: str | None,
+        status: str,
+        data: dict[str, Any],
+        at: datetime | None = None,
+    ) -> int:
+        event_id = len(self.feed) + 1
         self.feed.append(
             {
-                "cursor": len(self.feed) + 1,
+                "event_id": event_id,
                 "type": kind,
-                "run_id": auth.run_id,
-                "authorization_id": auth.live_id,
+                "run_id": run_id,
+                "authorization_id": live_id,
                 "status": status,
-                "occurred_at": _iso(_now()),
+                "occurred_at": _iso(at or _now()),
+                "data": copy.deepcopy(data),
             }
+        )
+        return event_id
+
+    def _feed_decision(self, auth: FakeAuth, data: dict[str, Any]) -> None:
+        status = self.config.feed_status_override.get(auth.source_id, PLATFORM_STATUS[auth.status])
+        self._feed_add(auth.run_id, "authorization.decision", auth.live_id, status, data)
+        run = self.runs[auth.run_id]
+        if all(a.status in ("approved", "declined") for a in run.auths):
+            self._feed_add(run.run_id, "scenario.completed", None, "completed", self._run_view(run))
+
+    def _platform_decision(self, auth: FakeAuth, reason: str, message: str) -> None:
+        self._feed_decision(
+            auth,
+            {
+                "type": "authorization.decision",
+                "authorization_id": auth.live_id,
+                "decision": "decline",
+                "reason_codes": [reason],
+                "customer_message": message,
+                "evidence": [],
+                "engine_version": None,
+                "decision_source": "timeout",
+            },
         )
 
     def _tick(self) -> None:
@@ -197,33 +269,43 @@ class FakeViseca:
                 if auth.status in ("queued", "delivered") and auth.deadline_at and now > auth.deadline_at:
                     auth.status = "declined"
                     auth.auto_declined = True
-                    self._feed_event(auth, "authorization.expired", "declined")
+                    self._platform_decision(auth, "decision_timeout", "No decision arrived in time.")
                     self._queue_next(run, auth)
+                elif auth.status == "pending" and auth.expires_at and now >= auth.expires_at:
+                    auth.status = "declined"
+                    auth.platform_expired = True
+                    self._platform_decision(auth, "step_up_expired", "The confirmation window expired.")
 
     def _next_ready(self) -> FakeAuth | None:
-        ready = [
-            a
-            for a in self.all_auths()
-            if a.status == "queued" or (a.redeliver_pending and a.status != "waiting")
-        ]
-        return min(ready, key=lambda a: a.queued_at or _now()) if ready else None
+        """A request to decide first; else a step-up still waiting for its answer."""
+        auths = self.all_auths()
+        ready = [a for a in auths if a.status == "queued" or (a.redeliver_pending and a.status != "waiting")]
+        if ready:
+            return min(ready, key=lambda a: a.queued_at or _now())
+        waiting = [a for a in auths if a.status == "pending"]
+        return min(waiting, key=lambda a: a.event_id) if waiting else None
 
     def _run_view(self, run: FakeRun) -> dict[str, Any]:
-        counts = {
-            "total": len(run.auths),
-            "queued": sum(a.status == "queued" for a in run.auths),
-            "delivered": sum(a.deliveries > 0 for a in run.auths),
-            "decided": sum(bool(a.decisions) or a.auto_declined for a in run.auths),
-            "pending_human": sum(a.status == "pending" for a in run.auths),
-            "final": sum(a.status in ("approved", "declined") for a in run.auths),
-        }
-        done = counts["final"] == counts["total"]
+        final = sum(a.status in ("approved", "declined") for a in run.auths)
         return {
             "run_id": run.run_id,
             "scenario_id": run.scenario_id,
             "mandate_id": run.mandate["mandate_id"],
-            "status": "completed" if done else "running",
-            "counters": counts,
+            "status": "completed" if final == len(run.auths) else "running",
+            "fixture_profiles": [
+                {
+                    "profile_id": run.auths[0].template["authorization"]["profile_id"],
+                    "customer_id": run.auths[0].template["mandate"]["customer_id"],
+                    "card_id": run.auths[0].template["authorization"]["card_id"],
+                }
+            ],
+            "generated_event_count": len(run.auths),
+            "delivered_event_count": sum(a.deliveries > 0 for a in run.auths),
+            "finalized_event_count": final,
+            "processed_event_count": sum(bool(a.decisions) or a.auto_declined for a in run.auths),
+            "pending_event_count": sum(a.status == "pending" for a in run.auths),
+            "queued_event_count": sum(a.status == "queued" for a in run.auths),
+            "platform_rejected_count": 0,
         }
 
     # App --------------------------------------------------------------------------------
@@ -242,44 +324,54 @@ class FakeViseca:
 
         @app.get("/healthz")
         async def healthz() -> dict[str, Any]:
-            return {"status": "ok", "version": "fake-viseca"}
+            return {"status": "ok", "service": "fake-viseca", "api_version": "0.1.0", "pack_version": "saw26"}
+
+        def catalogue() -> list[dict[str, Any]]:
+            return [
+                {
+                    "scenario_id": s["scenario_id"],
+                    "scenario_name": s["scenario_name"],
+                    "cardholder_instruction": s["cardholder_instruction"],
+                    "event_count": int(s["event_count"]),
+                }
+                for s in fake.pack.scenarios.values()
+            ]
 
         @app.get("/v1/bootstrap")
         async def bootstrap() -> dict[str, Any]:
             return {
-                "api_version": "fake",
-                "data_version": "saw26",
-                "scenarios": fake.pack.scenario_ids(),
-                "timeouts": {
-                    "decision_deadline_seconds": fake.config.decision_deadline_s,
-                    "human_window_seconds": fake.config.human_window_s,
-                    "long_poll_max_wait_seconds": 25,
+                "type": "bootstrap",
+                "api_version": "0.1.0",
+                "pack_version": "saw26",
+                "team_id": "team-fake",
+                "profile": {"profile_id": "PROFILE_AUTH0001", "scenario_id": "SCEN0000"},
+                "scenarios": catalogue(),
+                "limits": {
+                    "decision_timeout_seconds": fake.config.decision_deadline_s,
+                    "step_up_timeout_seconds": fake.config.human_window_s,
+                    "long_poll_max_seconds": 25,
                 },
-                "limits": {"max_active_runs": 10},
-                "features": {"team_reset": True},
+                "features": {"reset": fake.config.reset_enabled},
             }
 
         @app.get("/v1/reference-data")
         async def reference_data() -> dict[str, Any]:
-            text = fake.history_csv
             return {
-                "scenarios": [
-                    {
-                        "scenario_id": s["scenario_id"],
-                        "scenario_name": s["scenario_name"],
-                        "cardholder_instruction": s["cardholder_instruction"],
-                        "event_count": int(s["event_count"]),
-                    }
-                    for s in fake.pack.scenarios.values()
-                ],
-                "fx_rates": [{"from_currency": c, "to_currency": "CHF"} for c in ("CHF", "EUR", "GBP", "USD")],
-                "files": {
-                    "authorization_history": {
-                        "url": "/v1/reference-data/authorization-history.csv",
-                        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                        "rows": text.count("\n") - 1,
-                    }
+                "type": "reference_data",
+                "pack_version": "saw26",
+                "classification": "SYNTHETIC TEST DATA",
+                "tables": {
+                    "scenario_catalogue": catalogue(),
+                    "fx_rates": [
+                        {"from_currency": c, "to_currency": "CHF"} for c in ("CHF", "EUR", "GBP", "USD")
+                    ],
                 },
+                "history": {
+                    "path": "/v1/reference-data/authorization-history.csv",
+                    "rows": fake.history_csv.count("\n") - 1,
+                    "format": "csv",
+                },
+                "runtime": {"scenario_ids": fake.pack.scenario_ids()},
             }
 
         @app.get("/v1/reference-data/authorization-history.csv")
@@ -291,24 +383,26 @@ class FakeViseca:
             body = await request.json()
             missing = {"instruction", "hard_rules", "uncertainty_policy"} - set(body)
             if missing:
-                return _error(422, "validation", f"missing {sorted(missing)}")
+                return _missing(min(missing))
             if body["uncertainty_policy"] not in ("ask", "decline", "approve"):
-                return _error(422, "validation", "bad uncertainty_policy")
+                return _error(422, "validation_error", "bad uncertainty_policy")
             for rule in body["hard_rules"]:
                 if set(rule) - MANDATE_RULE_KEYS or not {"field", "operator", "value"} <= set(rule):
-                    return _error(422, "validation", "bad rule")
-            draft_id = "draft_" + secrets.token_hex(4)
+                    return _error(422, "validation_error", "bad rule")
+            draft_id = "draft_" + secrets.token_hex(8)
             draft = {
                 "draft_id": draft_id,
+                "mandate_id": None,
                 "status": "draft",
                 "instruction": body["instruction"],
                 "hard_rules": body["hard_rules"],
                 "uncertainty_policy": body["uncertainty_policy"],
                 "guidance": body.get("guidance", []),
                 "open_questions": body.get("open_questions", []),
+                "created_at": _iso(_now()),
             }
             fake.drafts[draft_id] = draft
-            return JSONResponse(draft, status_code=201)
+            return JSONResponse({**draft, "requires_confirmation": True})
 
         @app.post("/v1/mandates/{draft_id}/confirm")
         async def confirm(draft_id: str, request: Request) -> Response:
@@ -316,13 +410,13 @@ class FakeViseca:
             if draft is None:
                 return _error(404, "not_found", "unknown draft")
             if (await request.json()).get("confirmed") is not True:
-                return _error(422, "validation", "confirmed must be true")
+                return _missing("confirmed")
             if draft["status"] != "draft":
                 return _error(409, "already_confirmed", "draft already confirmed")
             draft["status"] = "confirmed"
-            mandate_id = "TM" + secrets.token_hex(4).upper()
-            mandate = {k: copy.deepcopy(v) for k, v in draft.items() if k not in ("draft_id", "status")}
-            mandate.update(mandate_id=mandate_id, status="active", draft_id=draft_id)
+            mandate_id = "TM" + secrets.token_hex(8)
+            mandate = copy.deepcopy(draft)
+            mandate.update(mandate_id=mandate_id, status="active")
             fake.mandates[mandate_id] = mandate
             return JSONResponse(mandate)
 
@@ -368,9 +462,10 @@ class FakeViseca:
             scenario_id = body.get("scenario_id", "")
             if scenario_id not in fake.pack.scenarios:
                 return _error(404, "not_found", "unknown scenario")
-            run_id = "run_" + secrets.token_hex(4)
+            run_id = "run_" + secrets.token_hex(8)
+            suffix = run_id[-8:]
             live = {
-                row["authorization_id"]: "lv_" + secrets.token_hex(6)
+                row["authorization_id"]: f"{row['authorization_id']}-{suffix}"
                 for row in fake.pack.attempts_for(scenario_id)
             }
             templates = build_events(
@@ -398,7 +493,7 @@ class FakeViseca:
             fake.runs[run_id] = run
             fake.auths.update({a.live_id: a for a in run.auths})
             fake._queue(run, run.auths[0])
-            return JSONResponse(fake._run_view(run), status_code=201)
+            return JSONResponse(fake._run_view(run))
 
         @app.get("/v1/scenario-runs/{run_id}")
         async def get_run(run_id: str) -> Response:
@@ -418,23 +513,28 @@ class FakeViseca:
                 if _now() >= until:
                     return Response(status_code=204)
                 await asyncio.sleep(0.01)
-            assert auth.event is not None
+            assert auth.event is not None and auth.queued_at is not None
+            status = "awaiting_decision"
             if auth.redeliver_pending:
                 auth.redeliver_pending = False
+                auth.deliveries += 1
+            elif auth.status == "pending":
+                status = "pending_step_up"
+                auth.step_up_serves += 1
             else:
                 auth.status = "delivered"
-            auth.deliveries += 1
+                auth.deliveries += 1
             data = copy.deepcopy(auth.event)
             if auth.source_id in fake.config.corrupt:
                 del data["authorization"]["merchant"]
             return JSONResponse(
                 {
-                    "run_id": auth.run_id,
-                    "event_id": f"evt_{auth.live_id}_{auth.deliveries}",
+                    "event_id": auth.event_id,
                     "type": "authorization.request",
+                    "run_id": auth.run_id,
                     "authorization_id": auth.live_id,
-                    "status": "pending",
-                    "occurred_at": _iso(_now()),
+                    "status": status,
+                    "occurred_at": _iso(auth.queued_at),
                     "data": data,
                 }
             )
@@ -447,66 +547,103 @@ class FakeViseca:
                 return _error(404, "not_found", "unknown authorization")
             body = await request.json()
             if set(body) - DECISION_KEYS or body.get("authorization_id") != authorization_id:
-                return _error(422, "validation", "bad decision body")
+                return _error(422, "validation_error", "bad decision body")
             if body.get("decision") not in ("approve", "decline", "step_up"):
-                return _error(422, "validation", "bad decision")
+                return _error(422, "validation_error", "bad decision")
             if auth.decisions or auth.status not in ("delivered",):
                 auth.decisions.append({**body, "rejected": True})
-                return _error(409, "already_decided", f"authorization is {auth.status}")
+                if auth.status == "pending":
+                    return _error(
+                        409,
+                        "step_up_resolution_required",
+                        "Resolve the pending step-up through the /resolve endpoint",
+                    )
+                if auth.status in ("approved", "declined"):
+                    return _error(409, "authorization_finalized", "Authorization is already final")
+                # not seen live: a decision for a request not yet delivered
+                return _error(409, "authorization_not_delivered", f"authorization is {auth.status}")
             now = _now()
             auth.decisions.append(body)
             auth.accepted_at = now
             auth.status = {"approve": "approved", "decline": "declined", "step_up": "pending"}[body["decision"]]
-            fake._feed_event(auth, "authorization.decided", auth.status)
+            recorded = {**body, "decision_source": "team"}
+            reply: dict[str, Any] = {
+                "authorization_id": authorization_id,
+                "status": PLATFORM_STATUS[auth.status],
+                "decision": recorded,
+            }
+            if auth.status == "pending":
+                auth.expires_at = now + timedelta(seconds=fake.config.human_window_s)
+                reply["step_up_expires_at"] = _iso(auth.expires_at)
+            fake._feed_decision(auth, recorded)
             if auth.source_id in fake.config.redeliver and auth.deliveries == 1:
                 auth.redeliver_pending = True
                 auth.queued_at = now
             run = fake.runs[auth.run_id]
             fake._queue_next(run, auth)
-            reply = {
-                "authorization_id": authorization_id,
-                "decision": body["decision"],
-                "status": auth.status,
-                "accepted_at": _iso(now),
-            }
             return JSONResponse(reply)
 
         @app.post("/v1/authorizations/{authorization_id}/resolve")
         async def resolve(authorization_id: str, request: Request) -> Response:
+            fake._tick()
             auth = fake.auths.get(authorization_id)
             if auth is None:
                 return _error(404, "not_found", "unknown authorization")
             body = await request.json()
             if set(body) - RESOLVE_KEYS or body.get("decision") not in ("approve", "decline"):
-                return _error(422, "validation", "bad resolve body")
+                return _error(422, "validation_error", "bad resolve body")
+            now = _now()
             if auth.status != "pending":
-                return _error(409, "not_awaiting_answer", f"authorization is {auth.status}")
-            auth.resolutions.append({**body, "at": _now()})
+                auth.resolutions.append({**body, "at": now, "rejected": True})
+                return _error(409, "authorization_not_pending", "Authorization is not awaiting step-up")
+            auth.resolutions.append({**body, "at": now})
             auth.status = "approved" if body["decision"] == "approve" else "declined"
-            fake._feed_event(auth, "authorization.resolved", auth.status)
-            return JSONResponse({"authorization_id": authorization_id, "status": auth.status})
+            recorded = {"type": "authorization.decision", "authorization_id": authorization_id,
+                        **body, "decision_source": "customer"}  # fmt: skip
+            fake._feed_decision(auth, recorded)
+            # not seen live (no resolve succeeded): the decision reply's shape is assumed
+            return JSONResponse(
+                {"authorization_id": authorization_id, "status": auth.status, "decision": recorded}
+            )
 
         @app.get("/v1/authorizations")
-        async def authorizations() -> dict[str, Any]:
+        async def authorizations() -> list[dict[str, Any]]:
             fake._tick()
-            return {
-                "authorizations": [
-                    {"authorization_id": a.live_id, "run_id": a.run_id, "status": a.status}
-                    for a in fake.all_auths()
-                    if a.status != "waiting"
-                ]
-            }
+            return [
+                {
+                    "authorization_id": a.live_id,
+                    "source_authorization_id": a.source_id,
+                    "scenario_id": fake.runs[a.run_id].scenario_id,
+                    "run_id": a.run_id,
+                    "status": PLATFORM_STATUS[a.status],
+                    "decision": a.decisions[0] if a.decisions else None,
+                    "occurred_at": _iso(a.queued_at) if a.queued_at else None,
+                    "authorization": copy.deepcopy(a.event["authorization"]) if a.event else None,
+                }
+                for a in fake.all_auths()
+                if a.status != "waiting"
+            ]
 
         @app.get("/v1/events")
         async def events(since: int = 0) -> dict[str, Any]:
             fake._tick()
-            items = [e for e in fake.feed if e["cursor"] > since]
-            return {"events": items, "next_cursor": items[-1]["cursor"] if items else since}
+            items = [e for e in fake.feed if e["event_id"] > since]
+            return {"since": since, "next_cursor": items[-1]["event_id"] if items else since, "events": items}
 
         @app.post("/v1/team/reset")
-        async def team_reset() -> dict[str, Any]:
+        async def team_reset(request: Request) -> Response:
+            body = await request.json() if await request.body() else None
+            if not isinstance(body, dict):
+                return _missing()
+            if "confirmed" not in body:
+                return _missing("confirmed")
+            if not fake.config.reset_enabled:
+                return _error(403, "reset_disabled", "Team reset is disabled during judging")
+            resets = [*fake.resets, body]
             fake.reset()
-            return {"reset": True}
+            fake.resets = resets
+            # not seen live (reset was disabled): the success body is assumed
+            return JSONResponse({"reset": True})
 
         return app
 

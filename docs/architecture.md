@@ -64,12 +64,15 @@ oneguard/
 - One database per environment via ONEGUARD_DATABASE_URL (docs/database.md). One transaction per decision.
 - Viseca key from `VISECA_API_KEY`; base URL from `VISECA_BASE_URL`; both server-side.
 - Worker (`oneguard/viseca/worker.py`, `VisecaWorker`): on start reads `/v1/bootstrap`
-  (human window, decision deadline) and `/v1/reference-data`; if the served history-file
-  SHA-256 differs from `data/metadata.json` it re-seeds `authorization_history` from
-  `/v1/reference-data/authorization-history.csv` and logs it loudly. Every request is
+  (`limits`: human window, decision deadline, long-poll cap) and `/v1/reference-data`. No
+  history-file hash is served, so it downloads
+  `/v1/reference-data/authorization-history.csv`, and if its SHA-256 differs from
+  `data/metadata.json` it re-seeds `authorization_history` and logs it loudly. Every request is
   schema-checked, stored in `events_raw`, decided by `pipeline.decide_event` within
   `ONEGUARD_ENGINE_BUDGET_MS` and posted before `deadline_at`. A step-up's deadline is the
-  accepted time + the human window; an expiry task posts the timeout `/resolve` (rules Q2).
+  reply's `step_up_expires_at` (accepted time + the human window); an expiry task posts the
+  timeout `/resolve` (rules Q2). Until then the platform serves the step-up again on every
+  poll (`status: "pending_step_up"`); the worker posts nothing for it and pauses briefly.
   All ledger and pipeline calls run on one dedicated thread. `VisecaWorker.status()` is the
   `/healthz` worker block: `state`, `ok`, `last_poll_at`, `events_cursor`,
   `human_window_s`, `pending_step_ups`, `history_reseeded`, `last_error`, `runs`.

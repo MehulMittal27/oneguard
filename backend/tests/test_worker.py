@@ -100,7 +100,7 @@ async def harness(
 ) -> AsyncIterator[tuple[FakeViseca, VisecaClient, VisecaWorker]]:
     fake = FakeViseca(config)
     client = fake_client(fake, db)
-    options = {**ALL_STUBS, "poll_wait_s": 0.2, **worker_options}
+    options = {**ALL_STUBS, "poll_wait_s": 0.2, "waiting_step_up_pause_s": 0.05, **worker_options}
     worker = VisecaWorker(client, db=db, **options)
     try:
         yield fake, client, worker
@@ -129,6 +129,19 @@ async def wait_until(condition: Callable[[], bool], timeout: float = 20.0) -> No
         if time.monotonic() > deadline:
             raise AssertionError("condition not met in time")
         await asyncio.sleep(0.02)
+
+
+def timeout_resolution(auth: Any) -> dict[str, Any]:
+    """The worker's one timeout ``/resolve`` for ``auth``, as sent.
+
+    The platform expires the step-up itself at the same moment, so the attempt may have
+    been refused (409 ``authorization_not_pending``); either way the platform has it
+    declined.
+    """
+    (resolution,) = auth.resolutions
+    assert auth.status == "declined"
+    assert resolution.get("rejected", False) == auth.platform_expired
+    return {k: v for k, v in resolution.items() if k != "rejected"}
 
 
 def fast(**overrides: Any) -> FakeConfig:
@@ -194,7 +207,7 @@ def test_all_45_events_are_decided_and_expire_unanswered(
                     assert posted["decision"] == "step_up" and posted["reason_codes"] == ["stub"]
                     assert "stubs=all" in posted["engine_version"]
                 if posted["decision"] == "step_up":
-                    (resolution,) = auth.resolutions
+                    resolution = timeout_resolution(auth)
                     assert resolution["decision"] == "decline"
                     assert resolution["customer_message"] == timeout_message(0.5)
                 else:
@@ -299,7 +312,8 @@ def test_an_unanswered_step_up_is_declined_at_the_window(db: Engine, history: St
             window_end = auth.accepted_at + timedelta(seconds=1.0)
             pending, closed = seen
             assert pending.status == "pending_human" and pending.deadline_at == window_end
-            (resolution,) = auth.resolutions
+            assert pending.deadline_at == auth.expires_at  # the reply's step_up_expires_at
+            resolution = timeout_resolution(auth)
             assert resolution["at"] >= window_end
             assert resolution == {
                 "decision": "decline",
@@ -314,6 +328,10 @@ def test_an_unanswered_step_up_is_declined_at_the_window(db: Engine, history: St
             assert entry.reserved_chf == 0.0 and entry.spent_chf == 0.0
             assert (closed.decision, closed.uncertain_outcome, closed.status) == ("uncertain", "expired", "final")
             assert closed.resolved_by == "timeout" and closed.deadline_at is None
+            # served again on every poll while it waited: nothing more posted, nothing counted
+            assert auth.step_up_serves > 0 and len(auth.decisions) == 1
+            assert worker.run_status(run_id).redeliveries == 0  # type: ignore[union-attr]
+            assert worker.status().last_error is None
 
     asyncio.run(scenario())
 
@@ -337,6 +355,10 @@ def test_the_worker_keeps_polling_while_step_ups_pend(db: Engine, history: Store
             polls = fake.polls
             await asyncio.sleep(0.5)
             assert fake.polls > polls
+            # the waiting step-ups come back on every poll; the worker neither re-posts nor spins
+            assert sum(a.step_up_serves for a in auths) > 0
+            assert all(len(a.decisions) == 1 for a in auths)
+            assert fake.polls - polls <= 0.5 / 0.05 + 2
             status = worker.status()
             assert status.ok and status.pending_step_ups == 10
 
@@ -460,7 +482,7 @@ def test_an_engine_over_budget_posts_a_step_up_before_the_deadline_that_expires_
 
             # unanswered: the timeout decline at accepted time + human window
             await wait_until(lambda: bool(auth.resolutions), timeout=5)
-            (resolution,) = auth.resolutions
+            resolution = timeout_resolution(auth)
             assert resolution["decision"] == "decline"
             assert resolution["customer_message"] == timeout_message(2.0)
             assert resolution["evidence"][0]["detail"] == "timeout"
@@ -596,6 +618,10 @@ def test_start_reseeds_history_when_viseca_serves_a_different_file(
 
     worker = asyncio.run(scenario(fast()))
     assert not worker.history_reseeded
+    # no hash is served: the file was downloaded and matched the pack
+    assert worker.served_history_sha256 == seed_module.pack_file_sha256("authorization_history.csv")
+    # timeouts are read from bootstrap ``limits``
+    assert (worker.human_window_s, worker.decision_deadline_s) == (60.0, 3.0)
     with session(db) as s:
         assert s.scalar(select(func.count()).select_from(AuthorizationHistory)) == 4701
 
