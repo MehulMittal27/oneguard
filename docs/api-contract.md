@@ -68,8 +68,10 @@ Unchanged from the frontend README except: C1 gains `504`, C2 gains the two `409
 | D4 | GET | `/api/dev/runs/{run_id}` | — | `LiveRun` — progress, counters, worker health |
 | D5 | POST | `/api/dev/soft-signals` | `{ enabled: boolean }` | `{ enabled }` — chaos toggle for the small decision model |
 | D6 | GET | `/api/dev/ledger/{card_id}` | — | `LedgerSnapshot` — the engine's own state, for the "reproduce this decision" view |
+| D7 | GET | `/api/dev/runs/current` | — | `LiveRun` or `ReplayStatus` — the newest run (live or replay, by the real time it started) with the counters D4 / D1 show; 404 when none. Starts nothing |
 
-D3 requires an active mandate on the card (409 otherwise). D1/D2 use the same engine and
+D3 requires an active mandate on the card (409 otherwise). While `ONEGUARD_ALLOW_RUNS=false` D3 starts nothing and
+answers 409 `runs_disabled` (unset: runs allowed); `make demo-live` refuses the same way. D1/D2 use the same engine and
 ledger as D3; only the event source differs (CSV vs Viseca long-poll).
 
 ---
@@ -227,6 +229,9 @@ expire — that is a broken state, not a degraded one.
   `POST /v1/mandates/{draft_id}/confirm`. The returned `TM…` id is stored; our `mandate_id`
   is our own and maps to it.
 - The instruction is stored **verbatim** and sent to Viseca verbatim.
+- A confirmed draft replaces the card's active mandate, which is revoked (C5 semantics).
+- C4 `add_checks` are ids of checks proposed by this card's drafts; their text is ignored.
+  Changing a check already in force is 409 `not_pure_addition`; an unknown id is 422.
 
 ### 3.3 Field vocabulary for typed rules (engine-side, informational)
 
@@ -326,9 +331,11 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 
 All errors: `{ error: { code: string, message: string, detail?: object } }`. Codes used:
 `not_found`, `validation`, `draft_confirmed`, `lint_failed`, `not_pure_addition`,
-`not_awaiting_answer`, `window_closed`, `upstream_unavailable`, `compiler_timeout`.
-`upstream_unavailable` (Viseca down) never changes a stored decision; the UI shows its
-offline state ("Nothing was approved while we were offline").
+`not_awaiting_answer`, `window_closed`, `upstream_unavailable`, `compiler_timeout`,
+`internal`, `runs_disabled`.
+`upstream_unavailable` (503: Viseca or the database unreachable or too slow) never changes a
+stored decision; the UI shows its offline state ("Nothing was approved while we were
+offline"). `internal` (500) is an unexpected server error.
 
 ### 3.9 Check wording
 
