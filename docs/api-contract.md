@@ -307,6 +307,8 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
   `evidence` rows with `source: 'model'` and may raise `approve → uncertain`. It can never
   lower `stopped` or override a policy check. `engine_version` records whether the model
   was on, so a replay with it off is comparable.
+- `ONEGUARD_SOFT_SIGNALS`: `off` = no soft signal; `keywords` = the A1 pattern list;
+  `laya` = triggered if keywords OR Laya fire (Laya can only add, never clear a keyword hit).
 - Tier-2 fact extraction and tier-3 explanation use the same provider interface as the
   compiler (OpenAI first, model-agnostic).
 

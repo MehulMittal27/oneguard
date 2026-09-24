@@ -49,8 +49,19 @@ def test_laya_reads_its_score_against_the_threshold():
     low = S.LayaSignals(predict=lambda text: 0.38)
     edge = S.LayaSignals(predict=lambda text: 0.6)
     assert only(high(CLEAN[0], 0.5)).triggered and only(high(CLEAN[0], 0.5)).source == "model"
-    assert not only(low(DIRTY[0], 0.5)).triggered, "the model can miss; A1 keywords still run in protections"
+    assert not only(low(CLEAN[0], 0.5)).triggered and only(low(CLEAN[0], 0.5)).source == "model"
     assert only(edge(CLEAN[0], 0.5)).triggered, "threshold 0.6 is inclusive"
+
+
+@pytest.mark.parametrize("score", [0.0, 0.38, 0.83])
+@pytest.mark.parametrize("f", CLEAN + DIRTY)
+def test_laya_can_only_add_to_keywords(f, score):
+    """Triggered if keywords OR Laya fire: a model that misses never clears a keyword hit."""
+    keywords = only(S.KeywordSignals()(f, 0.5))
+    laya = only(S.LayaSignals(predict=lambda text: score)(f, 0.5))
+    assert laya.triggered == (keywords.triggered or score >= S.THRESHOLD)
+    if keywords.triggered:
+        assert laya.source == "merchant_text" and keywords.detail in laya.detail
 
 
 def test_laya_timeout_falls_back_to_keywords():

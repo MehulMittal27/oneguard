@@ -9,8 +9,9 @@ may raise approve → step_up in decide; it can never approve or lower a decline
 
 - ``off``: no soft signal;
 - ``keywords`` (default): the A1 pattern list from protections.py;
-- ``laya``: the Laya checkpoint, loaded once at import, asked in a worker thread within
-  ``budget_s``; on load failure, timeout or error it falls back to keywords.
+- ``laya``: keywords, plus the Laya checkpoint (loaded once at import, asked in a worker
+  thread within ``budget_s``). The signal is triggered if keywords OR Laya fire: Laya can
+  only add, never clear a keyword hit. On load failure, timeout or error it is keywords.
 
 The pipeline calls ``soft_signals`` only when signals are enabled for the run.
 """
@@ -71,12 +72,12 @@ class KeywordSignals:
 
 
 class LayaSignals:
-    """The agent_directed question to a Laya checkpoint, bounded by ``budget_s``.
+    """Keywords, plus the agent_directed question to a Laya checkpoint within ``budget_s``.
 
-    ``predict`` is ``(text) -> score in [0, 1]``; ``load`` builds it once. Anything that
-    goes wrong — no model, a timeout, an error, a malformed answer — is answered by
-    ``fallback`` instead, so a model outage can only make the engine as cautious as
-    keywords are (P8).
+    Triggered if the keywords OR the model fire: the model can only add (P5). ``predict``
+    is ``(text) -> score in [0, 1]``; ``load`` builds it once. Anything that goes wrong
+    (no model, a timeout, an error, a malformed answer) leaves the keyword answer alone,
+    so a model outage makes the engine exactly as cautious as keywords are (P8).
     """
 
     name = "laya"
@@ -104,24 +105,38 @@ class LayaSignals:
         assert self.predict is not None
         return [(label, float(self.predict(text))) for label, text in texts if text]
 
-    def __call__(self, facts: Facts, budget_s: float) -> list[Signal]:
+    def _scores(self, facts: Facts, budget_s: float) -> list[tuple[str, float]] | None:
+        """The model's score per shop text, or None when it cannot answer in time."""
         if not self.available or budget_s <= 0:
-            return self.fallback(facts, budget_s)
+            return None
         future = self._pool.submit(self._ask_all, _shop_texts(facts))
         try:
             scores = future.result(timeout=budget_s)
         except FutureTimeout:
             log.warning("Laya over its %.0f ms budget; using keywords", budget_s * 1000)
-            return self.fallback(facts, budget_s)
+            return None
         except Exception:
             log.exception("Laya failed; using keywords")
-            return self.fallback(facts, budget_s)
+            return None
         if any(not 0.0 <= score <= 1.0 for _, score in scores):
-            return self.fallback(facts, budget_s)
+            return None
+        return scores
+
+    def __call__(self, facts: Facts, budget_s: float) -> list[Signal]:
+        keywords = self.fallback(facts, budget_s)
+        scores = self._scores(facts, budget_s)
+        if scores is None:
+            return keywords
+        [keyword] = keywords
         hits = [(label, score) for label, score in scores if score >= THRESHOLD]
         if hits:
             where = ", ".join(f"{label} ({score:.2f})" for label, score in hits)
-            return [_signal(True, f"The model reads instructions aimed at the agent in {where}.", "model")]
+            model = f"The model reads instructions aimed at the agent in {where}."
+            if keyword.triggered:
+                return [_signal(True, f"{keyword.detail} {model}", "merchant_text")]
+            return [_signal(True, model, "model")]
+        if keyword.triggered:  # the model missed what the keywords found: keywords stand
+            return keywords
         top = max((score for _, score in scores), default=0.0)
         return [_signal(False, f"The model reads no instructions aimed at the agent (highest {top:.2f}).", "model")]
 
