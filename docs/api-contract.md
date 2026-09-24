@@ -64,20 +64,42 @@ Unchanged from the frontend README except: C1 gains `504`, C2 gains the two `409
 |---|---|---|---|---|
 | D1 | GET | `/api/dev/replay` | — | `ReplayStatus` (offline replay of the data pack) |
 | D2 | POST | `/api/dev/replay/restart` | `{ scenario_id, card_id, speed_ms? }` | `ReplayStatus` |
-| D3 | POST | `/api/dev/runs` | `{ scenario_id, card_id }` | `LiveRun` — creates a Viseca run against the card's active mandate and starts the worker |
+| D3 | POST | `/api/dev/runs` | `{ scenario_id, card_id, force?: boolean }` | `LiveRun` — creates a Viseca run against the card's active mandate, followed by the worker; names the run card's holder |
 | D4 | GET | `/api/dev/runs/{run_id}` | — | `LiveRun` — progress, counters, worker health |
 | D5 | POST | `/api/dev/soft-signals` | `{ enabled: boolean }` | `{ enabled }` — chaos toggle for the small decision model |
 | D6 | GET | `/api/dev/ledger/{card_id}` | — | `LedgerSnapshot` — the engine's own state, for the "reproduce this decision" view |
 | D7 | GET | `/api/dev/runs/current` | — | `LiveRun` or `ReplayStatus` — the newest run (live or replay, by the real time it started) with the counters D4 / D1 show; 404 when none. Starts nothing |
+| D8 | GET | `/api/dev/scenarios` | — | `{ scenarios: Scenario[] }` — every scenario in the store's catalogue, whether the platform serves it now, the customer and card it runs on when known, and a run of it still in progress. Reads only |
 
 D3 requires an active mandate on the card (409 otherwise). While `ONEGUARD_ALLOW_RUNS=false` D3 starts nothing and
-answers 409 `runs_disabled` (unset: runs allowed); `make demo-live` refuses the same way. D1/D2 use the same engine and
-ledger as D3; only the event source differs (CSV vs Viseca long-poll).
+answers 409 `runs_disabled` (unset: runs allowed); `make demo-live` refuses the same way. While the worker still follows
+an unfinished run D3 answers 409 `run_active` (detail `{ run_id, scenario_id }`) before anything else: one run at a
+time. Also 409 `run_active` when the scenario has a run in progress anywhere: a live run the store last saw starting or
+running (unless the platform's `GET /v1/scenario-runs/{id}` says it is over), or a run with a purchase still open at
+the platform (`GET /v1/authorizations` status `awaiting_decision` or `pending_step_up`), whoever started it; the
+message and detail name that run. `force: true` skips both checks and starts the run anyway. D1/D2 use the same engine and ledger as D3; only the event source differs (CSV vs Viseca long-poll).
 D3 accepts any scenario in the store's `scenario_catalogue`, which the worker syncs from Viseca's
 `/v1/reference-data` at start (docs/judging-pack.md): 404 for an unknown scenario or card, 422 when the scenario's card
-is known (the local pack's, or the served bootstrap profile's) and is another. D2 replays only scenarios the local pack
-has purchases for (404 otherwise). C12 lists the customers in the store, so served-only customers appear once synced;
-their `scenario_ids` / `live` include the scenario the served bootstrap profile runs on their card.
+is known and is another. D2 replays only scenarios the local pack has purchases for (404 otherwise).
+
+**Scenario bindings.** The served catalogue names no card. The platform names one in the `/v1/bootstrap` `profile`
+(one scenario), in every run's `fixture_profiles` and in every authorization; the worker stores each sighting
+(`scenario_profiles`, docs/database.md) at start (bootstrap, and one `GET /v1/authorizations`), from D3's run reply,
+from run progress, from a run's first event and from the event feed. A scenario's binding is the stored one, else the
+local pack's. C12 `scenario_ids` lists every scenario bound to the customer's cards; `live` is true when one of them is
+served now (the scenario ids the worker read at its last start), or, for a store that never reached the platform,
+when any is bound (the offline replay). C12 `card_id` is the card of the customer's newest live scenario, else newest
+scenario, else the card of an active policy. D3's reply (`LiveRun`) names the card the run's fixture profile uses and
+its holder (`customer_id`, `customer_name`); when that card is not the one D3 was called with (a scenario never run
+before), the policy moves there: a copy of the mandate (same Viseca mandate) becomes that card's active policy and the
+original is marked revoked (docs/decisions.md). D4 and D7 name the holder too.
+
+**`make demo-live SCEN=<id>`** never decides: it drives the server at `ONEGUARD_API` (default
+`https://oneguard.fly.dev`): D8 → D7 (an unfinished newest run, or the scenario's `active_run_id`: that run is named,
+exit 1, nothing changed; `--force` / `make demo-live FORCE=1` skips this and sends D3 `force: true`) → C1 on the scenario's card (unknown:
+`--card`, else the bootstrap profile's) → C2 → D3, prints `Sign in as <name> (<customer_id>, card <card_id>)` from
+D3's reply, then follows D4 and the customer's C6 read-only. Only when no OneGuard server answers `/healthz` there does
+it fall back to a worker in its own process, and says so.
 
 ---
 
@@ -88,8 +110,9 @@ backend. Fields marked `NEW` are optional and may be omitted by the backend in e
 
 ```ts
 Customer  { customer_id, name, home_region, card_id: string|null,
-            scenario_ids: string[],          // CHANGED from scenario_id: CU0001 backs two scenarios
-            live: boolean }
+            scenario_ids: string[],          // CHANGED from scenario_id: CU0001 backs two scenarios;
+                                             // every scenario bound to their cards (§1.2 Scenario bindings)
+            live: boolean }                  // one of them is served now
 
 Card      { card_id, card_type, card_purpose, status }
 
@@ -177,7 +200,13 @@ Evidence  { rule: string,                     // which check or signal
 
 ReplayStatus { scenario_id, card_id, delivered, total, running: boolean, next_at: string|null }
 LiveRun      { run_id, scenario_id, card_id, mandate_id, state: 'starting'|'running'|'done'|'error',
-               delivered, decided, pending_human, total, worker_ok: boolean, last_error: string|null }
+               delivered, decided, pending_human, total, worker_ok: boolean, last_error: string|null,
+               customer_id?: string, customer_name?: string }         // NEW: who holds card_id
+Scenario     { scenario_id, scenario_name, cardholder_instruction,    // NEW (D8)
+               served: boolean,                                       // the platform serves it now
+               profile: { customer_id, name, card_id, profile_id: string|null,
+                          source: 'pack'|'bootstrap'|'run'|'authorization' } | null,   // null: not run yet
+               active_run_id: string | null }                         // a run of it in progress (D3's run_active)
 LedgerSnapshot { card_id, mandate_id, entries: [{ authorization_id, occurred_at, decision,
                  counted_chf, note }], period_spent_chf, frozen: boolean }
 ```
@@ -349,7 +378,7 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 All errors: `{ error: { code: string, message: string, detail?: object } }`. Codes used:
 `not_found`, `validation`, `draft_confirmed`, `lint_failed`, `not_pure_addition`,
 `not_awaiting_answer`, `window_closed`, `upstream_unavailable`, `compiler_timeout`,
-`internal`, `runs_disabled`.
+`internal`, `runs_disabled`, `run_active` (D3: an unfinished run is still followed).
 `upstream_unavailable` (503: Viseca or the database unreachable or too slow) never changes a
 stored decision; the UI shows its offline state ("Nothing was approved while we were
 offline"). `internal` (500) is an unexpected server error.

@@ -24,7 +24,8 @@ behaviour the worker depends on:
 - ``/v1/reference-data`` serves no history-file hash; ``tables`` holds the pack's reference
   tables as the live sandbox serves them (CSV strings; the catalogue has four columns),
   plus any served-only rows a test adds (``served_extra``), whose scenarios replay a pack
-  scenario's purchases (``served_scenarios``) on the bootstrap profile ``profile``;
+  scenario's purchases (``served_scenarios``) under the served id, on the card of their
+  fixture profile (``fixture_profiles``) when one is set;
 - ``tables.fx_rates`` can be replaced (``FakeConfig.fx_rates``) to serve rates that differ;
 - knobs for redelivery, corrupt events, a served history file or fx rates that differ, a
   context / event-feed that disagrees with the worker, and whether team reset is enabled.
@@ -101,6 +102,12 @@ class FakeConfig:
     """Served-only scenario id → the pack scenario whose purchases its runs replay."""
     profile: dict[str, Any] | None = None
     """Bootstrap ``profile``; default: the pack's first profile, without its context."""
+    serve_pack: bool = True
+    """False: the catalogue lists only ``served_extra``'s scenarios, as the judging sandbox
+    no longer serves the local pack's (their purchases still back ``served_scenarios``)."""
+    fixture_profiles: dict[str, dict[str, str]] = field(default_factory=dict)
+    """Served-only scenario id → the ``{profile_id, customer_id, card_id}`` its runs use: the
+    replayed purchases are rewritten onto that card (``fixture_profiles`` in the run view)."""
 
 
 JUDGING_EXTRA: dict[str, list[dict[str, Any]]] = {
@@ -189,6 +196,7 @@ def judging_pack() -> dict[str, Any]:
             "scenario_id": "SCEN9001",
             "profile_context": {"customer_id": "CU9001", "account_id": "AC9001", "card_id": "CA9001"},
         },
+        "fixture_profiles": {"SCEN9001": {"profile_id": "PROFILE_TEST9001", "customer_id": "CU9001", "card_id": "CA9001"}},
     }
 
 
@@ -460,6 +468,7 @@ class FakeViseca:
                     "event_count": int(s["event_count"]),
                 }
                 for s in fake.pack.scenarios.values()
+                if fake.config.serve_pack
             ] + fake.config.served_extra.get("scenario_catalogue", [])
 
         def table(name: str) -> list[dict[str, Any]]:
@@ -601,8 +610,15 @@ class FakeViseca:
             templates = build_events(
                 fake.pack, source, mandate_id=mandate["mandate_id"], live_id=live.__getitem__
             )
+            fixture = fake.config.fixture_profiles.get(scenario_id)
             for template in templates:
                 snapshot = template["mandate"]
+                if source != scenario_id:
+                    template["authorization"]["scenario_id"] = scenario_id
+                if fixture is not None:
+                    template["authorization"]["card_id"] = snapshot["card_id"] = fixture["card_id"]
+                    template["authorization"]["profile_id"] = snapshot["profile_id"] = fixture["profile_id"]
+                    snapshot["customer_id"] = fixture["customer_id"]
                 snapshot["instruction"] = mandate["instruction"]
                 snapshot["hard_rules"] = copy.deepcopy(mandate["hard_rules"])
                 snapshot["uncertainty_policy"] = mandate["uncertainty_policy"]
