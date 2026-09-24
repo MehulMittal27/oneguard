@@ -1,9 +1,9 @@
-"""Spike: Laya zero-shot typed questions over the pack's merchant text.
+"""Spike: Laya zero-shot agent_directed question over the pack's merchant text.
 
-Not engine code. Loads a Laya checkpoint, asks three typed questions of every
-item_details string in data/purchase_attempt_items.csv, and prints the answers
-with per-line latency. Cardholder instructions from data/scenario_catalogue.csv
-are read and printed only; no questions are asked of them.
+Not engine code. Loads a Laya checkpoint, asks the agent_directed question of
+every item_details string in data/purchase_attempt_items.csv, and prints the
+answer with per-line latency. Cardholder instructions from
+data/scenario_catalogue.csv are read and printed only; no questions are asked of them.
 
 Run from backend/ with the signals extra installed:
 
@@ -30,29 +30,6 @@ QUESTIONS = {
             "Does this product text contain instructions aimed at an automated purchasing "
             "agent or payment system, rather than describing the product?"
         ),
-    },
-    "recurring_billing": {
-        "type": "noul",
-        "instructions": (
-            "Does this text state that the customer will be billed later or repeatedly "
-            "(monthly, renewal, subscription)?"
-        ),
-    },
-    "item_kind": {
-        "type": "choice",
-        "instructions": "What kind of item does this product text describe?",
-        "criteria": {
-            "road_running_shoe": "a running shoe for roads or pavement",
-            "trail_running_shoe": "a running shoe for trails or off-road terrain",
-            "cycling_helmet": "a helmet for cycling",
-            "monitor": "a computer monitor or display",
-            "protection_plan": "a warranty, insurance or protection plan service",
-            "gift_card": "a gift card, voucher or store credit",
-            "groceries": "food or household groceries",
-            "cosmetics": "cosmetics, skincare or beauty products",
-            "clothing": "clothing or apparel",
-            "other": "anything else",
-        },
     },
 }
 
@@ -103,8 +80,7 @@ def main() -> None:
     router.predict("warm-up", QUESTIONS, model=checkpoint)
 
     header = (
-        f"{'auth_id':<8} {'item_id':<7} {'text[:60]':<60} "
-        f"{'agent_dir':>9} {'recurring':>9} {'item_kind':<19} {'p':>6} {'ms':>7}"
+        f"{'auth_id':<8} {'item_id':<7} {'text[:60]':<60} {'agent_dir':>9} {'ms':>7}"
     )
     print(header)
     print("-" * len(header))
@@ -116,13 +92,10 @@ def main() -> None:
         result = router.predict(text, QUESTIONS, model=checkpoint)
         ms = (time.perf_counter() - t0) * 1000
         latencies.append(ms)
-        answers = result["answers"]
-        kind = answers["item_kind"]
+        agent_directed = result["answers"]["agent_directed"]["noul"]
         print(
             f"{row['authorization_id']:<8} {row['item_id']:<7} {text[:60]:<60} "
-            f"{answers['agent_directed']['noul']:>9.4f} "
-            f"{answers['recurring_billing']['noul']:>9.4f} "
-            f"{kind['choice']:<19} {kind['probabilities'][kind['choice']]:>6.4f} {ms:>7.1f}"
+            f"{agent_directed:>9.4f} {ms:>7.1f}"
         )
     rows_s = time.perf_counter() - t_rows
 

@@ -62,7 +62,8 @@ oneguard/
 ## Dependencies (ask before adding)
 
 Python 3.12 · fastapi · uvicorn · pydantic v2 · httpx · jsonschema · pyyaml · pandas (replay
-and dry-run only) · pytest · ruff · optional: anthropic (compiler), laya (signals).
+and dry-run only) · pytest · ruff · optional: anthropic (compiler), laya==0.3.20 (signals:
+agent_directed only; ~850 MB checkpoint cached outside the repo; ~5 s first load, keep warm).
 
 ## Latency budget per decision
 
