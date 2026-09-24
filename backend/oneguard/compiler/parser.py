@@ -14,6 +14,7 @@ from datetime import date
 from decimal import Decimal
 
 from oneguard.compiler.draft import (
+    ALCOHOL_FIELD,
     COUNT_FIELD,
     COUNTRY_NAMES,
     KNOWN_SHOP_FIELD,
@@ -153,10 +154,12 @@ def product_categories(item: str) -> list[str]:
     return next(([c] for p, c in PRODUCT_WORDS if p.search(item)), [])
 
 
-# Things a customer may exclude that no item category holds (wine and spirits are
-# "groceries" in the served pack): the rule is unverifiable, and an engine gap.
-_NO_CATEGORY = re.compile(r"alcohol(?:ic drinks)?|wine|spirits|beer|tobacco|premium tiers?|annual prepayments?"
-                          r"|(?:annual|yearly) (?:plans?|payments?)", re.IGNORECASE)
+# Alcohol is no item category (wine and spirits are "groceries" in the served pack): "no
+# alcohol" is the per-line fact items[].contains_alcohol "false" (engine/facts.py).
+NO_ALCOHOL = re.compile(r"alcohol(?:ic (?:drinks|beverages))?|wines?|spirits|beers?|liquor|booze", re.IGNORECASE)
+# Things a customer may exclude that no field holds: the rule is unverifiable.
+_NO_CATEGORY = re.compile(r"tobacco|premium tiers?|annual prepayments?|(?:annual|yearly) (?:plans?|payments?)",
+                          re.IGNORECASE)
 # "no new services": only the shops already used (C9).
 _NO_NEW_SHOPS = re.compile(r"\bno new (?:services|shops|sellers|merchants|providers|suppliers)\b", re.IGNORECASE)
 _CATEGORY_HEADS = {"item", "items", "groceries", "grocery", "clothing", "clothes", "apparel",
@@ -391,9 +394,9 @@ def _positive(text: str) -> str:
 
 
 def _blocked(reading: _Reading, text: str) -> None:
-    """Each "no X" / "except X": an item type (one C4 rule for all of them), "no new
-    services" (only the shops already used, C9), or a thing no category holds
-    ("no alcohol", "no premium tiers": unverifiable, an engine gap). Anything else
+    """Each "no X" / "except X": an item type (one C4 rule for all of them), alcohol
+    (items[].contains_alcohol "false"), "no new services" (only the shops already used,
+    C9), or a thing no field holds ("no premium tiers": unverifiable). Anything else
     ("never at the weekend", "no more than CHF 50") is read elsewhere."""
     blocked: list[str] = []
     said: list[str] = []
@@ -405,6 +408,8 @@ def _blocked(reading: _Reading, text: str) -> None:
         if cats:
             blocked += [c for c in cats if c not in blocked]
             said.append(words)
+        elif NO_ALCOHOL.fullmatch(what):
+            reading.specs.append(RuleSpec(field=ALCOHOL_FIELD, operator="=", value="false", words=words))
         elif _NO_NEW_SHOPS.fullmatch(words):
             if not any(s.field == KNOWN_SHOP_FIELD for s in reading.specs):
                 reading.specs.append(RuleSpec(field=KNOWN_SHOP_FIELD, operator="=", value="true", words=words))

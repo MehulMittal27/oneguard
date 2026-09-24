@@ -43,6 +43,7 @@ TODAY = date(2026, 9, 1)
 BILL = "authorization.billing_amount_chf"
 KNOWN = "merchant.familiar_on_card"
 CAT = "items[].item_category"
+ALCOHOL = "items[].contains_alcohol"
 WEEK = ["mon", "tue", "wed", "thu", "fri"]
 
 # Open questions a correct reading keeps, and why (no per-order limit is stated; T5).
@@ -83,7 +84,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
         (BILL, "<=", 100, "CHF", "purchase", None, "decline"),
         (CAT, "in", ("groceries", "household"), None, None, None, "decline"),
         (CAT, "not_in", ("gift_card", "cosmetics"), None, None, None, "decline"),
-        ("unverifiable", "=", "No alcohol", None, None, None, "decline"),  # wine is "groceries": engine gap
+        (ALCOHOL, "=", "false", None, None, None, "decline"),  # "No alcohol": wine is "groceries"
         (KNOWN, "=", "true", None, None, None, "decline"),
     ]},
     "SCEN0122": {"item": "camera lens", "extra": True, "rules": [
@@ -300,17 +301,33 @@ def test_each_without_counted_items_is_per_purchase_on_the_llm_path(history):
     assert [r.field for r in read.rules] == ["items[].unit_price_chf"]
 
 
-def test_an_excluded_thing_no_category_holds_is_unverifiable(history):
+def test_excluded_alcohol_is_the_alcohol_rule_on_the_llm_path(history):
     """"No alcohol, no gift cards": the model lists "alcohol" as a category; the categories stay
-    excluded and "No alcohol" becomes a restriction no data can check, never a dropped rule."""
+    excluded and "No alcohol" becomes the per-line alcohol rule, never a dropped rule. A thing
+    no field holds ("no tobacco") stays a restriction no data can check."""
     instruction = SERVED["SCEN0117"]
     read = read_with_llm(instruction, Scripted(_response(
         _raw(CAT, "not_in", "No alcohol, no gift cards, no cosmetics",
              value_list=["alcohol", "gift_card", "cosmetics"]),
     )), history, "", TODAY)
-    assert [(r.field, r.operator, r.value) for r in read.rules] == [
-        (CAT, "not_in", ["gift_card", "cosmetics"]), ("unverifiable", "=", "No alcohol")]
+    assert [(r.field, r.operator, r.value, r.id) for r in read.rules] == [
+        (CAT, "not_in", ["gift_card", "cosmetics"], "C4"), (ALCOHOL, "=", "false", "C4-alcohol")]
     assert read.open_questions == []
+    tobacco = "Groceries up to CHF 50. No tobacco, no gift cards."
+    read = read_with_llm(tobacco, Scripted(_response(
+        _raw(CAT, "not_in", "No tobacco, no gift cards", value_list=["tobacco", "gift_card"]),
+    )), history, "", TODAY)
+    assert [(r.field, r.value) for r in read.rules] == [(CAT, ["gift_card"]), ("unverifiable", "No tobacco")]
+
+
+def test_a_models_unverifiable_no_alcohol_is_the_alcohol_rule(history):
+    """A model that still writes "no alcohol" as a restriction no data can check (the reading
+    recorded before the alcohol fact existed) ships the alcohol rule: the check is real now."""
+    instruction = SERVED["SCEN0117"]
+    read = read_with_llm(instruction, Scripted(_response(
+        _raw("unverifiable", "=", "No alcohol", value_text="no alcohol"),
+    )), history, "", TODAY)
+    assert [(r.field, r.operator, r.value, r.text) for r in read.rules] == [(ALCOHOL, "=", "false", "No alcohol")]
 
 
 COUNT_PHRASES = [
