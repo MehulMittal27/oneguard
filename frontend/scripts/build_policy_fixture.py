@@ -186,21 +186,13 @@ def pick_examples(classified):
     return examples
 
 
-def compute_agent_history(card_id, history_by_card):
-    """docs/api-contract.md §2: history rows with `initiator_type == 'agent'`.
-
-    Counted over this card's whole history, not the 30-row dry-run sample —
-    the contract scopes it to history rows, not to the sample.
-
-    Scoped to the CARD, not the customer. The screen this appears on is
-    card-scoped ("For card X only") and so is the dry run above it, so a
-    customer-wide count would be read as a card count. The two differ
-    materially in the pack (CA0001: 14 on the card, 29 across the customer),
-    and the UI copy says "on this card" to match. Open with P1: if the backend
-    counts customer-wide instead, this function and that one line of copy change
-    together.
-    """
-    rows = [r for r in history_by_card.get(card_id, []) if r["initiator_type"] == "agent"]
+def compute_agent_history(customer_id, history_rows):
+    """docs/api-contract.md §2: agent history across all of a customer's cards."""
+    rows = [
+        r
+        for r in history_rows
+        if r["customer_id"] == customer_id and r["initiator_type"] == "agent"
+    ]
     if not rows:
         return None
     return {
@@ -209,7 +201,7 @@ def compute_agent_history(card_id, history_by_card):
     }
 
 
-def compute_dry_run(card_id, limit, category, history_by_card):
+def compute_dry_run(card_id, customer_id, limit, category, history_by_card, history_rows):
     rows = sorted(history_by_card.get(card_id, []), key=lambda r: r["timestamp"], reverse=True)
     sample = rows[:SAMPLE_SIZE]
     classified = [(row, *classify(row, limit, category)) for row in sample]
@@ -223,7 +215,7 @@ def compute_dry_run(card_id, limit, category, history_by_card):
     examples = pick_examples(classified)
     if examples:
         dry_run["examples"] = examples
-    agent_history = compute_agent_history(card_id, history_by_card)
+    agent_history = compute_agent_history(customer_id, history_rows)
     if agent_history:
         dry_run["agent_history"] = agent_history
     return dry_run
@@ -305,8 +297,9 @@ def build():
         sid = row["scenario_id"]
         if sid not in run_start or row["timestamp"] < run_start[sid]:
             run_start[sid] = row["timestamp"]
+    history_rows = load_csv("authorization_history.csv")
     history_by_card = {}
-    for row in load_csv("authorization_history.csv"):
+    for row in history_rows:
         history_by_card.setdefault(row["card_id"], []).append(row)
 
     drafts = []
@@ -314,7 +307,8 @@ def build():
         scenario_id = row["scenario_id"]
         card_id, limit, category = DRY_RUN_SPEC[scenario_id]
         curated = CURATION[scenario_id]
-        dry_run = compute_dry_run(card_id, limit, category, history_by_card)
+        customer_id = next(r["customer_id"] for r in history_by_card[card_id])
+        dry_run = compute_dry_run(card_id, customer_id, limit, category, history_by_card, history_rows)
 
         drafts.append(
             {

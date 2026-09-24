@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react'
 import type { Decision, DecisionRelation, EvidenceItem, UncertainOutcome } from '../../api/types'
 import { DecisionMark } from '../../components/DecisionMark'
+import { NetworkState } from '../../components/NetworkState'
 import type { IconProps } from '../../components/icons/IconProps'
 import {
   BackChevronIcon,
@@ -103,7 +104,7 @@ export function DecisionDetail({
   // every other decision reaches this screen via onBack/backLabel as usual.
   onGoHome: () => void
 }) {
-  const { decisions } = useDecisions()
+  const { decisions, status: decisionsStatus, retry: retryDecisions } = useDecisions()
   const { policiesByCard } = usePolicy()
   const { signedInAs, logout } = useCustomer()
   const decision = decisions.find((d) => d.authorization_id === authorizationId)
@@ -121,7 +122,15 @@ export function DecisionDetail({
           <BackChevronIcon size={20} strokeWidth={2} />
           {backLabel}
         </button>
-        <p className="text-[15px] text-ink-muted">This purchase couldn&apos;t be found.</p>
+        {decisionsStatus === 'loading' ? (
+          <NetworkState kind="loading" label="purchase details" />
+        ) : decisionsStatus === 'error' ? (
+          <NetworkState kind="error" label="purchase details" onRetry={retryDecisions} />
+        ) : (
+          <NetworkState kind="empty" label="purchase details">
+            This purchase couldn&apos;t be found.
+          </NetworkState>
+        )}
       </div>
     )
   }
