@@ -214,10 +214,7 @@ def test_all_45_events_are_decided_and_expire_unanswered(
     stubbed = engine_functions is ALL_STUBS
 
     async def scenario() -> None:
-        # Four runs share one serial poll loop that also closes every 0.5 s step-up, so on
-        # a loaded machine a request can wait over 3 s to be served. The deadline is not
-        # what this test checks: give it room, or the fake auto-declines (a flake).
-        config = fast(human_window_s=0.5, decision_deadline_s=10.0)
+        config = fast(human_window_s=0.5)
         async with harness(db, config, history=history, **engine_functions) as (fake, client, worker):
             await worker.start()
             runs = {}
