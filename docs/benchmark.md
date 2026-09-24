@@ -113,7 +113,7 @@ CPU only:
   image, flags before the image and the command after `--`:
 
 ```bash
-fly machine run -a oneguard --vm-size shared-cpu-4x --vm-memory 4096 -r lhr --restart no --rm \
+fly machine run -a oneguard --vm-size performance-2x --vm-memory 4096 -r lhr --restart no --rm \
   --detach registry.fly.io/oneguard:<tag> -- python scripts/bench_engine.py --laya --lines-only --reps 3
 fly logs -a oneguard -i <machine id> --no-tail
 ```
@@ -128,12 +128,27 @@ warm-up call, then the 56 item lines three times (168 calls):
 | 3 | 56 | 260.1 | 308.0 | 353.0 | 1% |
 | **all** | 168 | **263.8** | **343.8** | 654.9 | |
 
-- Load (`signals.warm()`) 35.3 s; the live app took about as long (checkpoint loaded 41 s after the machine update) before it answered,
-  inside the 120 s health grace. Live app RSS with the model: 2.2 GB of 4 GB.
-- P95 344 ms ≤ 450 ms: the soft-signal budget stays at 500 ms and the machine stays shared
-  (docs/decisions.md).
-- **Shared CPU throttles under sustained load.** The full `--laya` run (1,120 back-to-back
-  model calls) on the same machine size drained the burst balance: CPU steal reached 57% and
-  it had not finished after 30 minutes (stopped). A live scenario asks a few times a minute,
-  so it runs on the burst balance; a load test would not, and past the budget the keyword
-  answer stands (never less cautious). Measure with `--lines-only` on a fresh machine.
+Then a fresh machine of the same size, `bench_engine.py --laya --reps 3` (per purchase 135,
+then per item line 168, about 340 model calls after the load):
+
+| stage | n | P50 ms | P95 ms | max ms |
+|---|---:|---:|---:|---:|
+| soft_signals per purchase (laya) | 135 | 327.5 | 3712.0 | 6556.4 |
+| Laya agent_directed per item line | 168 | 320.1 | 3996.4 | 5763.3 |
+
+55 of 135 purchases went over the 500 ms budget.
+
+- Load (`signals.warm()`) 34-35 s; the live app took about as long (checkpoint loaded 41 s
+  after the machine update) before it answered, inside the 120 s health grace. Live app RSS
+  with the model: 2.2 GB of 4 GB.
+- **Shared CPU throttles.** A shared vCPU bursts on a balance and drops to its baseline share
+  when the balance runs out. The short run above stayed inside it (1% steal); the model load
+  plus a few hundred calls did not (P95 over 3.5 s), and the full `--laya` run (1,120 calls)
+  reached 57% steal and had not finished after 30 minutes. So the shared P95 is above 450 ms
+  and the machine moves to `performance-2x` (dedicated CPUs, docs/decisions.md).
+- The budget is per purchase: `pipeline.py` gives `soft_signals` one budget, and
+  `LayaSignals` waits that long for one job that asks every item line in turn. Past it the
+  keyword answer stands (`source: merchant_text`): the decision is the one `keywords` would
+  give, never less cautious, and it waits at most the budget. The pack has no model-only
+  trigger, so its outcomes do not change. The unfinished job keeps the one Laya thread busy,
+  so a purchase right behind it waits in the queue and can fall back too.
