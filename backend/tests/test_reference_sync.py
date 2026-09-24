@@ -322,7 +322,7 @@ def test_every_run_start_rereads_the_bootstrap_and_uses_changed_values(
     monkeypatch.setattr(worker_module, "BOOTSTRAP_FRESH_S", 0.0)
 
     async def scenario() -> None:
-        async with harness(db, fast(human_window_s=60.0), history=history) as (fake, client, worker):
+        async with harness(db, fast(human_window_s=60.0, decision_deadline_s=3.0), history=history) as (fake, client, worker):
             await worker.start()
             assert (worker.human_window_s, worker.decision_deadline_s, worker.poll_wait_s) == (60.0, 3.0, 0.2)
             _, first_run = await start_run(client, worker, "SCEN0000")
