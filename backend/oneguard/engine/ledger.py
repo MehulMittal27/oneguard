@@ -13,6 +13,7 @@ Rules it enforces (docs/rules.md):
 - Q2  an expired step-up is recorded as ``expired``, declined, and releases its hold.
 - C2  the period window is rolling on simulated time: final approvals with
       ``ts_sim >= at - period_days`` and ``ts_sim < at`` (api-contract §3.3), per card.
+      The same window counts purchases (``period_count``: approvals + pending).
 - Q7  known shops are customer level: history (any card) plus this run's approvals.
 - W1, W3 known devices and countries: history plus this run's approvals (their stored
       events); W4 the largest approved purchase, the same way.
@@ -54,6 +55,7 @@ from oneguard.engine.ledger_base import (
     confirmation_keys,
     is_final_approval,
     known_merchant_names,
+    period_counts,
 )
 from oneguard.engine.ledger_base import Ledger as LedgerBase
 from oneguard.engine.types import HistoryIndex, LedgerView, PriorDecision
@@ -141,6 +143,7 @@ class StoreLedger(LedgerBase):
             period_spent_chf=float(sum((_money(d.spent_chf) for d in in_window), Decimal(0))),
             period_reserved_chf=float(sum((_money(d.reserved_chf) for d in in_window), Decimal(0))),
             period_window_start=window_start,
+            **period_counts(in_window),
             priors=[
                 PriorDecision(
                     authorization_id=d.live_authorization_id,

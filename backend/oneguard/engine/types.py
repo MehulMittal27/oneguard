@@ -235,11 +235,20 @@ class LedgerView(_Model):
     ``confirmed_keys`` are remembered customer confirmations: ``rule|merchant|item``
     (read only for restrictions no data can check) and ``rule|merchant|*`` (read only
     for a known-shop check, C9).
+    ``period_count`` counts purchases in the same window and on the same card as
+    ``period_spent_chf``: final approvals plus pending step-ups (M4, M5; declines never
+    count). ``period_reserved_count`` is the pending part of it, and
+    ``period_last_approved_at`` the simulated time of the latest final approval in the
+    window (``None`` when there is none). ``period_count`` ``None`` means not counted,
+    which is never a pass (P3).
     """
 
     period_spent_chf: float
     period_reserved_chf: float
     period_window_start: AwareDatetime
+    period_count: int | None = Field(default=None, ge=0)
+    period_reserved_count: int = Field(default=0, ge=0)
+    period_last_approved_at: AwareDatetime | None = None
     priors: list[PriorDecision]
     known_merchant_ids: set[str]
     known_merchant_ids_on_card: set[str]

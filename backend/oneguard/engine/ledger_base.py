@@ -84,6 +84,26 @@ def is_final_approval(outcome: str, final: bool, uncertain_outcome: str | None) 
     return outcome == "approve" or (final and uncertain_outcome == "approved")
 
 
+def is_pending(outcome: str, final: bool) -> bool:
+    """A step-up still waiting for the customer's answer: reserved, not yet spend (M5)."""
+    return outcome == "step_up" and not final
+
+
+def period_counts(in_window: Iterable[Any]) -> dict[str, Any]:
+    """``LedgerView.period_count`` and its companions over the period window's decisions.
+
+    Final approvals plus pending step-ups count; declines and expired step-ups never do
+    (M4, M5). Each decision is one live id, so a redelivery counts nothing (M7).
+    """
+    approved = [d for d in in_window if is_final_approval(d.outcome, d.final, d.uncertain_outcome)]
+    pending = [d for d in in_window if is_pending(d.outcome, d.final)]
+    return {
+        "period_count": len(approved) + len(pending),
+        "period_reserved_count": len(pending),
+        "period_last_approved_at": max((d.ts_sim for d in approved), default=None),
+    }
+
+
 def check_resolution(
     decision: Literal["approve", "decline"], resolved_by: Literal["customer", "timeout"], message: str | None
 ) -> None:
@@ -265,6 +285,7 @@ class InMemoryLedger(Ledger):
             period_spent_chf=round(sum(e.spent_chf for e in in_window), 2),
             period_reserved_chf=round(sum(e.reserved_chf for e in in_window), 2),
             period_window_start=window_start,
+            **period_counts(in_window),
             priors=[
                 PriorDecision(
                     authorization_id=e.live_authorization_id,

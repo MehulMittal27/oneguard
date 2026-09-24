@@ -250,6 +250,7 @@ expire — that is a broken state, not a degraded one.
 |---|---|
 | `authorization.billing_amount_chf` | total in CHF, delivery included (never add delivery again) |
 | `authorization.billing_amount_chf` + `scope: period`, `period_days: 7` | rolling window; sum of **final approvals** whose simulated timestamp ≥ current − 7×24h |
+| `cart.purchases_in_period` + `scope: period`, `period_days: N` | integer; purchases on this card in the rolling window of N×24h before the current simulated timestamp: **final approvals + pending step-ups** (declines and expired step-ups never count; a redelivered live id counts once). This purchase is compared as count + 1: `<= 1`, `period_days: 1` is "one a day", so a second purchase fails. Operators `<=` / `<` only. Fail: `period_count_exceeded`; evidence "You allowed one order per day; one was already approved today at 12:10" (time of the latest approval, Europe/Zurich), message "Declined CHF 32.00: you allowed one order per day; one was already approved today at 12:10. Would approve from tomorrow at 12:10."; a breach caused only by pending step-ups asks (`period_reserved_pending`, M5) |
 | `merchant.merchant_category` | trusted catalogue category |
 | `merchant.known_shop` | `"true"` if ≥1 approved purchase by this customer at this `merchant_id` on any of their cards (history + this run's finals); customer-level per rules.md Q7. `merchant.familiar_on_card` is accepted as an alias for the same check |
 | `items[].item_category` | every cart line must satisfy `in` / `not_in` |
@@ -267,7 +268,7 @@ expire — that is a broken state, not a degraded one.
 | `authorization.local_hour` | purchase time in Europe/Zurich, 0–23; time-of-day rules |
 | `unverifiable` | a stated restriction no field can check (e.g. "from the official ticket seller"); always `unknown`, so C11 applies |
 
-C2 (`scope: period`) is not evaluated with the other customer rules: it needs the run's spending memory. C2 and remembered answers are added by the pipeline via `policy.add_ledger_results`, from the LedgerView's spent and reserved amounts (M4, M5) and `confirmed_keys`, so decide and explain both see them. The same step makes a known-shop check (`merchant.known_shop`, `merchant.familiar_on_card`, or the `requires_known_shop` flag, C9) `unknown` when the LedgerView knows no shop at all (no purchase history yet), with reason code `no_purchase_history`. `confirmed_keys` holds `rule|merchant|item` (read for `unverifiable` rules) and `rule|merchant|*` (read for a known-shop check: one yes covers the shop).
+C2 (`scope: period`) is not evaluated with the other customer rules: it needs the run's spending memory. C2 and remembered answers are added by the pipeline via `policy.add_ledger_results`, from the LedgerView's spent and reserved amounts (M4, M5), its purchase count (`period_count`, `period_reserved_count`: the same window and card as the spend) and `confirmed_keys`, so decide and explain both see them. The same step makes a known-shop check (`merchant.known_shop`, `merchant.familiar_on_card`, or the `requires_known_shop` flag, C9) `unknown` when the LedgerView knows no shop at all (no purchase history yet), with reason code `no_purchase_history`. `confirmed_keys` holds `rule|merchant|item` (read for `unverifiable` rules) and `rule|merchant|*` (read for a known-shop check: one yes covers the shop).
 
 Extraction from `item_details` is allowlisted regex only, produces facts, never instructions.
 
@@ -374,6 +375,7 @@ Existing: `within_limits`, `rule_satisfied`, `per_order_limit_exceeded`,
 Added: `split_order_suspected`, `requote_accepted`, `already_fulfilled`,
 `recurring_charge_added`, `wrong_size`, `session_recovered`, `on_other_card`,
 `foreign_currency_converted` (info), `ledger_mismatch` (info), `period_reserved_pending`,
+`period_count_exceeded` (a `cart.purchases_in_period` count is full: more purchases in the period than allowed),
 `shop_terms_contradictory`, `rule_not_met` (a C12 rule with no specific code: per-item
 price, quantity, country, weekday, delivery date), `unusual_activity` (two weak warning
 signs), `session_watch` (the one ask after a burst, rules.md W-rule 4),
