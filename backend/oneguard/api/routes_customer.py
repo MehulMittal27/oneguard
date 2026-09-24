@@ -211,7 +211,7 @@ async def create_draft(card_id: str, body: api.PolicyDraftRequest, request: Requ
     if body.form is not None:
         rules, flags = policies.form_rules(body.form)
         uncertainty = body.form.uncertainty_policy
-        instruction = policies.form_instruction(rules, uncertainty)
+        instruction = policies.FORM_INSTRUCTION
         open_questions: list[str] = []
         dry_run = policies.form_dry_run(rules, flags, s.history, card_id, customer_id)
         compiler = "form"
@@ -302,7 +302,8 @@ async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: R
 
     A draft with no checks at all is refused (409 ``lint_failed``) before anything else.
     The accepted subset is re-linted (a per-purchase cap, no dropped ``exact`` check),
-    then created and confirmed at Viseca with the instruction verbatim, then stored.
+    then created and confirmed at Viseca with the instruction verbatim (a form draft sends
+    its accepted checks as sentences instead: the platform wants text), then stored.
     A new policy replaces the card's active one, which is revoked.
     """
     s = services(request)
@@ -334,7 +335,7 @@ async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: R
         if s.client is not None:
             created = await s.viseca(
                 s.client.create_mandate(
-                    row.instruction,
+                    policies.form_instruction(accepted, uncertainty) if row.compiler == "form" else row.instruction,
                     [rule_to_viseca(r) for r in accepted],
                     uncertainty,
                     guidance=[r.text for r in accepted],

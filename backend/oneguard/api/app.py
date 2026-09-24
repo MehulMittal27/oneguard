@@ -5,7 +5,9 @@
 The lifespan, in order (docs/architecture.md Runtime, docs/database.md §5):
 
 1. ``init_db`` (creates missing tables, never drops or truncates); an empty store is
-   seeded from the data pack, a seeded one is left as it is;
+   seeded from the data pack, a seeded one is left as it is; form policies stored with
+   their check texts as the instruction are set to "Built from the form"
+   (``queries.restore_form_instructions``);
 2. ``authorization_history`` loaded into memory (``StoreHistoryIndex``);
 3. the database pool warmed, so the first decision does not pay a new connection;
 4. soft signals warmed when enabled (``ONEGUARD_SOFT_SIGNALS``: off | keywords | laya);
@@ -42,7 +44,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from oneguard import __version__
-from oneguard.api import errors, queries, routes_customer, routes_dev, static
+from oneguard.api import errors, policies, queries, routes_customer, routes_dev, static
 from oneguard.api.models import _utc_z
 from oneguard.api.offline import OfflineRunner
 from oneguard.api.services import (
@@ -185,6 +187,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     db = make_engine(config.database_url) if own_engine else get_engine()
     await asyncio.to_thread(init_db, db)
     await asyncio.to_thread(_seed_if_empty, db)
+    if restored := await asyncio.to_thread(queries.restore_form_instructions, db, policies.FORM_INSTRUCTION):
+        log.info("%d form mandate(s) now serve %r as their instruction", restored, policies.FORM_INSTRUCTION)
     started = time.perf_counter()
     history: HistoryIndex = await asyncio.to_thread(_load_history, db)
     log.info("history loaded in %.1f s", time.perf_counter() - started)

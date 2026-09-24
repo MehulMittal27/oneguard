@@ -11,6 +11,7 @@ import {
 } from '../../components/icons/lucide'
 import { SessionBanner } from '../../components/SessionBanner'
 import { formatShortDate, formatTime } from '../../lib/datetime'
+import { messageWithoutCounterfactual } from '../../lib/decisionMessage'
 import { getInitials } from '../../lib/initials'
 import { formatChf } from '../../lib/money'
 import { reasonLabel } from '../../lib/reasonCodes'
@@ -229,7 +230,11 @@ export function DecisionDetail({
         */}
         <div className="mt-4 border-t border-hairline pt-4">
           <div className="flex items-start justify-between gap-3">
-            <p className="text-[15px] leading-[1.45] font-medium text-ink">{decision.message}</p>
+            {/* The counterfactual line below says the suggestion; the message's
+                trailing copy of it is dropped so it is said once. */}
+            <p className="text-[15px] leading-[1.45] font-medium text-ink">
+              {messageWithoutCounterfactual(decision.message, decision.counterfactual)}
+            </p>
             {decision.explanation_source && (
               <span className="mt-0.5 shrink-0 rounded-pill bg-surface-sunken px-2 py-0.5 text-[11px] text-ink-muted">
                 {EXPLANATION_SOURCE[decision.explanation_source] ?? EXPLANATION_SOURCE_FALLBACK}

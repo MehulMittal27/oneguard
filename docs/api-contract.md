@@ -137,13 +137,14 @@ DryRunResult { sample_size, would_violate, would_fit, would_ask, insight,
                agent_history?: { attempts: number, approved: number } }   // NEW: history rows with initiator_type 'agent',
                                               // customer-level (all the customer's cards); the rest of the dry run is card-scoped
 
-PolicyDraft  { draft_id, card_id, instruction, checks: RuleCheck[],
+PolicyDraft  { draft_id, card_id, instruction, checks: RuleCheck[],   // instruction: the C1 text verbatim, or exactly
+                                              // "Built from the form" for a form draft; never the check texts
                uncertainty_policy: 'ask'|'decline', open_questions: string[],  // no checks read: the first entry is
                                               // "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'"
                dry_run: DryRunResult,
                compiler?: 'llm' | 'form' | 'fallback' }               // NEW: 'fallback' = LLM unavailable, rule-based parse used
 
-Mandate      { mandate_id, card_id, instruction, checks: RuleCheck[],
+Mandate      { mandate_id, card_id, instruction, checks: RuleCheck[],   // instruction: as its draft's (C4 keeps it)
                uncertainty_policy: 'ask'|'decline'|'approve', open_questions: string[],
                status: 'active'|'revoked', confirmed_at,
                usage?: MandateUsage }                                  // NEW
@@ -253,7 +254,8 @@ expire — that is a broken state, not a degraded one.
   `open_questions` entry rather than failing. If no check at all was read (e.g. "buy
   something nice"), that entry is "I couldn't read a spending limit or item type - try
   'groceries, max CHF 120 per order'", first, in place of the no-amount question.
-- C1 with `form`: no LLM; rules built directly.
+- C1 with `form`: no LLM; rules built directly. The form has no words of the customer's, so
+  the draft's (and the mandate's) `instruction` is exactly "Built from the form".
 - The backend stores, per `RuleCheck.id`, the typed rule
   (`field`, `operator`, `value`, `currency?`, `scope?`, `period_days?`) in Viseca's rule
   format. **The UI only ever sees `text`; `checks` sent back in C2 are treated as accepted
@@ -268,7 +270,10 @@ expire — that is a broken state, not a degraded one.
   `hard_rules`, `uncertainty_policy`, `guidance` = check texts, `open_questions`) then
   `POST /v1/mandates/{draft_id}/confirm`. The returned `TM…` id is stored; our `mandate_id`
   is our own and maps to it.
-- The instruction is stored **verbatim** and sent to Viseca verbatim.
+- The instruction is stored **verbatim** and sent to Viseca verbatim; C1, C2, C3 and C4 serve
+  it unchanged. A form policy stores and serves "Built from the form" and sends Viseca its
+  accepted checks as sentences ("Total at or below CHF 20 per order. Ask me when
+  uncertain."), since the platform wants text.
 - A confirmed draft replaces the card's active mandate, which is revoked (C5 semantics).
 - C4 `add_checks` are ids of checks proposed by this card's drafts; their text is ignored.
   Changing a check already in force is 409 `not_pure_addition`; an unknown id is 422.
@@ -279,6 +284,7 @@ expire — that is a broken state, not a degraded one.
 |---|---|
 | `authorization.billing_amount_chf` | total in CHF, delivery included (never add delivery again) |
 | `authorization.billing_amount_chf` + `scope: period`, `period_days: 7` | rolling window; sum of **final approvals** whose simulated timestamp ≥ current − 7×24h |
+| `cart.purchases_in_period` + `scope: period`, `period_days: N` | integer; purchases on this card in the rolling window of N×24h before the current simulated timestamp: **final approvals + pending step-ups** (declines and expired step-ups never count; a redelivered live id counts once). This purchase is compared as count + 1: `<= 1`, `period_days: 1` is "one a day", so a second purchase fails. Operators `<=` / `<` only. Fail: `period_count_exceeded`; evidence "You allowed one order per day; one was already approved today at 12:10" (time of the latest approval, Europe/Zurich), message "Declined CHF 32.00: you allowed one order per day; one was already approved today at 12:10. Would approve from tomorrow at 12:10."; a breach caused only by pending step-ups asks (`period_reserved_pending`, M5) |
 | `merchant.merchant_category` | trusted catalogue category |
 | `merchant.known_shop` | `"true"` if ≥1 approved purchase by this customer at this `merchant_id` on any of their cards (history + this run's finals); customer-level per rules.md Q7. `merchant.familiar_on_card` is accepted as an alias for the same check |
 | `items[].item_category` | every cart line must satisfy `in` / `not_in` |
@@ -296,7 +302,7 @@ expire — that is a broken state, not a degraded one.
 | `authorization.local_hour` | purchase time in Europe/Zurich, 0–23; time-of-day rules |
 | `unverifiable` | a stated restriction no field can check (e.g. "from the official ticket seller"); always `unknown`, so C11 applies |
 
-C2 (`scope: period`) is not evaluated with the other customer rules: it needs the run's spending memory. C2 and remembered answers are added by the pipeline via `policy.add_ledger_results`, from the LedgerView's spent and reserved amounts (M4, M5) and `confirmed_keys`, so decide and explain both see them. The same step makes a known-shop check (`merchant.known_shop`, `merchant.familiar_on_card`, or the `requires_known_shop` flag, C9) `unknown` when the LedgerView knows no shop at all (no purchase history yet), with reason code `no_purchase_history`. `confirmed_keys` holds `rule|merchant|item` (read for `unverifiable` rules) and `rule|merchant|*` (read for a known-shop check: one yes covers the shop).
+C2 (`scope: period`) is not evaluated with the other customer rules: it needs the run's spending memory. C2 and remembered answers are added by the pipeline via `policy.add_ledger_results`, from the LedgerView's spent and reserved amounts (M4, M5), its purchase count (`period_count`, `period_reserved_count`: the same window and card as the spend) and `confirmed_keys`, so decide and explain both see them. The same step makes a known-shop check (`merchant.known_shop`, `merchant.familiar_on_card`, or the `requires_known_shop` flag, C9) `unknown` when the LedgerView knows no shop at all (no purchase history yet), with reason code `no_purchase_history`. `confirmed_keys` holds `rule|merchant|item` (read for `unverifiable` rules) and `rule|merchant|*` (read for a known-shop check: one yes covers the shop).
 
 Extraction from `item_details` is allowlisted regex only, produces facts, never instructions.
 
@@ -403,6 +409,7 @@ Existing: `within_limits`, `rule_satisfied`, `per_order_limit_exceeded`,
 Added: `split_order_suspected`, `requote_accepted`, `already_fulfilled`,
 `recurring_charge_added`, `wrong_size`, `session_recovered`, `on_other_card`,
 `foreign_currency_converted` (info), `ledger_mismatch` (info), `period_reserved_pending`,
+`period_count_exceeded` (a `cart.purchases_in_period` count is full: more purchases in the period than allowed),
 `shop_terms_contradictory`, `rule_not_met` (a C12 rule with no specific code: per-item
 price, quantity, country, weekday, delivery date), `unusual_activity` (two weak warning
 signs), `session_watch` (the one ask after a burst, rules.md W-rule 4),
@@ -432,7 +439,7 @@ neutral fallback for unknown codes.
 
 1. `Customer.scenario_id` → `scenario_ids: string[]`.
 2. `Decision.related` — one link row in DecisionDetail "Related decisions".
-3. `Decision.counterfactual` — one line under the message in DecisionDetail.
+3. `Decision.counterfactual` — one line under the message in DecisionDetail; when the message ends with the same suggestion, DecisionDetail drops that trailing copy so it is said once (lists keep the full message).
 4. `Mandate.usage` — `lib/spend.ts` prefers it when present; keep client math as mock fallback; ensure human-approved step-ups count as spend.
 5. `Evidence.outcome: 'info'` — neutral styling; unknown values fall back to neutral.
 6. Optional: `Decision.session` banner on DecisionDetail when trust ≠ normal; a "Revoke policy" shortcut on the Approvals card.

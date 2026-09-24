@@ -119,7 +119,9 @@ class Policy:                  mandate_id, instruction, rules: list[Rule], uncer
                                allowed_item_categories, blocked_item_categories, requires_known_shop: bool,
                                nothing_extra: bool, shop_type: str | None
 class PriorDecision:           authorization_id, timestamp, outcome, final, approved: bool, merchant_id, item_ids: list, billing_amount_chf, reserved: bool
-class LedgerView:              period_spent_chf, period_reserved_chf, period_window_start, priors: list[PriorDecision],
+class LedgerView:              period_spent_chf, period_reserved_chf, period_window_start,
+                               period_count: int | None, period_reserved_count, period_last_approved_at,  # cart.purchases_in_period
+                               priors: list[PriorDecision],
                                known_merchant_ids: set, known_merchant_names: dict[str, str], known_device_ids: set, known_countries: set,
                                max_approved_chf: float, flagged_merchant_ids: set, frozen: bool, confirmed_keys: set
 class RuleResult:              rule_id, outcome: RuleOutcome, detail, counterfactual: str | None, source: FactSource

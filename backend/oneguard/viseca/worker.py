@@ -1426,7 +1426,7 @@ class VisecaWorker:
         at = _parse_time(data["authorization"]["timestamp"])
         assert at is not None
         ours = await self._engine(
-            self._approved_spend, list(run.live_ids), at, period_days_of(run.ctx.policy)
+            self._approved_spend, list(run.live_ids), at, period_days_of(run.ctx.policy, spend_only=True)
         )
         if abs(Decimal(str(theirs)) - ours) <= RECONCILE_TOLERANCE_CHF:
             return []
