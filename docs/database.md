@@ -142,7 +142,7 @@ reads it to build `Decision` responses and `Mandate.usage`. Nobody else writes i
 - **Worker lease.** Only one process polls Viseca per store (`store/lease.py`). The worker
   takes a session-level `pg_try_advisory_lock` on one dedicated autocommit connection,
   outside the pool (so a process uses at most 6 pooler clients), and holds it while it
-  polls. Any other process on the store (a laptop `make serve` or `make demo-live` next to
+  polls. Any other process on the store (a laptop `make serve` next to
   Fly) stays in `standby`, retries every 5 s and takes over when the holder stops. The
   holder re-checks its connection every 10 s and stands by if it is gone. Advisory locks
   are database-wide, not per schema. On SQLite (one process) the lease is always granted.

@@ -64,8 +64,7 @@ oneguard/
 - One database per environment via ONEGUARD_DATABASE_URL (docs/database.md). One transaction per decision.
 - Viseca key from `VISECA_API_KEY`; base URL from `VISECA_BASE_URL`; both server-side.
 - One worker polls per store: the worker lease (docs/database.md §5.1, `store/lease.py`).
-  A second process on the same store (the laptop next to Fly, `make demo-live` next to
-  `make serve`) stays in `standby` and does not poll, recover step-ups or read the feed;
+  A second process on the same store (a laptop `make serve` next to Fly) stays in `standby` and does not poll, recover step-ups or read the feed;
   it takes over when the holder stops. The sandbox serves each request to whoever polls
   first, so two workers would decide the same team's requests twice (docs/decisions.md).
 - Worker (`oneguard/viseca/worker.py`, `VisecaWorker`): on start reads `/v1/bootstrap`
@@ -115,11 +114,11 @@ oneguard/
   only; unset in `fly.toml`) every call is summarised in `viseca_calls` (no key, bodies
   ≤ 4 KB) by `oneguard/viseca/client.py` (`call_sink`); nothing reads the table to decide or
   to report health, and each call is still logged at DEBUG. `make demo-live SCEN=…` (`oneguard/viseca/demo.py`) starts
-  one scenario through the server at `ONEGUARD_API` (default `https://oneguard.fly.dev`; C1,
+  one scenario through the server at `ONEGUARD_API_URL` (default `https://oneguard.fly.dev`; C1,
   C2, D3), prints whom to sign in as and follows the run read-only: the server's worker
-  decides. Only with no OneGuard server answering there does it run a worker itself (it then
-  needs `VISECA_API_KEY`), and that worker starts nothing when another one already polls the
-  store (it would only stand by).
+  decides. `make demo-offline SCEN=…` restarts that server's offline replay (D2). Both probe
+  `/healthz` first; with no OneGuard server answering they exit 1 and start nothing: no run,
+  no replay, never a worker of their own.
 
 ## Deployment (Plan C)
 
@@ -138,8 +137,9 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
 - `fly.toml`: region `lhr` (nearest Supabase in eu-west-1), one `performance-2x` machine with
   4 GB (Laya on CPU; dedicated CPUs because shared ones throttle, docs/benchmark.md §3), never auto-stopped (the
   worker polls from inside the app), no volume: state lives in Supabase via
-  `ONEGUARD_DATABASE_URL`. Health check `GET /healthz`, 120 s grace (the model loads before
-  the app answers).
+  `ONEGUARD_DATABASE_URL`. Health check `GET /healthz`, 120 s grace. Deploy strategy
+  `immediate`: with one machine a rolling deploy only waits on the health check, and the
+  new machine polls as soon as the app is up (the model loads in the background).
 - Fly secrets: `VISECA_API_KEY`, `OPENAI_API_KEY`, `ONEGUARD_DATABASE_URL`,
   `ONEGUARD_LLM_PROVIDER`; temporarily `ONEGUARD_ALLOW_RUNS=false`
   (D3 and `make demo-live` refuse to start a run while it is set). Set with `fly secrets`, never in files.
@@ -153,13 +153,17 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
   `make reset-db` (refused when `ONEGUARD_ENV=prod`), `make matrix` (regenerates
   `docs/replay-matrix.md`; `tests/test_replay_matrix.py` fails when it is stale).
 - App start (`oneguard/api/app.py` lifespan): `init_db` (creates missing tables, never drops),
-  seeds only an empty store, loads `HistoryIndex`, warms the pool (5 connections), warms
-  soft signals if enabled, then starts the worker in the background only when
-  `VISECA_API_KEY` is set, after binding every stored mandate's policy to it.
+  seeds only an empty store, loads `HistoryIndex`, warms the pool (5 connections), then starts
+  the worker in the background only when `VISECA_API_KEY` is set, after binding every
+  stored mandate's policy to it. With `ONEGUARD_SOFT_SIGNALS=laya` the model loads in a
+  background thread at the same time (about 35 s on the machine): the worker polls and
+  decides with keywords meanwhile, and `signals.LayaSignals` switches to the model the
+  moment it is loaded. A failed load keeps keywords and is logged.
 - `/healthz` (never names a secret or URL): `status` (`ok` when the database answers and the
   worker, if configured, is polling), `worker` (`VisecaWorker.status()`: state, polling,
   last poll, events cursor, human window, pending step-ups, last error), `events_cursor`,
-  `provider` (name, configured), `signals` (backend, enabled, model loaded), `database`
+  `provider` (name, configured), `signals` (`backend`: the detector answering now, `keywords` until the model has
+  loaded; `configured`; `enabled`; `model_loading`; `model_loaded`), `database`
   (engine name `sqlite`/`postgresql`, `SELECT 1` round trip in ms), `engine.stubbed`.
   503 only when the database does not answer.
 - SQLite fallback (docs/database.md §5): if Supabase is unreachable, unset

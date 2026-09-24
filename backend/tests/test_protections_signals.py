@@ -160,3 +160,29 @@ def test_module_warm_without_a_model_is_false(monkeypatch, backend, expected):
 def test_module_warm_with_laya_loads_it(monkeypatch):
     monkeypatch.setattr(S, "BACKEND", S.LayaSignals(load=lambda: (lambda text: 0.1)))
     assert S.warm() is True
+
+
+def test_decisions_while_the_model_loads_use_keywords_then_switch_to_it():
+    """The API loads Laya in a background thread while the worker already decides."""
+    loads, started, release = [], threading.Event(), threading.Event()
+
+    def slow_load():
+        loads.append(1)
+        started.set()
+        release.wait(5)
+        return lambda text: 0.9
+
+    laya = S.LayaSignals(load=slow_load)
+    loader = threading.Thread(target=laya.warm)
+    loader.start()
+    try:
+        assert started.wait(1)
+        for f in [*CLEAN, *DIRTY]:
+            assert laya(f, 0.5) == S.KeywordSignals()(f, 0.5)  # keywords, at once
+        assert only(laya(CLEAN[0], 0.5)).triggered is False
+    finally:
+        release.set()
+        loader.join(5)
+    assert loads == [1], "a decision during the load never starts a second one"
+    switched = only(laya(CLEAN[0], 0.5))
+    assert (switched.triggered, switched.source) == (True, "model")

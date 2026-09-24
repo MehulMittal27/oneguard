@@ -3,14 +3,22 @@
 # (VISECA_API_KEY, OPENAI_API_KEY, ONEGUARD_DATABASE_URL, ...) are Fly secrets.
 # The worker long-polls Viseca from inside the app, so the machine never auto-stops.
 # ONEGUARD_LOG_VISECA_CALLS stays unset (no viseca_calls rows); set it only to debug.
-# 4 GB: the Laya checkpoint baked into the image (Dockerfile) is loaded once at startup and
-# answers agent_directed on the machine's CPUs. Dedicated CPUs: shared ones run out of burst
+# 4 GB: the Laya checkpoint baked into the image (Dockerfile) is loaded once, in the
+# background at startup (the worker polls with keywords meanwhile), and answers
+# agent_directed on the machine's CPUs. Dedicated CPUs: shared ones run out of burst
 # balance after a few hundred model calls and then throttle (docs/benchmark.md §3).
 app = "oneguard"
 primary_region = "lhr"
 
 [build]
   dockerfile = "Dockerfile"
+
+# One machine: a rolling deploy has nothing to roll over to, and Fly's health-check wait
+# only delays the new machine. It polls Viseca as soon as the app is up (the model loads
+# in the background, api/app.py), so the gap between the old worker and the new is the
+# container start.
+[deploy]
+  strategy = "immediate"
 
 [env]
   PORT = "8080"

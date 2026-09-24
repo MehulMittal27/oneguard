@@ -22,7 +22,8 @@ seed:
 reset-db:
 	cd backend && . .venv/bin/activate && python -m oneguard.store.seed --reset
 
-# Offline targets replay the local data pack; demo-live runs a scenario Viseca serves.
+# replay/replay-all/matrix replay the local data pack here; demo-offline and demo-live drive the
+# server at ONEGUARD_API_URL (default the cloud app) and start nothing when it does not answer.
 # `make replay DB=sqlite:///./oneguard.sqlite` keeps the recorded run (kind = replay) in that store.
 replay: SCEN ?= SCEN0000
 replay:
@@ -47,10 +48,9 @@ serve: build-frontend
 
 demo-offline: SCEN ?= SCEN0000
 demo-offline:
-	curl -s -X POST localhost:8000/api/dev/replay/restart -H 'Content-Type: application/json' \
-	  -d '{"scenario_id":"$(SCEN)","card_id":"$(CARD)","speed_ms":4000}'
+	cd backend && . .venv/bin/activate && python -m oneguard.viseca.demo --offline --scenario $(SCEN) $(if $(CARD),--card $(CARD))
 
-# The server at ONEGUARD_API (default the cloud app) decides; this only starts and follows the run.
+# The server at ONEGUARD_API_URL (default the cloud app) decides; this only starts and follows the run.
 demo-live: SCEN ?= SCEN0101
 demo-live:
 	cd backend && . .venv/bin/activate && python -m oneguard.viseca.demo --scenario $(SCEN) $(if $(CARD),--card $(CARD)) $(if $(FORCE),--force)

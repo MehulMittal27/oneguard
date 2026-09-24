@@ -24,8 +24,8 @@ were checked with the same pipeline and the scenario's policy fixture.
 ## Roles and screens
 
 - **Operator**: laptop terminal with `API=https://oneguard.fly.dev` exported, runs the curl
-  commands below. Nothing on stage needs `make`; `make demo-offline` only targets
-  `localhost:8000`.
+  commands below. Nothing on stage needs `make`; `make demo-offline` calls the same D2 on
+  `ONEGUARD_API_URL` (default the cloud app) and starts nothing when it does not answer.
 - **Customer / presenter**: one browser on `https://oneguard.fly.dev/?demo=1`, projected.
   `?demo=1` adds the dark **Operator** strip above the phone frame: the current replay's
   `scenario · card`, `n/total delivered`, `running`/`idle`, and the **Soft signals: on**
@@ -55,8 +55,11 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
    Expect `worker: "polling"`, `polling: true`, `ok: true`, `signals.enabled: true`,
    `model_loaded: true` (Laya loaded) and `database: true`. `worker: "standby"` means a
    second process holds the store's worker lease (for example a laptop `make serve` with
-   the Supabase `.env` sourced): stop that process. `model_loaded: false` means Laya did
-   not load on this deploy: step 4 then shows keywords only; say so rather than claim Laya.
+   the Supabase `.env` sourced): stop that process. `model_loaded: false` with
+   `signals.model_loading: true` means the machine started less than a minute ago and
+   Laya is still loading (keywords decide meanwhile): wait and reload. `model_loaded:
+   false` with `model_loading: false` means Laya did not load on this deploy: step 4 then
+   shows keywords only; say so rather than claim Laya.
 
 3. **Soft signals on** (the strip's button always starts as "on" after a reload and does
    not read the server, so make the server agree):
@@ -284,7 +287,7 @@ curl -s -X POST $API/api/dev/replay/restart -H 'Content-Type: application/json' 
 
 About 3 s later the newest run shows the same eleven outcomes; open **Earlier runs (n)** and
 the step-2 run (the latest "Started ...") to compare row by row. Switch to the `/healthz`
-tab and reload: `"signals": {"backend": "laya", "enabled": false, "model_loaded": true}`
+tab and reload: `"signals": {"backend": "laya", "configured": "laya", "enabled": false, "model_loading": false, "model_loaded": true}`
 and top-level `"model_loaded": true`: the model is loaded, it is just not consulted.
 
 **Say**: the deterministic gate decides; with every model off the outcomes are identical
