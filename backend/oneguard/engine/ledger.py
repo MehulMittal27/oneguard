@@ -51,6 +51,7 @@ from sqlalchemy.orm import Session
 from oneguard.engine.ledger_base import (
     PRIOR_WINDOW,
     LedgerEntry,
+    check_resolution,
     confirmation_keys,
     is_final_approval,
     known_merchant_names,
@@ -293,13 +294,17 @@ class StoreLedger(LedgerBase):
         decision: Literal["approve", "decline"],
         resolved_by: Literal["customer", "timeout"],
         at: datetime,
+        *,
+        message: str | None = None,
     ) -> LedgerEntry:
         row = self._pending_row(authorization_id)
         if row.outcome != "step_up" or row.final:
             raise ValueError(f"{authorization_id} is not awaiting an answer")
-        if resolved_by == "timeout" and decision != "decline":
-            raise ValueError("a timeout only ever declines (rules.md Q2)")
+        check_resolution(decision, resolved_by, message)
         approved = decision == "approve"
+        if message is not None:
+            row.message = message
+            row.counterfactual = None
         row.final = True
         row.uncertain_outcome = "expired" if resolved_by == "timeout" else ("approved" if approved else "declined")
         row.spent_chf = _money(row.billing_amount_chf) if approved else _money(0)

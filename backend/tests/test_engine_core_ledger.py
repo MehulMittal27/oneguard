@@ -23,6 +23,7 @@ import yaml
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from oneguard.engine.explain import expired_message
 from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import (
     InMemoryLedger,
@@ -243,14 +244,14 @@ def test_customer_declines_step_up(ledger):
 
 def test_timeout_is_expired_and_declined(ledger):
     ledger.record(entry("step_up", 65.0, auth_id="S1"))
-    r = ledger.resolve("S1", "decline", "timeout", NOW)
+    r = ledger.resolve("S1", "decline", "timeout", NOW, message=expired_message(120))
     assert (r.uncertain_outcome, r.resolved_by, r.spent_chf, r.reserved_chf) == ("expired", "timeout", 0.0, 0.0)
 
 
 def test_timeout_can_never_approve(ledger):
     ledger.record(entry("step_up", 65.0, auth_id="S1"))
     with pytest.raises(ValueError):
-        ledger.resolve("S1", "approve", "timeout", NOW)
+        ledger.resolve("S1", "approve", "timeout", NOW, message=expired_message(120))
     assert ledger.get("S1").reserved_chf == 65.0  # nothing changed
 
 
@@ -288,7 +289,7 @@ def test_set_deadline_moves_only_the_deadline(ledger, maker):
 def test_set_deadline_only_on_a_pending_ask(ledger):
     ledger.record(entry("approve", 10.0, auth_id="A"))
     ledger.record(entry("step_up", 10.0, auth_id="S"))
-    ledger.resolve("S", "decline", "timeout", NOW)
+    ledger.resolve("S", "decline", "timeout", NOW, message=expired_message(120))
     for auth_id, error in (("A", ValueError), ("S", ValueError), ("NOPE", KeyError)):
         with pytest.raises(error):
             ledger.set_deadline(auth_id, NOW)
@@ -357,7 +358,7 @@ def test_grocery_week_spent_plus_reserved(ledger):
     ledger.record(entry("decline", 300.0, T - timedelta(hours=5)))
     v = view(ledger)
     assert (v.period_spent_chf, v.period_reserved_chf) == (234.5, 65.0)
-    ledger.resolve("ASK", "decline", "timeout", NOW)
+    ledger.resolve("ASK", "decline", "timeout", NOW, message=expired_message(120))
     assert (view(ledger).period_spent_chf, view(ledger).period_reserved_chf) == (234.5, 0.0)
 
 
@@ -406,13 +407,18 @@ def test_flagged_shops_stay_in_their_run(ledger):
 # --- session watch (PM decision) -------------------------------------------------------
 
 
+def _resolve(ledger, auth_id, answer, by):
+    """A customer's answer, or the timeout with its re-rendered message (rules.md Q2)."""
+    ledger.resolve(auth_id, answer, by, NOW, message=expired_message(120) if by == "timeout" else None)
+
+
 def _walk(ledger, steps):
     """steps: (outcome, session_trust, resolve_with) in time order."""
     for i, (outcome, trust, answer) in enumerate(steps):
         e = entry(outcome, 5.0, T - timedelta(hours=10 - i), session_trust=trust)
         ledger.record(e)
         if answer:
-            ledger.resolve(e.live_authorization_id, answer[0], answer[1], NOW)
+            _resolve(ledger, e.live_authorization_id, *answer)
     return view(ledger).frozen
 
 
@@ -448,7 +454,7 @@ def _ask(ledger, answer, *, run_id=RUN, ts=T - timedelta(hours=1), rules=("U1",)
     e = entry("step_up", 5.0, ts, run_id=run_id, merchant="GYM", items=["I1", "I2"], deciding=list(rules))
     ledger.record(e)
     if answer:
-        ledger.resolve(e.live_authorization_id, answer[0], answer[1], NOW)
+        _resolve(ledger, e.live_authorization_id, *answer)
 
 
 def test_customer_ok_is_remembered_per_rule_shop_and_item(ledger):
@@ -493,7 +499,7 @@ def _ask_in(led, run_id, answer, *, trust="normal", card=CARD, rules=("U1",)):
               items=["I1"], deciding=list(rules), session_trust=trust)
     led.record(e)
     if answer:
-        led.resolve(e.live_authorization_id, answer[0], answer[1], NOW)
+        _resolve(led, e.live_authorization_id, *answer)
 
 
 def test_live_memory_carries_to_the_next_session(ledger):
@@ -608,7 +614,8 @@ def test_same_view_as_reference(maker, seed):
             elif op < 0.9:
                 auth = pending.pop(rnd.randrange(len(pending)))
                 answer = rnd.choice([("approve", "customer"), ("decline", "customer"), ("decline", "timeout")])
-                assert led.resolve(auth, *answer, NOW) == ref.resolve(auth, *answer, NOW)
+                message = expired_message(120) if answer[1] == "timeout" else None
+                assert led.resolve(auth, *answer, NOW, message=message) == ref.resolve(auth, *answer, NOW, message=message)
             else:
                 m = rnd.choice(["M1", "M2"])
                 led.flag_merchant(RUN, m, "x", NOW)

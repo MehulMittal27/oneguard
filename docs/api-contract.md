@@ -115,7 +115,8 @@ DryRunResult { sample_size, would_violate, would_fit, would_ask, insight,
                                               // customer-level (all the customer's cards); the rest of the dry run is card-scoped
 
 PolicyDraft  { draft_id, card_id, instruction, checks: RuleCheck[],
-               uncertainty_policy: 'ask'|'decline', open_questions: string[],
+               uncertainty_policy: 'ask'|'decline', open_questions: string[],  // no checks read: the first entry is
+                                              // "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'"
                dry_run: DryRunResult,
                compiler?: 'llm' | 'form' | 'fallback' }               // NEW: 'fallback' = LLM unavailable, rule-based parse used
 
@@ -141,7 +142,7 @@ Decision {
   uncertain_outcome: 'pending'|'expired'|'approved'|'declined' | null,
   status: 'final' | 'pending_human',
   reason_codes: string[],
-  message: string,                            // one sentence, names the number
+  message: string,                            // one sentence, names the number once; a decline adds "Would approve …" (= counterfactual)
   uncertainty: { note: string } | null,
   occurred_at: string,                        // SIMULATED time
   merchant: { merchant_id, name },            // name untrusted
@@ -193,7 +194,7 @@ LedgerSnapshot { card_id, mandate_id, entries: [{ authorization_id, occurred_at,
 | step_up | `uncertain` | `pending_human` | `pending` | POST …/decision `step_up` |
 | customer approves | `uncertain` | `final` | `approved` | POST …/resolve `approve` |
 | customer declines | `uncertain` | `final` | `declined` | POST …/resolve `decline` |
-| window lapses | `uncertain` | `final` | `expired` | backend posts `/resolve` `decline`, message "No answer within 120 s; nothing was approved", `resolved_by: timeout` |
+| window lapses | `uncertain` | `final` | `expired` | backend posts `/resolve` `decline`, message "No answer within 120 s; nothing was approved", `resolved_by: timeout`; the Decision's `message` becomes "Expired: no answer within 120 s; nothing was approved." (the configured window), `counterfactual` null |
 
 A step-up **stays** `decision: 'uncertain'` after resolution; the history must keep showing
 that a person was needed.
@@ -220,12 +221,17 @@ expire — that is a broken state, not a degraded one.
   lint → typed rules → `RuleCheck` text → dry-run against the card's history → draft.
   If the LLM fails or times out, the backend falls back to the rule-based parser and sets
   `compiler: 'fallback'`; if even that yields no amount cap, C1 returns the draft with an
-  `open_questions` entry rather than failing.
+  `open_questions` entry rather than failing. If no check at all was read (e.g. "buy
+  something nice"), that entry is "I couldn't read a spending limit or item type - try
+  'groceries, max CHF 120 per order'", first, in place of the no-amount question.
 - C1 with `form`: no LLM; rules built directly.
 - The backend stores, per `RuleCheck.id`, the typed rule
   (`field`, `operator`, `value`, `currency?`, `scope?`, `period_days?`) in Viseca's rule
   format. **The UI only ever sees `text`; `checks` sent back in C2 are treated as accepted
   ids.** Unknown id → 422. Edited text is ignored.
+- C2 refuses a draft with no checks before anything else: 409 `lint_failed`, message
+  "Not confirmed: no restriction could be read.", `detail: { missing: ['per_order_limit'] }`.
+  Nothing is sent to Viseca and no mandate is stored.
 - C2 re-lints the accepted subset. If the result has no per-purchase amount cap, or drops a
   check whose `source` is `exact`, C2 returns 409 with the §3.8 envelope
   `{ error: { code: 'lint_failed', message: <reason>, detail: { missing: [...] } } }`.
@@ -262,7 +268,7 @@ expire — that is a broken state, not a degraded one.
 | `authorization.local_hour` | purchase time in Europe/Zurich, 0–23; time-of-day rules |
 | `unverifiable` | a stated restriction no field can check (e.g. "from the official ticket seller"); always `unknown`, so C11 applies |
 
-C2 (`scope: period`) is not evaluated with the other customer rules: it needs the run's spending memory. C2 and remembered answers are added by the pipeline via `policy.add_ledger_results`, from the LedgerView's spent and reserved amounts (M4, M5), its purchase count (`period_count`, `period_reserved_count`: the same window and card as the spend) and `confirmed_keys`, so decide and explain both see them. The same step makes a known-shop check (`merchant.known_shop`, `merchant.familiar_on_card`, or the `requires_known_shop` flag, C9) `unknown` when the LedgerView knows no shop at all (no purchase history yet), with reason code `unevaluable`. `confirmed_keys` holds `rule|merchant|item` (read for `unverifiable` rules) and `rule|merchant|*` (read for a known-shop check: one yes covers the shop).
+C2 (`scope: period`) is not evaluated with the other customer rules: it needs the run's spending memory. C2 and remembered answers are added by the pipeline via `policy.add_ledger_results`, from the LedgerView's spent and reserved amounts (M4, M5), its purchase count (`period_count`, `period_reserved_count`: the same window and card as the spend) and `confirmed_keys`, so decide and explain both see them. The same step makes a known-shop check (`merchant.known_shop`, `merchant.familiar_on_card`, or the `requires_known_shop` flag, C9) `unknown` when the LedgerView knows no shop at all (no purchase history yet), with reason code `no_purchase_history`. `confirmed_keys` holds `rule|merchant|item` (read for `unverifiable` rules) and `rule|merchant|*` (read for a known-shop check: one yes covers the shop).
 
 Extraction from `item_details` is allowlisted regex only, produces facts, never instructions.
 
@@ -372,7 +378,9 @@ Added: `split_order_suspected`, `requote_accepted`, `already_fulfilled`,
 `period_count_exceeded` (a `cart.purchases_in_period` count is full: more purchases in the period than allowed),
 `shop_terms_contradictory`, `rule_not_met` (a C12 rule with no specific code: per-item
 price, quantity, country, weekday, delivery date), `unusual_activity` (two weak warning
-signs), `session_watch` (the one ask after a burst, rules.md W-rule 4).
+signs), `session_watch` (the one ask after a burst, rules.md W-rule 4),
+`no_purchase_history` (a known-shop check, C9, left unknown because the customer has no
+purchase history yet; every other unknown keeps its own code, else unevaluable).
 
 Development only: `stub`, emitted only while `ONEGUARD_STUBS` stubs `decide`
 (`backend/oneguard/engine/stubs.py`); never in a live run.
@@ -407,6 +415,7 @@ neutral fallback for unknown codes.
 10. PolicyDraft.compiler == 'fallback' shown as a banner; Decision.explanation_source shown as a subtle tag
 11. Optional: `Mandate.usage.confirmations` as a "Things you've confirmed" list on the policy screen (names rendered as plain text)
 12. Optional: `Decision.confirmable` - on a step-up, "Approve, and treat <shop> as <phrase> from now on"; absent or null means the ordinary approve button
+13. Policy review: a draft with no checks disables "Confirm policy" (C2 would refuse it, §3.2) and shows its `open_questions`, falling back to "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'" when there are none
 
 No endpoint changes. No screen removals. Tighten UI stays dormant.
 

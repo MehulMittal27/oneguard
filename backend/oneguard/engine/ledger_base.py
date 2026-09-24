@@ -104,6 +104,17 @@ def period_counts(in_window: Iterable[Any]) -> dict[str, Any]:
     }
 
 
+def check_resolution(
+    decision: Literal["approve", "decline"], resolved_by: Literal["customer", "timeout"], message: str | None
+) -> None:
+    """A timeout only ever declines and always re-renders the message (rules.md Q2);
+    a customer's answer keeps the message it was asked with."""
+    if resolved_by == "timeout" and decision != "decline":
+        raise ValueError("a timeout only ever declines (rules.md Q2)")
+    if (resolved_by == "timeout") != (message is not None):
+        raise ValueError("a timeout, and only a timeout, replaces the message (rules.md Q2)")
+
+
 def confirmation_key(rule_id: str, merchant_id: str, item_id: str) -> str:
     """One remembered answer: this rule, at this shop, for this item (``confirmed_keys``)."""
     return f"{rule_id}|{merchant_id}|{item_id}"
@@ -181,11 +192,16 @@ class Ledger(ABC):
         decision: Literal["approve", "decline"],
         resolved_by: Literal["customer", "timeout"],
         at: datetime,
+        *,
+        message: str | None = None,
     ) -> LedgerEntry:
         """Close a pending step-up: approve moves reserved → spent, decline releases.
 
-        ``resolved_by="timeout"`` records ``uncertain_outcome="expired"`` (Q2). ``at``
-        is the real clock. Raises KeyError if unknown, ValueError if not pending.
+        ``resolved_by="timeout"`` records ``uncertain_outcome="expired"`` (Q2) and needs
+        ``message`` (``explain.expired_message``): it replaces the stored "Waiting for you"
+        message and the counterfactual is dropped; ``explanation_source`` is unchanged. A
+        customer's answer keeps the message and takes none. ``at`` is the real clock.
+        Raises KeyError if unknown, ValueError if not pending or ``message`` does not fit.
         """
 
     @abstractmethod
@@ -319,17 +335,20 @@ class InMemoryLedger(Ledger):
         decision: Literal["approve", "decline"],
         resolved_by: Literal["customer", "timeout"],
         at: datetime,
+        *,
+        message: str | None = None,
     ) -> LedgerEntry:
         with self._lock:
             entry = self.entries[authorization_id]
             if entry.outcome != "step_up" or entry.final:
                 raise ValueError(f"{authorization_id} is not awaiting an answer")
-            if resolved_by == "timeout" and decision != "decline":
-                raise ValueError("a timeout only ever declines (rules.md Q2)")
+            check_resolution(decision, resolved_by, message)
             approved = decision == "approve"
             outcome = "expired" if resolved_by == "timeout" else ("approved" if approved else "declined")
+            expired = {"message": message, "counterfactual": None} if message is not None else {}
             resolved = entry.model_copy(
                 update={
+                    **expired,
                     "final": True,
                     "uncertain_outcome": outcome,
                     "reserved_chf": 0.0,

@@ -30,8 +30,8 @@ FX_TO_CHF: dict[str, Decimal] = {
 ITEM_CATEGORIES: tuple[str, ...] = (
     "books", "clothing", "cosmetics", "dining", "electronics", "food_delivery", "fuel",
     "gift_card", "groceries", "home_improvement", "hotel", "household", "membership",
-    "sporting_goods", "subscriptions", "transport",
-)
+    "photography", "sporting_goods", "subscriptions", "transport", "travel",
+)  # the served pack's items (judging-pack.md) add photography and travel
 MERCHANT_CATEGORIES: tuple[str, ...] = (
     "books", "clothing", "dining", "electronics", "entertainment", "food_delivery", "fuel",
     "groceries", "health", "home_improvement", "hotel", "household", "kids_family",
@@ -170,7 +170,7 @@ def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
     elif f == "items[].unit_price_chf":
         text = _limit_text(spec, "Each item", "")
     elif f in ("cart.quantity", "items[].quantity"):
-        what = requested_item or "items"
+        what = requested_item or ("item" if v == 1 else "items")
         bound = {"=": "Exactly", "<=": "At most", "<": "Fewer than", ">=": "At least", ">": "More than"}[op]
         text = f"{bound} {fmt_amount(v)} {what}" + (" per cart line" if f == "items[].quantity" else "")
     elif f == "items[].item_category":

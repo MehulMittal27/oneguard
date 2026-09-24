@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import Session
 
+from oneguard.engine.explain import expired_message
 from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import InMemoryLedger, Ledger, LedgerEntry
 from oneguard.store.db import init_db, make_engine
@@ -93,7 +94,8 @@ def test_set_deadline_refuses_anything_but_a_pending_step_up(ledger: Ledger) -> 
         ledger.set_deadline("lv_approved", later)
 
     ledger.record(entry("lv_expired"))
-    ledger.resolve("lv_expired", "decline", "timeout", DECIDED + timedelta(seconds=121))
+    ledger.resolve("lv_expired", "decline", "timeout", DECIDED + timedelta(seconds=121),
+                   message=expired_message(120))
     with pytest.raises(ValueError, match="not awaiting an answer"):
         ledger.set_deadline("lv_expired", later)
     resolved = ledger.get("lv_expired")

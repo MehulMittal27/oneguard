@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import Session
 
+from oneguard.engine.explain import expired_message
 from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import InMemoryLedger, Ledger, LedgerEntry
 from oneguard.engine.types import HistoryIndex, HistoryRow
@@ -88,7 +89,8 @@ def test_prior_approved_is_true_only_for_final_approvals(
     ledger.record(_entry("LIVE-D", "decline", minutes=40))
     ledger.record(_entry("LIVE-S", "step_up"))
     if answer:
-        ledger.resolve("LIVE-S", answer, resolved_by, T0)
+        ledger.resolve("LIVE-S", answer, resolved_by, T0,
+                       message=expired_message(120) if resolved_by == "timeout" else None)
     priors = {p.authorization_id: p for p in _view(ledger).priors}
     assert priors["LIVE-A"].approved and not priors["LIVE-D"].approved
     assert priors["LIVE-S"].approved is approved
@@ -126,5 +128,6 @@ def test_confirmed_keys_remember_only_step_ups_the_customer_approved(
     ledger = make_ledger(_history())
     ledger.record(_entry("LIVE-S", "step_up", deciding_ids=("C5", "A6")))
     if answer:
-        ledger.resolve("LIVE-S", answer, resolved_by, T0)
+        ledger.resolve("LIVE-S", answer, resolved_by, T0,
+                       message=expired_message(120) if resolved_by == "timeout" else None)
     assert _view(ledger).confirmed_keys == keys
