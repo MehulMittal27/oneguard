@@ -26,7 +26,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from oneguard.compiler.draft import MONEY_FIELDS, ParsedDraft, to_chf
+from oneguard.compiler.draft import COUNT_FIELD, MONEY_FIELDS, ParsedDraft, to_chf
 from oneguard.compiler.parser import (
     _AMOUNT,
     _EXACT_BEFORE,
@@ -35,6 +35,8 @@ from oneguard.compiler.parser import (
     _STRICT_BEFORE,
     ASK_IF_CHANGED,
     NUMBER_WORDS,
+    PERIOD_WORD_DAYS,
+    TIMES_WORDS,
     with_shared_currency,
 )
 from oneguard.engine.types import Rule
@@ -45,7 +47,7 @@ IssueCode = Literal[
     "restriction_dropped",
 ]
 _AMOUNT_QUESTION = re.compile(r"\b(?:amount|limit|cost|price|spend|budget|CHF)\b", re.IGNORECASE)
-_STATED_NUMBERS = {"items[].size_eu", "order.return_window_days", "cart.quantity", "items[].quantity"}
+_STATED_NUMBERS = {"items[].size_eu", "order.return_window_days", "cart.quantity", "items[].quantity", COUNT_FIELD}
 
 
 class LintIssue(BaseModel):
@@ -100,7 +102,8 @@ def stated_boundary(text: str, value: Decimal) -> str | None:
 
 def _numbers_in(text: str) -> set[Decimal]:
     found = {Decimal(n.replace(",", ".")) for n in re.findall(r"\d+(?:[.,]\d+)?", text.replace("'", ""))}
-    found |= {Decimal(n) for w, n in NUMBER_WORDS.items() if re.search(rf"\b{w}\b", text, re.IGNORECASE)}
+    words = NUMBER_WORDS | TIMES_WORDS  # "once a week" states 1
+    found |= {Decimal(n) for w, n in words.items() if re.search(rf"\b{w}\b", text, re.IGNORECASE)}
     found |= {Decimal(n.replace(",", "")) for n in re.findall(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?", text)}
     return found
 
@@ -134,13 +137,28 @@ def _check_boundaries(draft: ParsedDraft) -> list[LintIssue]:
     return issues
 
 
+def _period_days_in(text: str) -> set[Decimal]:
+    """Windows the instruction names: "a day" is 1, "a week" 7, "a month" 30, "14 days" 14."""
+    days = {Decimal(d) for w, d in PERIOD_WORD_DAYS.items()
+            if re.search(rf"\b(?:a|per|each|every|any)\s+{w}\b|\b{w}ly\b", text, re.IGNORECASE)}
+    return days | _numbers_in(text)
+
+
 def _check_numbers(draft: ParsedDraft) -> list[LintIssue]:
     numbers = _numbers_in(draft.instruction)
-    return [
+    issues = [
         LintIssue(code="invented_value", rule_id=r.id, message=f"{r.text}: {r.value} is not in your instruction")
         for r in draft.rules
         if r.field in _STATED_NUMBERS and r.id not in draft.resolved and Decimal(str(r.value)) not in numbers
     ]
+    windows = _period_days_in(draft.instruction)
+    issues += [
+        LintIssue(code="invented_value", rule_id=r.id,
+                  message=f"{r.text}: a {r.period_days}-day window is not in your instruction")
+        for r in draft.rules
+        if r.field == COUNT_FIELD and (not r.period_days or Decimal(r.period_days) not in windows)
+    ]
+    return issues
 
 
 def _check_amounts_used(draft: ParsedDraft) -> list[LintIssue]:
