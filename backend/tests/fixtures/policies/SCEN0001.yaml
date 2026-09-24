@@ -1,0 +1,14 @@
+scenario_id: SCEN0001
+instruction: "Order our household groceries for delivery. Keep each order at or below CHF 120 including delivery, and keep the total across any seven days at or below CHF 300. Ask me when uncertain."
+status: active
+uncertainty_policy: ask
+requested_item: null
+allowed_item_categories: [groceries]
+blocked_item_categories: null
+requires_known_shop: false
+nothing_extra: false
+shop_type: null
+rules:
+  - {id: C3, field: "items[].item_category", operator: in, value: [groceries], currency: null, scope: null, period_days: null, text: "Only grocery items", source: inferred, kind: item}
+  - {id: C1, field: authorization.billing_amount_chf, operator: "<=", value: 120, currency: CHF, scope: purchase, period_days: null, text: "Total at or below CHF 120 per order", source: exact, kind: amount}
+  - {id: C2, field: authorization.billing_amount_chf, operator: "<=", value: 300, currency: CHF, scope: period, period_days: 7, text: "Total at or below CHF 300 across any 7 days", source: exact, kind: period}

@@ -1,0 +1,15 @@
+scenario_id: SCEN0002
+instruction: "Replace my worn road-running shoes in size 43. Buy only from a specialist sports retailer, only if the order can be returned within 14 days or more, and pay no more than CHF 200. Ask me when uncertain."
+status: active
+uncertainty_policy: ask
+requested_item: road-running shoes
+allowed_item_categories: null
+blocked_item_categories: null
+requires_known_shop: false
+nothing_extra: false
+shop_type: sporting_goods
+rules:
+  - {id: C6, field: "items[].size_eu", operator: "=", value: 43, currency: null, scope: null, period_days: null, text: "Size 43", source: exact, kind: item}
+  - {id: C8, field: merchant.merchant_category, operator: "=", value: sporting_goods, currency: null, scope: null, period_days: null, text: "Only from a specialist sports retailer", source: exact, kind: merchant}
+  - {id: C7, field: order.return_window_days, operator: ">=", value: 14, currency: null, scope: null, period_days: null, text: "Returns accepted for 14 days or more", source: exact, kind: terms}
+  - {id: C1, field: authorization.billing_amount_chf, operator: "<=", value: 200, currency: CHF, scope: purchase, period_days: null, text: "Total at or below CHF 200 per order", source: exact, kind: amount}
