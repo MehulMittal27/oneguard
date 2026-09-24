@@ -20,7 +20,7 @@ Scope: what the decision rules are. Not screens, APIs, storage or code.
 - **P5** Warning signs and models only add friction: Approve → Ask. Never Decline/Ask → Approve.
 - **P6** Ordinary shopping must flow. Meets every rule, triggers nothing → Approve. Unfamiliar or new is not, on its own, a reason to stop.
 - **P7** Every decision is explained: which rule, which facts, what was uncertain, what would make it a yes.
-- **P8** Predictable without AI. Outcomes are identical with every model switched off.
+- **P8** Predictable without AI. With every model switched off, each decision is identical or more cautious (Ask where a model would have resolved a fact). Models never change a decision the deterministic rules have already made.
 
 ## 3. Definitions
 
@@ -55,6 +55,14 @@ The first step that applies decides.
 - **D2** Under uncertainty setting `approve`, protections and warning signs still produce Ask (P2, P5).
 - **D3** The engine has an internal budget of 2 s. Anything not finished by then (model, history lookup) is dropped and the decision is made from what is known, which may be Ask. A decision is always posted before `deadline_at`.
 
+## 4a. Tiers
+
+| Tier | When | What |
+|---|---|---|
+| 1 | Every purchase | Deterministic rules, protections, warning signs (§4–§8). |
+| 2 | Only when a customer rule is `unknown` because a needed fact could not be extracted deterministically | Constrained LLM fact extraction from shop text: schema-validated, 1.5 s timeout, evidence `source: model`. |
+| 3 | After the decision is posted | LLM explanation rewrite from structured evidence only (E8). The template message is the fallback and is always posted first. |
+
 ## 5. Customer rules (apply only when stated)
 
 | ID | Rule | Fail → | Unknown → |
@@ -78,7 +86,7 @@ The first step that applies decides.
 - **M2** Round converted amounts half-even to 2 dp; compare after rounding.
 - **M3** `amount` already includes delivery. Never add it twice.
 - **M4** Only final approvals are spend. Declines never count. Refunds (history) reduce spend.
-- **M5** Pending purchases are reserved against period limits until answered or expired. Decline/expiry releases the reservation. (Team decision, Q5/Q8.)
+- **M5** Pending amounts are reserved against period limits until answered or expired. Decline/expiry releases the reservation. If a purchase fails C2 only because of reservations, the outcome is Ask, and the message names the waiting order. (Viseca Q&A 24 Sep; supersedes Q8.)
 - **M6** Purchase time decides windows, velocity and night-time. Never the real clock.
 - **M7** Redelivery of the same live `authorization_id` is the same purchase: same outcome, counted once.
 
@@ -120,6 +128,7 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 - **E5** For A1: say instructions were found and ignored; never repeat the injected instruction as if true.
 - **E6** No codes, jargon or "risk detected".
 - **E7** Every decision records the facts used (API: `evidence[]`).
+- **E8** After posting, an LLM may rewrite the explanation from the structured evidence only; it never sees or alters the decision.
 
 ## 10. Turning words into rules
 
@@ -130,15 +139,16 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 | # | Question | Default | Why |
 |---|---|---|---|
 | Q1 | One purchase or several per policy? | Each purchase judged on its own; only near-identical repeats caught (A3). | Viseca's notes call AU0023 "fully compliant" and AU0042 "a legitimate re-quote". |
-| Q2 | Ask with no answer in 120 s? | Ledger treats it as not spent, reservation released, shown as expired. **Nothing is posted to `/resolve`.** | Never invent a human answer. |
+| Q2 | Ask with no answer in 120 s? | **Closed.** Expiry → post `/resolve` `decline` with message "No answer within 120 s; nothing was approved", evidence `resolved_by: timeout`. Not spent; reservation released. | Viseca Q&A 24 Sep. |
 | Q3 | Hidden scenarios at judging? | Assume yes. | Rules must survive unseen wording. |
 | Q4 | Seven days rolling or calendar? | Rolling 168 h. | Standard reading. |
 | Q5 | Pending reserved against limits? | Yes (M5). | Otherwise late approval overspends. |
-| Q6 | Queued purchases after revoke? | Engine declines anything it still receives; UI shows cancelled only when the platform confirms. | Platform behaviour unspecified. |
-| Q7 | Known shop: customer-level or card-level? | Customer-level (AU0044 → Approve). | Ask Viseca: as issuer they may only see their own cards. If card-level, AU0044 → Decline (C9), "known on another card" as evidence. |
-| Q8 | M5 in a live run | Purchases arrive seconds apart in real time. If AU0006 is pending when AU0008 arrives, AU0008 → Decline. | Demo operator answers within seconds, or accepts it. |
+| Q6 | Queued purchases after revoke? | **Closed.** Decline anything received after revoke; UI shows cancelled once the platform confirms. | Viseca Q&A 24 Sep. |
+| Q7 | Known shop: customer-level or card-level? | **Closed.** Customer-level (AU0044 → Approve). | Viseca Q&A 24 Sep: Viseca said it is theirs to handle. |
+| Q8 | M5 in a live run | **Closed.** Superseded by M5: if AU0006 is pending when AU0008 arrives, AU0008 → Ask. | Viseca Q&A 24 Sep. |
 | Q9 | "Regularly" vs "before" | Both = known shop (≥1). | Stricter option: ≥3 approvals in 90 days. |
 | Q10 | A6 without C10 | Ask. | Recurring cost is the risk; customer may still want the plan. |
+| Q11 | Hidden scenarios at judging? | **Closed.** Hidden scenarios exist at judging. C12 is in scope, tested with invented instructions (`unseen_instructions` in `docs/acceptance-oracle.yaml`). | Viseca Q&A 24 Sep. |
 
 ## 12. Acceptance examples
 

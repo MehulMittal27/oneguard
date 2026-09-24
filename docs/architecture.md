@@ -23,6 +23,10 @@ Order inside the gate: customer rules → money rules → protections → uncert
 warning signs → approve. Signals run in parallel with a 500 ms timeout and can only add
 evidence or raise approve → step_up.
 
+`oneguard/llm/` is the one provider interface for generative models (OpenAI first,
+Anthropic stub). The policy compiler, tier-2 fact extraction and tier-3 explanation
+(rules.md §4a) share it.
+
 ## Repo layout
 
 ```
@@ -42,6 +46,7 @@ oneguard/
     oneguard/
       engine/     facts.py policy.py protections.py warnings.py ledger.py decide.py explain.py signals.py
       compiler/   llm.py parser.py lint.py dryrun.py
+      llm/        provider.py openai.py anthropic.py   provider interface: openai first, anthropic stub
       replay/     events.py runner.py            CSV → live-shaped events; offline replay
       viseca/     client.py worker.py schema.py  sandbox client + long-poll worker
       api/        app.py models.py routes_customer.py routes_dev.py static.py
@@ -62,11 +67,12 @@ oneguard/
 ## Dependencies (ask before adding)
 
 Python 3.12 · fastapi · uvicorn · pydantic v2 · httpx · jsonschema · pyyaml · pandas (replay
-and dry-run only) · pytest · ruff · optional: anthropic (compiler), laya==0.3.20 (signals:
+and dry-run only) · pytest · ruff · optional: openai, anthropic (compiler; `oneguard/llm/`), laya==0.3.20 (signals:
 agent_directed only; ~850 MB checkpoint cached outside the repo; ~5 s first load, keep warm).
 
 ## Latency budget per decision
 
 Fact build < 5 ms · rules + protections + signs < 5 ms · ledger transaction < 10 ms ·
-signals ≤ 500 ms (parallel, optional) · Viseca POST ~100–300 ms. Internal budget 2 s;
-platform deadline 8 s from queueing.
+signals ≤ 500 ms (parallel, optional) · tier 2 ≤ 1.5 s (only when a rule is `unknown`),
+inside the 2 s budget · Viseca POST ~100–300 ms. Internal budget 2 s; platform deadline
+8 s from queueing. Tier 3 runs after posting, not in the budget.

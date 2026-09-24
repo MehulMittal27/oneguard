@@ -6,6 +6,14 @@
 # rules:   rule / protection / warning ids from docs/rules.md that decide it
 # alt:     acceptable alternative outcome under a named open question (docs/rules.md §11)
 # depends: outcome is a function of an earlier resolution in the same run
+#
+# unseen_instructions: invented instructions for C12 (rules.md Q11). No purchases; each
+# lists the typed rules the compiler is expected to produce. words: the customer's
+# phrase, verbatim. hard_rule: Viseca's rule format with a field from api-contract.md
+# §3.3, or null when no field exists. value_from: how value is resolved when it is not a
+# literal in the instruction. evaluates: unknown marks a restriction with no field: it is
+# always unknown (uncertainty setting applies) and is raised in open_questions (rules.md
+# T2). id: null = no rule id in rules.md fits the phrase.
 
 defaults:
   q7_known_shop: customer      # customer | card
@@ -31,7 +39,7 @@ scenarios:
         chf: 65.50
         depends:
           - {if: "AU0006 final approval", outcome: decline, rules: [C2], note: "299.5 + 65.5 = 365 > 300"}
-          - {if: "AU0006 pending (reserved)", outcome: decline, rules: [C2, M5]}
+          - {if: "AU0006 pending (reserved)", outcome: step_up, rules: [C2, M5], note: "fails C2 only because AU0006 is reserved; message names the waiting order"}
           - {if: "AU0006 declined or expired", outcome: approve, rules: [C2], note: "234.5 + 65.5 = 300.00, equal passes"}
       - {id: AU0009, outcome: decline, rules: [C2], chf: 24.00, note: "323.5 or 324 > 300 in every branch"}
       - {id: AU0010, outcome: decline, rules: [C1], chf: 138.00}
@@ -85,3 +93,40 @@ scenarios:
 
 totals_under_defaults: {approve: 17, decline: 21, step_up: 6, depends: 1}
 totals_with_q10_decline: {approve: 17, decline: 22, step_up: 5, depends: 1}
+
+unseen_instructions:
+  - instruction: "Buy two concert tickets, max CHF 90 each, from the official ticket seller"
+    uncertainty_policy: ask            # not stated; default (C11)
+    rules:
+      - {id: C5, words: "concert tickets", hard_rule: null, note: "specific item; no §3.3 field (as SCEN0004's chosen monitor)"}
+      - {id: C12, words: "two", hard_rule: {field: "items[].quantity", operator: "=", value: 2}}
+      - {id: C12, words: "max CHF 90 each", hard_rule: {field: "items[].unit_price_chf", operator: "<=", value: 90, currency: CHF, scope: purchase}, note: "per-item limit; \"max\" = at or below"}
+      - {id: null, words: "from the official ticket seller", hard_rule: null, evaluates: unknown, note: "no field for an official or authorised seller; not C8 (no such merchant_category)"}
+    open_questions:
+      - "No per-order limit stated: is the order limit CHF 180 (two tickets at CHF 90 each)?"
+      - "Which shop is the official ticket seller?"
+
+  - instruction: "Order lunch on weekdays only, under CHF 25"
+    uncertainty_policy: ask            # not stated; default (C11)
+    rules:
+      - {id: C1, words: "under CHF 25", hard_rule: {field: authorization.billing_amount_chf, operator: "<", value: 25, currency: CHF, scope: purchase}, note: "\"under\": equal fails"}
+      - {id: C3, words: "lunch", source: inferred, hard_rule: {field: "items[].item_category", operator: in, value: [dining, food_delivery]}}
+      - {id: C12, words: "on weekdays only", hard_rule: {field: authorization.weekday, operator: in, value: [mon, tue, wed, thu, fri]}, note: "Europe/Zurich"}
+    open_questions: []
+
+  - instruction: "Buy the birthday present I picked from a Swiss shop, must arrive by Friday"
+    uncertainty_policy: ask            # not stated; default (C11)
+    rules:
+      - {id: C5, words: "the birthday present I picked", hard_rule: null, note: "specific item; no §3.3 field (as SCEN0004's chosen monitor)"}
+      - {id: C12, words: "from a Swiss shop", hard_rule: {field: merchant.merchant_country, operator: "=", value: CH}}
+      - {id: C12, words: "must arrive by Friday", hard_rule: {field: authorization.delivery_by, operator: "<="}, value_from: "the next Friday after purchase time, as a date (YYYY-MM-DD)", note: "\"by\" = on or before; delivery_by null → unknown"}
+    open_questions:
+      - "No amount stated: what is the most this present may cost?"
+
+  - instruction: "Renew my gym membership, same price as last time, ask me if anything changed"
+    uncertainty_policy: ask            # "ask me if anything changed" (C11)
+    rules:
+      - {id: C3, words: "gym membership", source: inferred, hard_rule: {field: "items[].item_category", operator: in, value: [membership]}, note: "recurring billing is asked for here, so not hidden (A6)"}
+      - {id: C5, words: "my gym membership", hard_rule: null, note: "specific item; no §3.3 field"}
+      - {id: C1, words: "same price as last time", hard_rule: {field: authorization.billing_amount_chf, operator: "=", currency: CHF, scope: purchase}, value_from: "the last approved price at that merchant in the customer's history", note: "the example that needs history at compile time; amounts never come from text (A2)"}
+    open_questions: []

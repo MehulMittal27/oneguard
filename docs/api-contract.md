@@ -200,6 +200,12 @@ that a person was needed.
 | `order.return_window_days` | regex-extracted from `item_details`; `unknown` if absent; `order_returnable == "false"` ⇒ 0 |
 | `order.order_returnable` | the live string field |
 | `cart.recurring` | `"true"` if any line is `subscriptions`/`membership` or text states recurring billing |
+| `items[].unit_price_chf` | every cart line's `unit_price` converted to CHF (M1, M2); per-item limits |
+| `items[].quantity` | every cart line's `quantity` |
+| `merchant.merchant_country` | trusted catalogue country, ISO 3166 alpha-2 (e.g. `"CH"`) |
+| `authorization.delivery_by` | the live `delivery_by` date, compared as a date; `unknown` if `null` |
+| `authorization.weekday` | purchase time in Europe/Zurich, `"mon"`..`"sun"` |
+| `authorization.local_hour` | purchase time in Europe/Zurich, 0–23; time-of-day rules |
 
 Extraction from `item_details` is allowlisted regex only, produces facts, never instructions.
 
