@@ -67,6 +67,7 @@ Unchanged from the frontend README except: C1 gains `504`, C2 gains the two `409
 | D3 | POST | `/api/dev/runs` | `{ scenario_id, card_id, force?: boolean }` | `LiveRun` — creates a Viseca run against the card's active mandate, followed by the worker; names the run card's holder |
 | D4 | GET | `/api/dev/runs/{run_id}` | — | `LiveRun` — progress, counters, worker health |
 | D5 | POST | `/api/dev/soft-signals` | `{ enabled: boolean }` | `{ enabled }` — chaos toggle for the small decision model |
+| D5 | GET | `/api/dev/soft-signals` | - | `{ live: boolean, replay: boolean }` - whether the models run now for live runs and for the offline replay; the two differ until an operator sets D5 (§3.7). Reads only |
 | D6 | GET | `/api/dev/ledger/{card_id}` | — | `LedgerSnapshot` — the engine's own state, for the "reproduce this decision" view |
 | D7 | GET | `/api/dev/runs/current` | — | `LiveRun` or `ReplayStatus` — the newest run (live or replay, by the real time it started) with the counters D4 / D1 show; 404 when none. Starts nothing |
 | D8 | GET | `/api/dev/scenarios` | — | `{ scenarios: Scenario[] }` — every scenario in the store's catalogue, whether the platform serves it now, the customer and card it runs on when known, and a run of it still in progress. Reads only |
@@ -166,7 +167,7 @@ Decision {
   uncertain_outcome: 'pending'|'expired'|'approved'|'declined' | null,
   status: 'final' | 'pending_human',
   reason_codes: string[],
-  message: string,                            // one sentence, names the number once; a decline adds "Would approve …" (= counterfactual)
+  message: string,                            // "{Outcome} CHF {amount}: {clause}." one clause (rules.md §9); never the counterfactual
   uncertainty: { note: string } | null,
   occurred_at: string,                        // SIMULATED time
   merchant: { merchant_id, name },            // name untrusted
@@ -178,7 +179,7 @@ Decision {
   delivery_by: string | null,
   deadline_at?: string,                       // pending_human only — REAL clock
 
-  counterfactual?: string | null,             // NEW: "Would approve at CHF 400 or less."
+  counterfactual?: string | null,             // NEW: "Would approve at CHF 400.00 or less." on its own, not in `message`
   related?: { authorization_id: string,       // NEW: link to an earlier decision in this run
               relation: 'requote_of' | 'duplicate_of' | 'retry_of' | 'split_of' } | null,
   session?: { trust: 'normal' | 'elevated' | 'frozen', note: string } | null,   // NEW
@@ -189,8 +190,11 @@ Decision {
   explanation_source?: 'template' | 'model', // NEW: who wrote `message` (rules.md §4a, tier 3); UI tag: template →
                                               // "Explained by OneGuard", model → "Wording refined by AI · decision made by your rules"
   resolved_by?: 'customer' | 'timeout',       // NEW: resolved step-ups only (§3.5)
-  confirmable?: { rule_id: string, phrase: string } | null   // NEW: step-up decided by one `unverifiable` rule
+  confirmable?: { rule_id: string, phrase: string } | null,  // NEW: step-up decided by one `unverifiable` rule
                                               // (§3.3); phrase = its value. Approving can be remembered for the shop
+  run_id?: string,                            // NEW: the run this decision belongs to (decisions.run_id); C6 sends it
+  run_started_at?: string                     // NEW: that run's start, REAL clock (runs.started_at); C6 sends it
+                                              // when the run has a `runs` row. The UI lists a card's newest run
 }
 
 Evidence  { rule: string,                     // which check or signal
@@ -284,7 +288,7 @@ expire — that is a broken state, not a degraded one.
 |---|---|
 | `authorization.billing_amount_chf` | total in CHF, delivery included (never add delivery again) |
 | `authorization.billing_amount_chf` + `scope: period`, `period_days: 7` | rolling window; sum of **final approvals** whose simulated timestamp ≥ current − 7×24h |
-| `cart.purchases_in_period` + `scope: period`, `period_days: N` | integer; purchases on this card in the rolling window of N×24h before the current simulated timestamp: **final approvals + pending step-ups** (declines and expired step-ups never count; a redelivered live id counts once). This purchase is compared as count + 1: `<= 1`, `period_days: 1` is "one a day", so a second purchase fails. Operators `<=` / `<` only. Fail: `period_count_exceeded`; evidence "You allowed one order per day; one was already approved today at 12:10" (time of the latest approval, Europe/Zurich), message "Declined CHF 32.00: you allowed one order per day; one was already approved today at 12:10. Would approve from tomorrow at 12:10."; a breach caused only by pending step-ups asks (`period_reserved_pending`, M5) |
+| `cart.purchases_in_period` + `scope: period`, `period_days: N` | integer; purchases on this card in the rolling window of N×24h before the current simulated timestamp: **final approvals + pending step-ups** (declines and expired step-ups never count; a redelivered live id counts once). This purchase is compared as count + 1: `<= 1`, `period_days: 1` is "one a day", so a second purchase fails. Operators `<=` / `<` only. Fail: `period_count_exceeded`; evidence "You allowed one order per day; one was already approved today at 12:10" (time of the latest approval, Europe/Zurich), message "Declined CHF 32.00: You allowed one order per day; one was already approved today at 12:10.", counterfactual "Would approve from tomorrow at 12:10."; a breach caused only by pending step-ups asks (`period_reserved_pending`, M5) |
 | `merchant.merchant_category` | trusted catalogue category |
 | `merchant.known_shop` | `"true"` if ≥1 approved purchase by this customer at this `merchant_id` on any of their cards (history + this run's finals); customer-level per rules.md Q7. `merchant.familiar_on_card` is accepted as an alias for the same check |
 | `items[].item_category` | every cart line must satisfy `in` / `not_in` |
@@ -361,7 +365,7 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 
 - Off by default in the offline replay; on by default in live runs if the model loaded.
   D5 toggles at runtime.
-- Timeout 500 ms; on timeout/error the keyword detector runs instead. Output only ever adds
+- Timeout 500 ms (`ONEGUARD_SIGNAL_BUDGET_MS`); on timeout/error the keyword detector runs instead. Output only ever adds
   `evidence` rows with `source: 'model'` and may raise `approve → uncertain`. It can never
   lower `stopped` or override a policy check. `engine_version` records whether the model
   was on, so a replay with it off is comparable.
@@ -439,7 +443,7 @@ neutral fallback for unknown codes.
 
 1. `Customer.scenario_id` → `scenario_ids: string[]`.
 2. `Decision.related` — one link row in DecisionDetail "Related decisions".
-3. `Decision.counterfactual` — one line under the message in DecisionDetail; when the message ends with the same suggestion, DecisionDetail drops that trailing copy so it is said once (lists keep the full message).
+3. `Decision.counterfactual` — one line under the message in DecisionDetail and on the Approvals pending card; when the message ends with the same suggestion, both drop that trailing copy so it is said once (lists keep the full message).
 4. `Mandate.usage` — `lib/spend.ts` prefers it when present; keep client math as mock fallback; ensure human-approved step-ups count as spend.
 5. `Evidence.outcome: 'info'` — neutral styling; unknown values fall back to neutral.
 6. Optional: `Decision.session` banner on DecisionDetail when trust ≠ normal; a "Revoke policy" shortcut on the Approvals card.
@@ -450,8 +454,12 @@ neutral fallback for unknown codes.
 11. Optional: `Mandate.usage.confirmations` as a "Things you've confirmed" list on the policy screen (names rendered as plain text)
 12. Optional: `Decision.confirmable` - on a step-up, "Approve, and treat <shop> as <phrase> from now on"; absent or null means the ordinary approve button
 13. Policy review: a draft with no checks disables "Confirm policy" (C2 would refuse it, §3.2) and shows its `open_questions`, falling back to "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'" when there are none
+14. `Decision.run_id` / `run_started_at` - Activity and Home list each card's newest run (latest `run_started_at`); older runs sit collapsed under "Earlier runs (n)", each headed by its start time. A decision without `run_id` is always listed. Approvals is unchanged (pending only)
 
-No endpoint changes. No screen removals. Tighten UI stays dormant.
+15. Approvals pending card: `uncertainty.note` shows only when it says something the message does not (`lib/decisionMessage.ts` `noteAddsToMessage`); the note is usually the uncertain evidence row's detail, which the card lists anyway.
+16. Operator strip (`?demo=1`, operator only): reads D5 GET on each poll and labels the toggle with what the server reports (on, off, live only, replay only), never an assumed "on"; D1's 404 reads as "no replay yet", not as the backend being unreachable.
+
+No customer endpoint changes. No screen removals. Tighten UI stays dormant.
 
 ---
 

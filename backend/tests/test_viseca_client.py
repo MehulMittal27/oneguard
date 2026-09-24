@@ -58,7 +58,7 @@ def test_every_endpoint_round_trips_and_is_logged(db: Engine) -> None:
         async with fake_client(fake, db) as client:
             assert (await client.healthz())["status"] == "ok"
             limits = (await client.bootstrap())["limits"]
-            assert (limits["step_up_timeout_seconds"], limits["decision_timeout_seconds"]) == (60.0, 3.0)
+            assert (limits["step_up_timeout_seconds"], limits["decision_timeout_seconds"]) == (60.0, 8.0)
             reference = await client.reference_data()
             assert reference["history"]["rows"] == 4701 and "sha256" not in reference["history"]
             assert (await client.authorization_history_csv()).startswith("authorization_id,")
@@ -269,6 +269,34 @@ def test_demo_compiles_confirms_runs_and_tails_a_scenario(db: Engine) -> None:
     assert "progress: 0/10 decided, 0 waiting for the customer" in lines  # generated_event_count
     assert sum("uncertain/expired" in line for line in lines) == 10
     assert lines[-1] == "Summary: {'step_up/expired': 10}"
+
+
+def test_demo_stops_when_another_worker_already_polls_the_store(db: Engine) -> None:
+    """Its worker stands by (the lease is taken), so the demo starts nothing and says why."""
+
+    class TakenLease:
+        def acquire(self) -> bool:
+            return False
+
+        def held(self) -> bool:
+            return False
+
+        def release(self) -> None:
+            return None
+
+    fake = FakeViseca(FakeConfig(decision_deadline_s=3, human_window_s=0.3, max_wait_s=0.2))
+    lines: list[str] = []
+
+    async def scenario() -> int:
+        async with fake_client(fake, db) as client:
+            return await demo.run_local(
+                client, "SCEN0001", db=db, poll_wait_s=0.2, max_seconds=5, out=lines.append,
+                lease=TakenLease(), **ALL_STUBS,
+            )  # fmt: skip
+
+    assert asyncio.run(scenario()) == 1
+    assert lines == [demo.STANDBY_MESSAGE]
+    assert fake.mandates == {} and fake.runs == {} and fake.polls == 0
 
 
 def test_drain_returns_when_a_finished_summary_was_never_discarded() -> None:

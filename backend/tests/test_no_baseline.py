@@ -87,7 +87,7 @@ def test_after_the_first_approval_a_new_device_asks(ledger):
     decide(ledger, with_device(event(), "DVC-NEW"))
     engine, explanation, _ = decide(ledger, with_device(event(item="IT_B", minutes=60), "DVC-OTHER"))
     assert (engine.outcome, engine.step, engine.deciding_ids) == ("step_up", 6, ["W1"])
-    assert explanation.message == "Waiting for you CHF 30.00: made from a device you have not used before."
+    assert explanation.message == "Waiting for you CHF 30.00: Made from a device you have not used before."
 
 
 def test_after_the_first_approval_its_amount_is_the_baseline(ledger):

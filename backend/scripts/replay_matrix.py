@@ -1,4 +1,4 @@
-"""Replay matrix with messages: the 45 public purchases through the real pipeline (docs/replay-matrix.md).
+"""Replay matrix with messages and counterfactuals: the 45 public purchases through the real pipeline (docs/replay-matrix.md).
 
     python scripts/replay_matrix.py > ../docs/replay-matrix.md
 
@@ -50,7 +50,7 @@ def _branch(scenario_id: str) -> Branch | None:
 
 
 def _run(pack: Pack, history: StoreHistoryIndex, scenario_id: str, branch: Branch | None,
-         signals: bool, folder: Path) -> list[tuple[str, str, list[str], str]]:  # fmt: skip
+         signals: bool, folder: Path) -> list[tuple[str, str, list[str], str, str]]:  # fmt: skip
     os.environ["ONEGUARD_SOFT_SIGNALS"] = "keywords" if signals else "off"
     policy = to_policy(scenario_id)
     rows = []
@@ -61,7 +61,8 @@ def _run(pack: Pack, history: StoreHistoryIndex, scenario_id: str, branch: Branc
             engine, explanation, _ = decide_event(event, ctx)
             auth = event["authorization"]
             source_id = auth["source_authorization_id"]
-            rows.append((source_id, engine.outcome, engine.reason_codes, explanation.message))
+            rows.append((source_id, engine.outcome, engine.reason_codes, explanation.message,
+                         explanation.counterfactual or ""))  # fmt: skip
             answers = branch is not None and branch.authorization_id == source_id
             if answers and engine.outcome == "step_up" and branch.answer != "pending":
                 ledger.resolve(auth["authorization_id"], branch.answer, "customer", NOW)
@@ -87,11 +88,12 @@ def main() -> None:
             off = _run(pack, history, scenario_id, branch, False, folder)
             expected = {r["id"]: expected_outcome(r, branch, ORACLE["defaults"])
                         for r in ORACLE["scenarios"][scenario_id]["purchases"]}  # fmt: skip
-            for (source_id, outcome, codes, message), off_row in zip(on, off, strict=True):
+            for (source_id, outcome, codes, message, counterfactual), off_row in zip(on, off, strict=True):
                 total += 1
                 matched += expected[source_id] == outcome
                 identical += off_row[1] == outcome
-                table.append(f"| {source_id} | {outcome} | {', '.join(codes)} | {message.replace('|', '/')} |")
+                table.append(f"| {source_id} | {outcome} | {', '.join(codes)} | {message.replace('|', '/')} "
+                             f"| {counterfactual.replace('|', '/')} |")  # fmt: skip
 
     head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
                           cwd=BACKEND, check=False).stdout.strip() or "unknown"  # fmt: skip
@@ -107,7 +109,7 @@ def main() -> None:
     print(f"| Branches used | {'; '.join(used) or 'none'} |")
     print(f"| Oracle match | {matched}/{total} |")
     print(f"| Signals off vs on | {identical}/{total} identical outcomes |\n")
-    print("| ID | Decision | Reason codes | Message |\n|---|---|---|---|")
+    print("| ID | Decision | Reason codes | Message | Counterfactual |\n|---|---|---|---|---|")
     print("\n".join(table))
 
 
