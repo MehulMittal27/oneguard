@@ -61,7 +61,10 @@ reads it to build `Decision` responses and `Mandate.usage`. Nobody else writes i
   `item_price_range(item_id) -> (min, typical, max)` for W6.
   Refunds and cash withdrawals are excluded from familiarity; card-level counts are also
   exposed (`known_merchants_on_card(card_id)`) so Q7 can flip without code changes.
-- P2 `ledger.py`: `StoreLedger(session, history=history)`, the worker's `default_ledger`;
+- P2 `ledger.py`: `StoreLedger(session, history=history)`. The worker's `default_ledger` is
+  P1's `ScopedStoreLedger` (`viseca/worker.py`): a `StoreLedger` on a short session per unit
+  of work (one decision, one resolution, one read), closed afterwards, and `stop()` closes
+  anything still open, so the worker never holds a pooled connection for its lifetime;
   `view()` combines `decisions` (this run's finals and reservations) with `HistoryIndex`
   (customer-level history) into `LedgerView`. `set_deadline(live_id, deadline_at)` moves a
   pending step-up's `deadline_at` to the Viseca-accepted time + human window and commits

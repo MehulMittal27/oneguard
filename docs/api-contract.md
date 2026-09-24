@@ -282,9 +282,12 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 - The worker never blocks on a pending step-up; polling continues.
 - C8 after the window → 409. A GET of C6 after the window marks the decision
   `uncertain_outcome: 'expired'`, `status: 'final'` server-side (so a reload agrees). On
-  expiry the backend posts `/resolve` `decline`, message "No answer within 120 s; nothing
-  was approved", `resolved_by: timeout` (rules.md Q2). Not spent. A customer answer through
-  C8 sets `resolved_by: 'customer'`.
+  expiry the backend first reads the platform's state (`GET /v1/authorizations?run_id=`):
+  Viseca expires step-ups itself at the same moment, and if it already has, that result is
+  recorded and nothing is posted. Still pending → `/resolve` `decline`, message "No answer
+  within 120 s; nothing was approved", `resolved_by: timeout` (rules.md Q2); on a 409 the
+  state is read again and recorded. Never a second `/resolve` for the same id. Not spent. A
+  customer answer through C8 sets `resolved_by: 'customer'`.
 - A step-up renders the **complete** purchase (all lines, delivery fee, currency, recurring
   flag, flagged text).
 
