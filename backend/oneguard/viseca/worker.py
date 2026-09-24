@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import importlib
 import logging
 import math
 import threading
@@ -60,7 +59,8 @@ from sqlalchemy.orm import Session
 
 from oneguard import __version__
 from oneguard.api import models as api
-from oneguard.engine.ledger_base import InMemoryLedger, Ledger, LedgerEntry
+from oneguard.engine.ledger import StoreLedger
+from oneguard.engine.ledger_base import Ledger, LedgerEntry
 from oneguard.engine.types import (
     EvidenceRow,
     HistoryIndex,
@@ -294,15 +294,8 @@ def policy_from_snapshot(mandate: Mapping[str, Any]) -> Policy:
 
 
 def default_ledger(db: Engine, history: HistoryIndex) -> Ledger:
-    """P2's store-backed ``engine.ledger.Ledger`` when it exists, else the in-memory one."""
-    try:
-        module = importlib.import_module("oneguard.engine.ledger")
-    except ModuleNotFoundError as exc:
-        if exc.name != "oneguard.engine.ledger":
-            raise
-        log.warning("engine/ledger.py not present; the worker uses the in-memory ledger")
-        return InMemoryLedger(history=history)
-    return module.Ledger(Session(db, expire_on_commit=False), history=history)
+    """P2's store-backed ledger (``engine/ledger.py``) on a session of its own."""
+    return StoreLedger(Session(db, expire_on_commit=False), history=history)
 
 
 class OverrunClaims:

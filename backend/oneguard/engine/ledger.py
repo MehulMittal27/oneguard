@@ -287,3 +287,17 @@ class StoreLedger(Ledger):
     def flag_merchant(self, run_id: str, merchant_id: str, reason: str, at: datetime) -> None:
         self.session.add(MerchantFlag(run_id=run_id, merchant_id=merchant_id, reason=reason, flagged_at=at))
         self.session.commit()
+
+    # --- added by P1 for the Viseca worker; P2 to review ---------------------------------
+    def set_deadline(self, authorization_id: str, deadline_at: datetime) -> LedgerEntry:
+        """Move a pending step-up's ``deadline_at`` (accepted time + human window), commit.
+
+        Same contract as ``ledger_base.Ledger.set_deadline`` and ``InMemoryLedger``:
+        KeyError if unknown, ValueError if not a pending step-up; nothing else changes.
+        """
+        row = self._pending_row(authorization_id)
+        if row.outcome != "step_up" or row.final:
+            raise ValueError(f"{authorization_id} is not awaiting an answer")
+        row.deadline_at = deadline_at
+        self.session.commit()
+        return _to_entry(row)
