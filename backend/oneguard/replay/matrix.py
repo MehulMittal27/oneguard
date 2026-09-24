@@ -2,8 +2,9 @@
 
     make matrix    # python -m oneguard.replay.matrix --out ../docs/replay-matrix.md
 
-Every scenario through the real pipeline (``runner.decide_all``: a fresh seeded store and
-``StoreLedger`` per run, every engine lane registered) with its policy fixture, once with
+Every scenario through the real pipeline (``runner.decide_all``: the offline replay D2 uses,
+recorded as a replay run on a fresh seeded store, every engine lane registered) with its
+policy fixture, once with
 soft signals on (the ``keywords`` backend, whatever ``ONEGUARD_SOFT_SIGNALS`` says, so the
 file does not depend on the shell) and once off. Step-ups are never answered (CLAUDE.md
 rule 6), so an oracle row that depends on an earlier answer is read in its unanswered
@@ -59,8 +60,8 @@ def build(pack: Pack, policies: Path = POLICIES) -> list[Row]:
         for scenario_id in pack.scenario_ids():
             policy = load_policy(policies / f"{scenario_id}.yaml", mandate_id=f"TM_REPLAY_{scenario_id}")
             expected = unanswered_outcomes(scenario_id)
-            off = {d.source_id: d.outcome for d in decide_all(pack, scenario_id, policy, signals=False)}
-            for decided in decide_all(pack, scenario_id, policy, signals=True):
+            off = {d.source_id: d.outcome for d in decide_all(pack, scenario_id, policy, signals=False).decided}
+            for decided in decide_all(pack, scenario_id, policy, signals=True).decided:
                 rows.append(Row(decided, expected[decided.source_id], off[decided.source_id]))
     return rows
 
