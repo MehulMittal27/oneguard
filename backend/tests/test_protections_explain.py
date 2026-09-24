@@ -268,9 +268,12 @@ def test_a_signal_headline_is_its_first_sentence_only():
 
 
 def test_approve_names_a_requote():
-    a5 = sig("A5", strength="protection", outcome="info", detail="Re-quote.", related=("LIVE-3", "requote_of"))
+    a5 = sig("A5", strength="protection", outcome="info", related=("LIVE-3", "requote_of"),
+             detail="Re-quote of the CHF 520.00 order declined 5 days earlier; judged on its own facts.")  # fmt: skip
     e = explain(decision("approve", codes=["requote_accepted"]), facts(), policy(), [rule()], [a5])
-    assert "LIVE-3" in e.message and e.counterfactual is None
+    assert e.message == ("Approved CHF 100.00: it re-quotes the CHF 520.00 order declined 5 days earlier and is "
+                         "within your limits.")  # fmt: skip
+    assert "LIVE-3" not in e.message and e.counterfactual is None
 
 
 def test_without_a_deciding_detail_the_reason_code_template_is_used():
@@ -473,21 +476,32 @@ def test_a_decline_by_a_protection_alone_uses_its_counterfactual():
              detail="This shop's name is 1 letter away from PixelHarbor, a shop you know, but it is a different shop.")
     e = explain(decision("decline", ["A7"], ["lookalike_merchant"]), facts(), policy(), [rule()], [a7, sig("W1")])
     assert e.counterfactual == "Would approve at the shop you know."
-    assert e.message == "Declined CHF 100.00: This shop's name imitates PixelHarbor, a shop you know."
+    assert e.message == "Declined CHF 100.00: Pixel Harbor is 1 letter away from PixelHarbor, a shop you know; it's a different shop."
+
+
+def test_a_lookalike_is_named_whenever_it_fired():
+    """AU0039's shape: C9 decides, A7 fired too: the message names the lookalike."""
+    a7 = sig("A7", strength="protection", outcome="decline",
+             detail="This shop's name is 1 letter away from PixelHarbor, a shop you know, but it is a different shop.")
+    c9 = rule("C9", "fail", "You haven't bought from Pixel Harbor before",
+              counterfactual="Would approve at a shop you've bought from before")  # fmt: skip
+    e = explain(decision("decline", ["C9"], ["unfamiliar_merchant"]), facts(), policy(), [c9], [a7])
+    assert e.message == "Declined CHF 100.00: Pixel Harbor is 1 letter away from PixelHarbor, a shop you know; it's a different shop."
+    assert e.counterfactual == "Would approve at a shop you've bought from before."
 
 
 # --- the deciding reason leads ------------------------------------------------------------
 
 
 def test_a_duplicate_leads_with_the_repeat_not_a_warning_sign():
-    a3 = sig("A3", strength="protection", detail="Same shop and items as LIVE-1 25 min earlier (CHF 289.00 then, CHF 289.00 now).",
-             related=("LIVE-1", "duplicate_of"))  # fmt: skip
+    a3 = sig("A3", strength="protection", related=("LIVE-1", "duplicate_of"),
+             detail="Same shop and items as the CHF 289.00 order 25 min earlier (CHF 289.00 then, CHF 289.00 now).")
     quiet = [sig(w, triggered=False, strength=s) for w, s in (("W1", "strong"), ("W3", "weak"), ("W4", "weak"))]
     e = explain(decision("step_up", ["A3"], ["duplicate_suspected"]), facts(amount=289.0), policy(), [rule()], [a3, *quiet])
-    assert e.message == "Waiting for you CHF 289.00: Same shop and items as LIVE-1 25 min earlier."
+    assert e.message == "Waiting for you CHF 289.00: Same shop and items as the CHF 289.00 order 25 min earlier."
     w4 = sig("W4", strength="weak", detail="CHF 289.00 is more than your largest approved purchase (CHF 100.00).")
     e = explain(decision("step_up", ["A3"], ["duplicate_suspected"]), facts(amount=289.0), policy(), [rule()], [w4, a3])
-    assert e.message.startswith("Waiting for you CHF 289.00: Same shop and items as LIVE-1")
+    assert e.message.startswith("Waiting for you CHF 289.00: Same shop and items as the CHF 289.00 order")
     assert "largest approved" not in e.message
 
 

@@ -4,7 +4,7 @@ All 45 public purchases through the real pipeline (`pipeline.decide_event`), one
 
 | | |
 |---|---|
-| Base commit | `af3c19d` |
+| Base commit | `f63d6a3` |
 | Date | 2026-09-24 |
 | Ledger | store (`engine.ledger.StoreLedger`, temp SQLite) |
 | Soft signals | on (`ONEGUARD_SOFT_SIGNALS=keywords`); a second run with signals off gives identical outcomes |
@@ -19,12 +19,12 @@ All 45 public purchases through the real pipeline (`pipeline.decide_event`), one
 | AU0003 | approve | within_limits | Approved CHF 120.00: it is within the limits you set. |  |
 | AU0004 | decline | per_order_limit_exceeded | Declined CHF 126.00: CHF 126.00 is over your CHF 120.00 limit. | Would approve at CHF 120.00 or less. |
 | AU0005 | approve | within_limits | Approved CHF 70.00: it is within the limits you set. |  |
-| AU0006 | step_up | split_order_suspected | Waiting for you CHF 65.00: Together with AU0005 6 min earlier, CHF 135.00 is over your CHF 120.00 limit. | Would approve if the two orders together stay within your per-order limit. |
-| AU0007 | decline | item_mismatch | Declined CHF 62.00: Fragrance and beauty gift is cosmetics, not groceries. | Would approve without Fragrance and beauty gift and if you decline the CHF 65.00 order still waiting. |
-| AU0008 | step_up | period_reserved_pending | Waiting for you CHF 65.50: With CHF 65.00 still open, this would take the week to CHF 365.00, over your CHF 300.00. | Would approve if you decline the CHF 65.00 order still waiting. |
-| AU0009 | step_up | period_reserved_pending | Waiting for you CHF 24.00: With CHF 130.50 still open, this would take the week to CHF 389.00, over your CHF 300.00. | Would approve if you decline the CHF 130.50 order still waiting. |
+| AU0006 | step_up | split_order_suspected | Waiting for you CHF 65.00: Together with the CHF 70.00 order 6 min earlier, CHF 135.00 is over your CHF 120.00 limit. | Would approve if the two orders together stay within your per-order limit. |
+| AU0007 | decline | item_mismatch | Declined CHF 62.00: Fragrance and beauty gift is cosmetics, not groceries. | Would approve without Fragrance and beauty gift and if you decline the unanswered CHF 65.00. |
+| AU0008 | step_up | period_reserved_pending | Waiting for you CHF 65.50: With CHF 65.00 unanswered, this would take the week to CHF 365.00, over your CHF 300.00. | Would approve if you decline the unanswered CHF 65.00. |
+| AU0009 | step_up | period_reserved_pending | Waiting for you CHF 24.00: With CHF 130.50 unanswered, this would take the week to CHF 389.00, over your CHF 300.00. | Would approve if you decline the unanswered CHF 130.50. |
 | AU0010 | decline | per_order_limit_exceeded, period_limit_exceeded | Declined CHF 138.00: CHF 138.00 is over your CHF 120.00 limit. | Would approve at CHF 120.00 or less, but nothing more fits this week. |
-| AU0011 | step_up | period_reserved_pending | Waiting for you CHF 88.00: With CHF 154.50 still open, this would take the week to CHF 312.50, over your CHF 300.00. | Would approve if you decline the CHF 154.50 order still waiting. |
+| AU0011 | step_up | period_reserved_pending | Waiting for you CHF 88.00: With CHF 154.50 unanswered, this would take the week to CHF 312.50, over your CHF 300.00. | Would approve if you decline the unanswered CHF 154.50. |
 | AU0012 | approve | within_limits | Approved CHF 165.00: it is within the limits you set. |  |
 | AU0013 | decline | wrong_size | Declined CHF 155.00: Size 42; you asked for 43. | Would approve in size 43. |
 | AU0014 | decline | return_window_too_short | Declined CHF 145.00: Returns: none; you asked for 14 days or more. | Would approve with returns of 14 days or more. |
@@ -49,13 +49,13 @@ All 45 public purchases through the real pipeline (`pipeline.decide_event`), one
 | AU0033 | decline | unfamiliar_merchant | Declined CHF 138.00: You haven't bought from RainThread before. | Would approve at a shop you've bought from before. |
 | AU0034 | decline | per_order_limit_exceeded | Declined CHF 268.00: CHF 268.00 is over your CHF 250.00 limit. | Would approve at CHF 250.00 or less. |
 | AU0035 | approve | within_limits | Approved CHF 289.00: it is within the limits you set. |  |
-| AU0036 | step_up | duplicate_suspected | Waiting for you CHF 289.00: Same shop and items as AU0035 25 min earlier. | Would approve if it is not a repeat of the earlier order. |
+| AU0036 | step_up | duplicate_suspected | Waiting for you CHF 289.00: Same shop and items as the CHF 289.00 order 25 min earlier. | Would approve if it is not a repeat of the earlier order. |
 | AU0037 | decline | per_order_limit_exceeded | Declined CHF 520.00: CHF 520.00 is over your CHF 400.00 limit; the shop's instructions to the agent were ignored. | Would approve at CHF 400.00 or less. |
 | AU0038 | approve | within_limits | Approved CHF 391.50: it is within the limits you set. |  |
-| AU0039 | decline | unfamiliar_merchant | Declined CHF 340.00: You haven't bought from PixelHarbour before. | Would approve at a shop you've bought from before. |
+| AU0039 | decline | unfamiliar_merchant | Declined CHF 340.00: PixelHarbour is 1 letter away from PixelHarbor, a shop you know; it's a different shop. | Would approve at a shop you've bought from before. |
 | AU0040 | step_up | injection_suspected | Waiting for you CHF 299.00: The shop's text had instructions aimed at the agent; they were ignored, so you decide. | Would approve without the instructions in the shop's text. |
 | AU0041 | decline | per_order_limit_exceeded, unrequested_item | Declined CHF 459.00: CHF 459.00 is over your CHF 400.00 limit. | Would approve at CHF 400.00 or less and without Extended protection plan. |
-| AU0042 | approve | within_limits, requote_accepted | Approved CHF 350.00: it is a new quote after the declined AU0037 and within the limits you set. |  |
+| AU0042 | approve | within_limits, requote_accepted | Approved CHF 350.00: it re-quotes the CHF 520.00 order declined 5 days earlier and is within your limits. |  |
 | AU0043 | decline | item_mismatch, unrequested_item | Declined CHF 195.00: The cart has Digital gift voucher, not the 27-inch monitor you asked for. | Would approve with the 27-inch monitor and without Digital gift voucher. |
 | AU0044 | approve | within_limits | Approved CHF 310.00: it is within the limits you set. |  |
 | AU0045 | approve | within_limits | Approved CHF 399.90: it is within the limits you set. |  |

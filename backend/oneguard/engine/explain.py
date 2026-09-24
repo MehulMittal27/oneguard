@@ -300,9 +300,10 @@ INJECTION_ASK = "The shop's text had instructions aimed at the agent; they were 
 INJECTION_ALSO = "the shop's instructions to the agent were ignored"
 """The one clause a message may add: instructions in the shop's text that did not decide."""
 
-_SPLIT = re.compile(r"^(?P<minutes>\d+) min after (?P<prior>\S+) at the same shop; together "
+_SPLIT = re.compile(r"^(?P<ago>.+?) after (?P<order>the CHF [\d.]+ order) at the same shop; together "
                     r"(?P<combined>CHF [\d.]+), over the (?P<limit>CHF [\d.]+) per-order limit")  # fmt: skip
-_LOOKALIKE = re.compile(r"^This shop's name is .+? away from (?P<known>.+?), but it is a different shop")
+_LOOKALIKE = re.compile(r"^This shop's name is (?P<distance>.+?) away from (?P<known>.+?), but it is a different shop")
+_REQUOTE = re.compile(r"^Re-quote of (?P<declined>.+?); judged on its own facts")
 _REPEAT = re.compile(r"^(?P<same>Same shop and items as .+? earlier) \(")
 _RECURRING = re.compile(r"^Recurring charge you did not ask for: (?P<lines>line \d+.*?)\.(?:\s|$)")
 
@@ -332,9 +333,9 @@ def _signal_clause(signal: Signal, decision: EngineDecision, facts: Facts, amoun
         return INJECTION_ASK if decision.outcome == "step_up" else _clause(INSTRUCTIONS_IGNORED)
     text = clean(signal.detail, facts)
     if m := _SPLIT.match(text):
-        return f"Together with {m['prior']} {m['minutes']} min earlier, {m['combined']} is over your {m['limit']} limit"
+        return f"Together with {m['order']} {m['ago']} earlier, {m['combined']} is over your {m['limit']} limit"
     if m := _LOOKALIKE.match(text):
-        return f"This shop's name imitates {m['known']}"
+        return f"{clean(facts.merchant_name, facts)} is {m['distance']} away from {m['known']}; it's a different shop"
     if m := _REPEAT.match(text):
         return m["same"]
     if (m := _RECURRING.match(text)) and (names := _line_names(m["lines"], facts)):
@@ -355,10 +356,10 @@ def _message(
     if decision.outcome == "approve":
         body = _template(decision)
         requote = next((s for s in signals if s.triggered and s.id == "A5"), None)
-        if requote and requote.related:
-            quote = f"it is a new quote after the declined {requote.related[0]}"
-            within = body == REASON_TEMPLATES["within_limits"]
-            body = f"{quote} and within the limits you set" if within else f"{body}; {quote}"
+        if requote and (m := _REQUOTE.match(requote.detail)):
+            quote = f"it re-quotes {clean(m['declined'], facts)}"
+            within = body in (REASON_TEMPLATES["within_limits"], REASON_TEMPLATES["requote_accepted"])
+            body = f"{quote} and is within your limits" if within else f"{body}; {quote}"
         return _sentence(f"{lead} {amount}: {_clause(body)}")
 
     def clause_of(item: RuleResult | Signal) -> str:
@@ -366,7 +367,10 @@ def _message(
             return _rule_clause(item, facts)
         return _signal_clause(item, decision, facts, amount)
 
-    if deciding:
+    lookalike = next((s for s in signals if s.triggered and s.id == "A7"), None)
+    if lookalike is not None:  # a lookalike shop is always named, whatever decided (a known shop's twin)
+        clause = clause_of(lookalike)
+    elif deciding:
         clause = clause_of(deciding[0])
     elif "shop_terms_contradictory" in decision.reason_codes:
         clause = _capitalised(contradiction(facts) or REASON_TEMPLATES["shop_terms_contradictory"])

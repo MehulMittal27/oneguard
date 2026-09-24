@@ -322,7 +322,8 @@ MESSAGE = re.compile(r"^(Approved|Declined|Waiting for you) CHF \d+\.\d{2}: (?P<
 def test_every_message_is_one_clause_and_never_the_counterfactual(pack, history, tmp_path):
     """rules.md §9: "{Outcome} CHF {amount}: {clause}." for all 45 purchases; the clause is
     at most 15 words (an amount is one word) and "Would approve …" is only ever the
-    counterfactual, which every decline has."""
+    counterfactual, which every decline has. No authorization id reaches the customer, and a
+    lookalike shop is named whenever A7 fired."""
     for scenario_id in sorted(ORACLE["scenarios"]):
         policy = to_policy(scenario_id)
         with fresh_ledger("store", history, tmp_path) as ledger:
@@ -334,5 +335,9 @@ def test_every_message_is_one_clause_and_never_the_counterfactual(pack, history,
                 assert m, (source_id, explanation.message)
                 assert len(re.sub(r"CHF [\d.]+", "CHF", m["clause"]).split()) <= 15, (source_id, explanation.message)
                 assert "Would approve" not in explanation.message, source_id
+                customer_text = f"{explanation.message} {explanation.counterfactual or ''}"
+                assert not re.search(r"\b(AU|AUTH|LIVE)[-_]?\d", customer_text), (source_id, customer_text)
+                if any(row.rule == "Lookalike shop" for row in explanation.evidence):  # A7 fired
+                    assert "away from" in explanation.message, (source_id, explanation.message)
                 if engine.outcome == "decline":
                     assert (explanation.counterfactual or "").startswith("Would approve"), source_id
