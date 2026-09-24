@@ -23,7 +23,8 @@ const UNKNOWN_EXAMPLE_OUTCOME = { label: 'Checked', className: 'text-ink-muted' 
 /**
  * Contract §6 item 9's agent-history line, which names its own scope: this screen
  * and its dry run are card-scoped, and the card and customer counts differ
- * materially in the pack (`TASKS.md` Q3). Zero attempts is worth saying — it
+ * materially in the pack (CA0001: 14 on the card, 29 across the customer, so
+ * the scope is not cosmetic). Zero attempts is worth saying — it
  * means this would be the first agent purchase on the card.
  */
 function agentHistoryLine({ attempts, approved }: { attempts: number; approved: number }): string {
@@ -90,7 +91,8 @@ export function NewPolicyCheck({
     >
       {/* Contract §6 item 10. 'fallback' means a rule-based parse produced these
           checks, so they may be cruder — worth knowing before confirming. Not on
-          the step-1 spinner: `compiler` arrives with the draft (TASKS.md Q2). */}
+          the step-1 spinner: `compiler` arrives with the draft, so there is
+          nothing to read while it is still up. */}
       {draft.compiler === 'fallback' && (
         <div
           role="status"

@@ -180,9 +180,9 @@ def compute_agent_history(card_id, history_by_card):
     card-scoped ("For card X only") and so is the dry run above it, so a
     customer-wide count would be read as a card count. The two differ
     materially in the pack (CA0001: 14 on the card, 29 across the customer),
-    and the UI copy says "on this card" to match. See frontend/TASKS.md Q3 —
-    if P1's backend turns out to be customer-scoped, this function and that
-    one line of copy change together.
+    and the UI copy says "on this card" to match. Open with P1: if the backend
+    counts customer-wide instead, this function and that one line of copy change
+    together.
     """
     rows = [r for r in history_by_card.get(card_id, []) if r["initiator_type"] == "agent"]
     if not rows:
