@@ -11,7 +11,7 @@ flowchart LR
     W --> F[Fact builder<br/>trusted fields + regex]
     F --> G{Deterministic gate<br/>rules → protections → signs}
     M --> G
-    L[(Ledger<br/>SQLite)] <--> G
+    L[(Store<br/>SQLite local · Supabase cloud)] <--> G
     S[Soft signals<br/>keywords / Laya, evidence only] -.-> G
     G -->|approve| PAY[Decision posted]
     G -->|decline| PAY
@@ -50,7 +50,7 @@ oneguard/
       replay/     events.py runner.py            CSV → live-shaped events; offline replay
       viseca/     client.py worker.py schema.py  sandbox client + long-poll worker
       api/        app.py models.py routes_customer.py routes_dev.py static.py
-      store/      db.py                          SQLite schema, migrations
+      store/      db.py schema.py seed.py history.py   SQLAlchemy; SQLite for tests/local, Supabase Postgres in the cloud
     tests/
       test_oracle.py test_engine_*.py test_compiler.py test_api_contract.py test_no_scenario_refs.py
   frontend/                  existing React PWA (see frontend/README.md); additive changes only
@@ -61,7 +61,7 @@ oneguard/
 - `uvicorn oneguard.api.app:app` serves `/api/*` and `frontend/dist` at `/`.
 - Worker runs as an asyncio task inside the same process (one team, one key); it never
   blocks on a pending step-up. Poll loop and C8 resolution are independent paths.
-- SQLite file per environment (`ONEGUARD_DB`). One transaction per decision.
+- One database per environment via ONEGUARD_DATABASE_URL (docs/database.md). One transaction per decision.
 - Viseca key from `VISECA_API_KEY`; base URL from `VISECA_BASE_URL`; both server-side.
 
 ## Deployment (Plan C)
