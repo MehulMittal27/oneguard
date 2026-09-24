@@ -114,13 +114,14 @@ DryRunResult { sample_size, would_violate, would_fit, would_ask, insight,
                agent_history?: { attempts: number, approved: number } }   // NEW: history rows with initiator_type 'agent',
                                               // customer-level (all the customer's cards); the rest of the dry run is card-scoped
 
-PolicyDraft  { draft_id, card_id, instruction, checks: RuleCheck[],
+PolicyDraft  { draft_id, card_id, instruction, checks: RuleCheck[],   // instruction: the C1 text verbatim, or exactly
+                                              // "Built from the form" for a form draft; never the check texts
                uncertainty_policy: 'ask'|'decline', open_questions: string[],  // no checks read: the first entry is
                                               // "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'"
                dry_run: DryRunResult,
                compiler?: 'llm' | 'form' | 'fallback' }               // NEW: 'fallback' = LLM unavailable, rule-based parse used
 
-Mandate      { mandate_id, card_id, instruction, checks: RuleCheck[],
+Mandate      { mandate_id, card_id, instruction, checks: RuleCheck[],   // instruction: as its draft's (C4 keeps it)
                uncertainty_policy: 'ask'|'decline'|'approve', open_questions: string[],
                status: 'active'|'revoked', confirmed_at,
                usage?: MandateUsage }                                  // NEW
@@ -224,7 +225,8 @@ expire — that is a broken state, not a degraded one.
   `open_questions` entry rather than failing. If no check at all was read (e.g. "buy
   something nice"), that entry is "I couldn't read a spending limit or item type - try
   'groceries, max CHF 120 per order'", first, in place of the no-amount question.
-- C1 with `form`: no LLM; rules built directly.
+- C1 with `form`: no LLM; rules built directly. The form has no words of the customer's, so
+  the draft's (and the mandate's) `instruction` is exactly "Built from the form".
 - The backend stores, per `RuleCheck.id`, the typed rule
   (`field`, `operator`, `value`, `currency?`, `scope?`, `period_days?`) in Viseca's rule
   format. **The UI only ever sees `text`; `checks` sent back in C2 are treated as accepted
@@ -239,7 +241,10 @@ expire — that is a broken state, not a degraded one.
   `hard_rules`, `uncertainty_policy`, `guidance` = check texts, `open_questions`) then
   `POST /v1/mandates/{draft_id}/confirm`. The returned `TM…` id is stored; our `mandate_id`
   is our own and maps to it.
-- The instruction is stored **verbatim** and sent to Viseca verbatim.
+- The instruction is stored **verbatim** and sent to Viseca verbatim; C1, C2, C3 and C4 serve
+  it unchanged. A form policy stores and serves "Built from the form" and sends Viseca its
+  accepted checks as sentences ("Total at or below CHF 20 per order. Ask me when
+  uncertain."), since the platform wants text.
 - A confirmed draft replaces the card's active mandate, which is revoked (C5 semantics).
 - C4 `add_checks` are ids of checks proposed by this card's drafts; their text is ignored.
   Changing a check already in force is 409 `not_pure_addition`; an unknown id is 422.
@@ -405,7 +410,7 @@ neutral fallback for unknown codes.
 
 1. `Customer.scenario_id` → `scenario_ids: string[]`.
 2. `Decision.related` — one link row in DecisionDetail "Related decisions".
-3. `Decision.counterfactual` — one line under the message in DecisionDetail.
+3. `Decision.counterfactual` — one line under the message in DecisionDetail; when the message ends with the same suggestion, DecisionDetail drops that trailing copy so it is said once (lists keep the full message).
 4. `Mandate.usage` — `lib/spend.ts` prefers it when present; keep client math as mock fallback; ensure human-approved step-ups count as spend.
 5. `Evidence.outcome: 'info'` — neutral styling; unknown values fall back to neutral.
 6. Optional: `Decision.session` banner on DecisionDetail when trust ≠ normal; a "Revoke policy" shortcut on the Approvals card.

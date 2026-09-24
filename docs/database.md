@@ -81,7 +81,9 @@ reads it to build `Decision` responses and `Mandate.usage`. Nobody else writes i
 - `backend/oneguard/store/schema.py` — SQLAlchemy models (P1).
 - `backend/oneguard/store/db.py` — engine factory, `session()` context manager, `init_db()`
   (create_all; no Alembic this weekend — the schema is created from the models, and a
-  schema change is a `make reset-db` on Supabase, acceptable for a demo).
+  schema change is a `make reset-db` on Supabase, acceptable for a demo). Data fixes run at app
+  start instead, idempotently: `queries.restore_form_instructions` sets form policies stored
+  with their joined check texts as the instruction to "Built from the form".
 - `backend/oneguard/store/seed.py` — idempotent CSV → tables; `make seed` runs it against
   whatever `ONEGUARD_DATABASE_URL` points at. Checks `metadata.json` hashes so a changed
   pack is noticed.

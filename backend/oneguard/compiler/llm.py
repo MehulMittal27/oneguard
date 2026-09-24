@@ -17,6 +17,7 @@ from decimal import Decimal
 from typing import Any
 
 from oneguard.compiler.draft import (
+    COUNT_FIELD,
     COUNTRY_NAMES,
     FIELDS,
     ITEM_CATEGORIES,
@@ -163,8 +164,8 @@ EXAMPLES: list[tuple[str, dict[str, Any]]] = [
             "requested_item": None,
             "nothing_extra": False,
             "rules": [
-                _example_rule("unverifiable", "=", "At most one lunch delivery a day",
-                              value_text="At most one lunch delivery a day"),
+                _example_rule(COUNT_FIELD, "<=", "At most one lunch delivery a day", value_number=1,
+                              scope="period", period_days=1),
                 _example_rule("items[].item_category", "in", "lunch", value_list=["dining", "food_delivery"],
                               source="inferred"),
                 _example_rule("authorization.weekday", "in", "on weekdays",
@@ -288,6 +289,7 @@ Use ONLY these fields (docs/api-contract.md §3.3):
 | cart.recurring | "false": no recurring billing |
 | items[].unit_price_chf | every cart line's unit price in CHF; per-item limits ("max CHF 90 each") |
 | cart.quantity | total quantity of the requested item ("two tickets" = 2) |
+| {COUNT_FIELD} | how many purchases on this card in a rolling window: "<=" N, scope "period", period_days = the window in days ("one delivery a day" = "<=" 1, period_days 1; "at most two orders a week" = "<=" 2, period_days 7; "once a month" = "<=" 1, period_days 30) |
 | merchant.merchant_country | shop country, ISO alpha-2: {", ".join(COUNTRY_NAMES)} |
 | authorization.delivery_by | "<=" a date: value_text YYYY-MM-DD, or value_from "next_weekday" with value_text "fri" for "by Friday" |
 | authorization.weekday | purchase day in Swiss time, in / not_in of {", ".join(WEEKDAYS)} |
@@ -342,9 +344,10 @@ Rules:
   as well.
 - Days: "weekdays" / "weeknights" -> weekday in mon..fri; "never at the weekend" alone ->
   weekday not_in [sat, sun]; both together are one rule (in mon..fri).
-- A count of purchases per period ("one delivery a day", "two orders a week"): no field counts
-  purchases, so it is one unverifiable rule, value_text = the customer's words. A meal or item
-  word inside it ("one lunch delivery a day") is still its own items[].item_category rule.
+- A count of purchases per period ("one delivery a day", "two orders a week", "once a week") is one
+  {COUNT_FIELD} rule: "<=" the count ("fewer than N" is "<"), value_number the count, scope
+  "period", period_days 1 for a day, 7 for a week, 30 for a month. It is never an amount. A meal or
+  item word inside it ("one lunch delivery a day") is still its own items[].item_category rule.
 - A booking: the category (hotel), the place and the dates (unverifiable, one rule each), the
   price per night (items[].unit_price_chf), "refundable rate" -> order.order_cancellable "true".
 - "If a price changes, ask me" with no single price stated -> an unverifiable rule, value_text
@@ -396,6 +399,8 @@ def _convert(
     shown = words or field
     kind, ops, _ = FIELDS[field]
     unreadable = f'I could not turn "{shown}" into a check: what exactly should it allow?'
+    if field == COUNT_FIELD and op == "=":  # "one a day" read as exactly one: a gate only caps a count
+        op = "<="
     if op not in ops:
         return None, unreadable
     source = raw["source"] if words and _norm(words) in _norm(instruction) else "inferred"
@@ -441,6 +446,12 @@ def _convert(
                             period_days=period), None
         if field == "authorization.local_hour" and not 0 <= value <= 23:
             return None, unreadable
+        if field == COUNT_FIELD:  # a purchase count: whole, in a stated window, never an amount
+            if not isinstance(value, int) or value < 0:
+                return None, unreadable
+            if raw["scope"] != "period" or not raw["period_days"]:
+                return None, f'Over how many days should "{shown}" apply?'
+            return RuleSpec(**common, value=value, scope="period", period_days=raw["period_days"]), None
         return RuleSpec(**common, value=value), None
     if kind == "list":
         values = [v.strip().lower() for v in raw["value_list"] or []]

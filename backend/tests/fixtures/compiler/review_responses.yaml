@@ -5,6 +5,8 @@
 # on 2026-09-24 with the prompt in compiler/llm.py at that commit. Each `response` is
 # the provider's JSON output (compiler/llm.py SCHEMA), replayed offline by a scripted provider.
 # The replay does not see the prompt: re-record after changing it (the parser tests still pin the floor).
+# S5 re-recorded on 2026-09-24 (gpt-4.1, same settings) after the prompt learned
+# cart.purchases_in_period (p4/purchases-in-period); the other entries are unchanged.
 - label: S1
   instruction: Buy groceries but not more than 120 CHF
   response:
@@ -180,15 +182,15 @@
     requested_item: null
     nothing_extra: false
     rules:
-    - field: unverifiable
-      operator: '='
-      value_number: null
-      value_text: one meal delivery a day
+    - field: cart.purchases_in_period
+      operator: <=
+      value_number: 1
+      value_text: null
       value_list: null
       value_from: literal
       currency: null
-      scope: null
-      period_days: null
+      scope: period
+      period_days: 1
       words: one meal delivery a day
       source: exact
       on_fail: decline
