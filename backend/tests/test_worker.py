@@ -38,6 +38,7 @@ from oneguard.viseca.worker import (
     VisecaWorker,
     WindowClosed,
     default_ledger,
+    fx_rate_mismatches,
     overrun_setting,
     timeout_message,
 )
@@ -226,6 +227,7 @@ def test_all_45_events_are_decided_and_expire_unanswered(
             assert s.scalar(select(func.count()).select_from(EventRaw)) == 45
             stored = {r.viseca_run_id: r for r in s.scalars(select(Run))}
         assert {r.state for r in stored.values()} == {"done"}
+        assert {r.kind for r in stored.values()} == {"live"}
         assert stored[runs["SCEN0001"]].decided == 10
 
     asyncio.run(scenario())
@@ -605,3 +607,80 @@ def test_start_reseeds_history_when_viseca_serves_a_different_file(
     assert "RE-SEEDED authorization_history: 4696 rows" in caplog.text
     with session(db) as s:
         assert s.scalar(select(func.count()).select_from(AuthorizationHistory)) == 4696
+
+
+PACK_FX = [
+    {"from_currency": c, "to_currency": "CHF", "rate": r, "rate_date": "2026-08-01", "source": "synthetic_fixed"}
+    for c, r in (("CHF", 1.0), ("EUR", 0.95), ("GBP", 1.12), ("USD", 0.87))
+]
+
+
+def _with_rate(currency: str, rate: Any) -> list[dict[str, Any]]:
+    return [{**row, "rate": rate} if row["from_currency"] == currency else row for row in PACK_FX]
+
+
+def test_served_fx_rates_are_compared_exactly_with_the_engines_rates() -> None:
+    assert fx_rate_mismatches({"tables": {"fx_rates": PACK_FX}}) == []
+    # a rate served as a string or with other trailing zeros is the same decimal
+    as_strings = [{**row, "rate": f"{row['rate']:.6f}"} for row in PACK_FX]
+    assert fx_rate_mismatches({"tables": {"fx_rates": as_strings}}) == []
+    # no tolerance: one ten-thousandth off is a mismatch
+    assert fx_rate_mismatches({"tables": {"fx_rates": _with_rate("EUR", 0.9501)}}) == [
+        "EUR: served 0.9501, the engine uses 0.950000"
+    ]
+    assert fx_rate_mismatches({"tables": {"fx_rates": PACK_FX[:3]}}) == [
+        "USD: not served, the engine uses 0.870000"
+    ]
+    extra = [*PACK_FX, {"from_currency": "JPY", "to_currency": "CHF", "rate": 0.006}]
+    assert fx_rate_mismatches({"tables": {"fx_rates": extra}}) == ["JPY: served 0.006, the engine has no rate"]
+    wrong_target = [{**row, "to_currency": "EUR"} if row["from_currency"] == "GBP" else row for row in PACK_FX]
+    assert fx_rate_mismatches({"tables": {"fx_rates": wrong_target}}) == ["GBP: converts to 'EUR', not CHF"]
+    assert fx_rate_mismatches({"tables": {"fx_rates": _with_rate("GBP", "n/a")}}) == ["GBP: unreadable rate 'n/a'"]
+    assert fx_rate_mismatches({"tables": {"fx_rates": _with_rate("GBP", None)}}) == ["GBP: unreadable rate None"]
+    assert fx_rate_mismatches({"tables": {"fx_rates": [*PACK_FX, PACK_FX[1]]}}) == ["EUR: served twice"]
+    # missing is never a pass
+    assert fx_rate_mismatches({"tables": {}}) == ["no fx_rates table served"]
+    assert fx_rate_mismatches(None) == ["no fx_rates table served"]
+
+
+def test_start_checks_the_served_fx_rates_and_healthz_is_ok_when_they_match(db: Engine) -> None:
+    async def scenario() -> None:
+        async with harness(db, fast()) as (_, _, worker):
+            assert worker.status().fx_rates_match is None  # not checked before start
+            await worker.start()
+            await wait_until(lambda: worker.status().last_poll_at is not None)
+            status = worker.status()
+            assert (status.fx_rates_match, status.fx_rates_mismatch) == (True, [])
+            assert status.ok and status.state == "polling"
+
+    asyncio.run(scenario())
+
+
+def test_served_fx_rates_that_differ_are_logged_loudly_and_keep_healthz_degraded(
+    db: Engine, history: StoreHistoryIndex, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("ERROR")
+
+    async def scenario() -> None:
+        async with harness(db, fast(fx_rates=_with_rate("EUR", "0.96")), history=history) as (
+            _,
+            client,
+            worker,
+        ):
+            await worker.start()
+            await wait_until(lambda: worker.status().last_poll_at is not None)
+            status = worker.status()
+            assert status.fx_rates_match is False
+            assert status.fx_rates_mismatch == ["EUR: served 0.96, the engine uses 0.950000"]
+            assert not status.ok and status.state == "degraded"
+            assert "fx rates differ" in (status.last_error or "")
+            # the worker still decides (the engine's rates stand); it just is not healthy
+            _, run_id = await start_run(client, worker, "SCEN0000")
+            await wait_until(lambda: worker.run_status(run_id) is not None
+                             and worker.run_status(run_id).decided == 1)  # fmt: skip
+            assert worker.status().state == "degraded"
+            assert worker.live_run(run_id).worker_ok is False
+
+    asyncio.run(scenario())
+    assert "VISECA SERVES DIFFERENT FX RATES FROM THE ENGINE'S FX_TO_CHF" in caplog.text
+    assert "EUR: served 0.96, the engine uses 0.950000" in caplog.text

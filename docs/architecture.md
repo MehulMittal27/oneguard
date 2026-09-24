@@ -66,13 +66,17 @@ oneguard/
 - Worker (`oneguard/viseca/worker.py`, `VisecaWorker`): on start reads `/v1/bootstrap`
   (human window, decision deadline) and `/v1/reference-data`; if the served history-file
   SHA-256 differs from `data/metadata.json` it re-seeds `authorization_history` from
-  `/v1/reference-data/authorization-history.csv` and logs it loudly. Every request is
+  `/v1/reference-data/authorization-history.csv` and logs it loudly. The served
+  `tables.fx_rates` must equal the engine's `facts.FX_TO_CHF` exactly (decimal compare); a
+  mismatch or a missing table is logged loudly and keeps the worker `degraded` (`ok: false`)
+  for as long as it runs; decisions still use `FX_TO_CHF`. Every request is
   schema-checked, stored in `events_raw`, decided by `pipeline.decide_event` within
   `ONEGUARD_ENGINE_BUDGET_MS` and posted before `deadline_at`. A step-up's deadline is the
   accepted time + the human window; an expiry task posts the timeout `/resolve` (rules Q2).
   All ledger and pipeline calls run on one dedicated thread. `VisecaWorker.status()` is the
   `/healthz` worker block: `state`, `ok`, `last_poll_at`, `events_cursor`,
-  `human_window_s`, `pending_step_ups`, `history_reseeded`, `last_error`, `runs`.
+  `human_window_s`, `pending_step_ups`, `history_reseeded`, `fx_rates_match`,
+  `fx_rates_mismatch`, `last_error`, `runs`.
 - Every Viseca call is summarised in `viseca_calls` (no key, bodies ≤ 4 KB) by
   `oneguard/viseca/client.py`. `make demo-live SCEN=…` runs one scenario end to end
   (`oneguard/viseca/demo.py`); it needs `VISECA_API_KEY`.

@@ -10,8 +10,9 @@ live-run behaviour the worker depends on:
   fresh per run and ``related_authorization_id`` is rewritten to the live id;
 - ``context.approved_spend_in_period_chf`` is recomputed from the run's approvals;
 - step-ups wait for ``/resolve``; nothing expires them here, so the worker must;
-- knobs for redelivery, corrupt events, a served history file with another hash, and a
-  context / event-feed that disagrees with the worker.
+- ``/v1/reference-data`` serves ``tables.fx_rates`` as the rows of ``data/fx_rates.csv``;
+- knobs for redelivery, corrupt events, a served history file with another hash or fx
+  rates that differ, and a context / event-feed that disagrees with the worker.
 
 Responses are plain JSON objects; errors use the ``{"error": {"code", "message"}}``
 envelope. Everything is on the real clock except the purchases' simulated timestamps.
@@ -21,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import csv
 import hashlib
 import secrets
 from dataclasses import dataclass, field
@@ -65,6 +67,9 @@ class FakeConfig:
     feed_status_override: dict[str, str] = field(default_factory=dict)
     """Source id → status the event feed reports for it, whatever really happened."""
     history_csv: str | None = None
+    fx_rates: list[dict[str, Any]] | None = None
+    """``tables.fx_rates`` rows served instead of data/fx_rates.csv (the live sandbox
+    serves them under ``tables``; the rate's JSON type was not recorded, a number is assumed)."""
     """History file served instead of data/authorization_history.csv."""
 
 
@@ -115,6 +120,9 @@ class FakeViseca:
         self.history_csv = self.config.history_csv or (data_dir() / "authorization_history.csv").read_text(
             encoding="utf-8"
         )
+        with (data_dir() / "fx_rates.csv").open(encoding="utf-8", newline="") as f:
+            pack_rates = [{**row, "rate": float(row["rate"])} for row in csv.DictReader(f)]
+        self.fx_rates = self.config.fx_rates if self.config.fx_rates is not None else pack_rates
         self.reset()
         self.app = self._build_app()
 
@@ -272,7 +280,7 @@ class FakeViseca:
                     }
                     for s in fake.pack.scenarios.values()
                 ],
-                "fx_rates": [{"from_currency": c, "to_currency": "CHF"} for c in ("CHF", "EUR", "GBP", "USD")],
+                "tables": {"fx_rates": fake.fx_rates},
                 "files": {
                     "authorization_history": {
                         "url": "/v1/reference-data/authorization-history.csv",

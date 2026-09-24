@@ -6,7 +6,9 @@ loop, never blocked by a human:
 - ``start``: ``GET /v1/bootstrap`` (human window, decision deadline) and
   ``GET /v1/reference-data``. If the served history-file SHA-256 differs from the one
   the seed checked (``data/metadata.json``), ``authorization_history`` is re-seeded from
-  ``/v1/reference-data/authorization-history.csv`` and that is logged loudly.
+  ``/v1/reference-data/authorization-history.csv`` and that is logged loudly. The served
+  ``tables.fx_rates`` must equal ``facts.FX_TO_CHF`` (the rates every CHF amount is
+  converted with); a mismatch is logged loudly and keeps ``/healthz`` degraded.
 - loop: long-poll ``/v1/decision-requests/next?wait=25``. 204 → read the progress of
   every tracked run and the event feed, poll again. 200 → validate ``data`` against the
   event schema, remember the live → source id map (and the live related id), store the
@@ -59,6 +61,7 @@ from sqlalchemy.orm import Session
 
 from oneguard import __version__
 from oneguard.api import models as api
+from oneguard.engine.facts import FX_TO_CHF
 from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import Ledger, LedgerEntry
 from oneguard.engine.types import (
@@ -203,6 +206,56 @@ def find_history_metadata(reference: Any) -> dict[str, Any] | None:
         elif isinstance(node, list):
             queue.extend((key, v) for v in node if isinstance(v, (dict, list)))
     return None
+
+
+def _decimal(value: Any) -> Decimal | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = Decimal(str(value).strip())
+    except ArithmeticError:
+        return None
+    return number if number.is_finite() else None
+
+
+def fx_rate_mismatches(reference: Any, expected: Mapping[str, Decimal] = FX_TO_CHF) -> list[str]:
+    """How the served ``tables.fx_rates`` differ from ``expected``; empty when they agree.
+
+    Rows are ``{from_currency, to_currency, rate, ...}`` as in ``data/fx_rates.csv``. A rate
+    served as a number or a string is read as a decimal and compared exactly (``0.95`` equals
+    ``0.950000``); no tolerance. A table that is missing or unreadable is a mismatch.
+    """
+    tables = reference.get("tables") if isinstance(reference, dict) else None
+    rows = tables.get("fx_rates") if isinstance(tables, dict) else None
+    if not isinstance(rows, list):
+        return ["no fx_rates table served"]
+    problems: list[str] = []
+    served: dict[str, Decimal] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            problems.append(f"unreadable row {row!r}")
+            continue
+        currency, target, raw = row.get("from_currency"), row.get("to_currency"), row.get("rate")
+        if target != "CHF":
+            problems.append(f"{currency}: converts to {target!r}, not CHF")
+            continue
+        rate = _decimal(raw)
+        if rate is None:
+            problems.append(f"{currency}: unreadable rate {raw!r}")
+            continue
+        if currency in served:
+            problems.append(f"{currency}: served twice")
+        served[str(currency)] = rate
+    for currency in sorted(set(expected) | set(served)):
+        want, got = expected.get(currency), served.get(currency)
+        if want is None:
+            problems.append(f"{currency}: served {got}, the engine has no rate")
+        elif got is None:
+            if not any(p.startswith(f"{currency}:") for p in problems):
+                problems.append(f"{currency}: not served, the engine uses {want}")
+        elif got != want:
+            problems.append(f"{currency}: served {got}, the engine uses {want}")
+    return problems
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -384,6 +437,9 @@ class WorkerStatus(BaseModel):
     decision_deadline_s: float | None
     pending_step_ups: int
     history_reseeded: bool
+    fx_rates_match: bool | None
+    """Served ``tables.fx_rates`` equal ``facts.FX_TO_CHF``; None until checked."""
+    fx_rates_mismatch: list[str]
     last_error: str | None
     runs: list[RunStatus]
 
@@ -468,6 +524,8 @@ class VisecaWorker:
         self.bootstrap: dict[str, Any] | None = None
         self.reference_data: dict[str, Any] | None = None
         self.history_reseeded = False
+        self.fx_rates_mismatch: list[str] | None = None
+        """How the served fx rates differ from ``FX_TO_CHF`` (empty: equal); None until checked."""
 
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="oneguard-engine")
         self._task: asyncio.Task[None] | None = None
@@ -564,15 +622,19 @@ class VisecaWorker:
 
     def status(self) -> WorkerStatus:
         running = self._task is not None and not self._task.done()
+        fx_ok = not self.fx_rates_mismatch
+        state = self._state if running or self._state == "stopped" else "degraded"
         return WorkerStatus(
-            state=self._state if running or self._state == "stopped" else "degraded",
-            ok=running and self._state == "polling" and self._failures == 0,
+            state="degraded" if state == "polling" and not fx_ok else state,
+            ok=running and self._state == "polling" and self._failures == 0 and fx_ok,
             last_poll_at=self._last_poll_at,
             events_cursor=self._cursor,
             human_window_s=self.human_window_s,
             decision_deadline_s=self.decision_deadline_s,
             pending_step_ups=len(self._expiry),
             history_reseeded=self.history_reseeded,
+            fx_rates_match=None if self.fx_rates_mismatch is None else fx_ok,
+            fx_rates_mismatch=self.fx_rates_mismatch or [],
             last_error=self._last_error,
             runs=[run.status() for run in self._runs.values()],
         )
@@ -700,6 +762,7 @@ class VisecaWorker:
         except VisecaError as exc:
             self._note_error(f"reference data unavailable, keeping the seeded history: {exc}")
             return
+        self._check_fx_rates()
         meta = find_history_metadata(self.reference_data)
         expected = seed_module.pack_file_sha256(HISTORY_FILE, self._data_dir)
         if meta is None:
@@ -743,6 +806,21 @@ class VisecaWorker:
             served,
             banner,
         )
+
+    def _check_fx_rates(self) -> None:
+        self.fx_rates_mismatch = fx_rate_mismatches(self.reference_data)
+        if not self.fx_rates_mismatch:
+            log.info("Viseca fx rates match the engine's FX_TO_CHF")
+            return
+        banner = "!" * 72
+        log.error(
+            "%s\nVISECA SERVES DIFFERENT FX RATES FROM THE ENGINE'S FX_TO_CHF:\n%s\n"
+            "Every CHF amount may be converted wrongly; /healthz stays degraded.\n%s",
+            banner,
+            "\n".join(self.fx_rates_mismatch),
+            banner,
+        )
+        self._last_error = "fx rates differ from FX_TO_CHF: " + "; ".join(self.fx_rates_mismatch)
 
     def _reseed_history(self, text: str) -> int:
         with session(self._db_engine) as s:
