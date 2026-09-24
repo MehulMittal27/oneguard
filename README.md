@@ -73,7 +73,8 @@ Live run (event day): `make demo-live SCEN=SCEN0135` has the cloud app
 confirm the scenario's instruction, start the Viseca run and decide it; the terminal prints
 `Sign in as <name> (<customer id>, card <card id>)` and follows the decisions (default
 `SCEN0101`). The scenarios the sandbox serves, and their customers, are in
-`docs/judging-pack.md`.
+`docs/judging-pack.md`. The 6-minute demo (offline replay on stage, live runs recorded
+beforehand) is `docs/demo-script.md`.
 
 ## Layout
 
