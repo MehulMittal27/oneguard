@@ -36,7 +36,13 @@ from oneguard.store import seed as seed_module
 from oneguard.store.db import get_engine, init_db, session
 from oneguard.store.schema import ScenarioCatalogue
 from oneguard.viseca.client import API_KEY_ENV, VisecaClient, store_sink
-from oneguard.viseca.worker import POLL_WAIT_S, VisecaWorker, first_value, walk_json
+from oneguard.viseca.worker import (
+    POLL_WAIT_S,
+    VisecaWorker,
+    first_value,
+    run_total,
+    walk_json,
+)
 
 log = logging.getLogger(__name__)
 
@@ -73,7 +79,18 @@ def policy_from_draft(mandate_id: str, draft: CompiledDraft) -> Policy:
 
 
 def scenario_from_reference(reference: Any, scenario_id: str) -> tuple[str | None, str | None]:
-    """(instruction, card id) for a scenario from ``/v1/reference-data``, if it lists them."""
+    """(instruction, card id) for a scenario from ``/v1/reference-data``, if it lists them.
+
+    The live sandbox lists scenarios in ``tables.scenario_catalogue`` (``scenario_id``,
+    ``scenario_name``, ``cardholder_instruction``, ``event_count``; no card id).
+    """
+    tables = reference.get("tables") if isinstance(reference, dict) else None
+    catalogue = tables.get("scenario_catalogue") if isinstance(tables, dict) else None
+    for row in catalogue if isinstance(catalogue, list) else []:
+        if isinstance(row, dict) and row.get("scenario_id") == scenario_id:
+            instruction = row.get("cardholder_instruction")
+            if isinstance(instruction, str) and instruction:
+                return instruction, row.get("card_id")
     for _, value, _ in walk_json(reference):
         if isinstance(value, dict) and value.get("scenario_id") == scenario_id:
             instruction = value.get("cardholder_instruction") or value.get("instruction")
@@ -146,20 +163,16 @@ async def run_demo(
             guidance=[r.text for r in draft.rules],
             open_questions=draft.open_questions,
         )
-        confirmed = await client.confirm_mandate(str(first_value(created, "draft_id")))
-        mandate_id = str(first_value(confirmed, "mandate_id"))
+        confirmed = await client.confirm_mandate(created["draft_id"])
+        mandate_id = confirmed["mandate_id"]
         worker.bind_policy(mandate_id, policy_from_draft(mandate_id, draft))
         out(f"Mandate {mandate_id} confirmed")
 
         worker.add_listener(lambda decision: out(_line(decision)))
         started = await client.create_run(scenario_id, mandate_id)
-        run_id = str(first_value(started, "run_id"))
-        total = first_value(started, "total", "total_events", "event_count", "events_total")
+        run_id = started["run_id"]
         worker.track_run(
-            run_id,
-            scenario_id=scenario_id,
-            viseca_mandate_id=mandate_id,
-            total=total if isinstance(total, int) else None,
+            run_id, scenario_id=scenario_id, viseca_mandate_id=mandate_id, total=run_total(started)
         )
         out(f"Run {run_id} started")
 
