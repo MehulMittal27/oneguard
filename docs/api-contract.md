@@ -199,8 +199,11 @@ Decision {
   confirmable?: { rule_id: string, phrase: string } | null,  // NEW: step-up decided by one `unverifiable` rule
                                               // (§3.3); phrase = its value. Approving can be remembered for the shop
   run_id?: string,                            // NEW: the run this decision belongs to (decisions.run_id); C6 sends it
-  run_started_at?: string                     // NEW: that run's start, REAL clock (runs.started_at); C6 sends it
+  run_started_at?: string,                    // NEW: that run's start, REAL clock (runs.started_at); C6 sends it
                                               // when the run has a `runs` row. The UI lists a card's newest run
+  policy_applied?: { mandate_id: string,      // NEW: the policy this decision was checked against
+                     source: 'confirmed' | 'platform',   // platform = the Viseca mandate's own rules (no confirmed policy bound)
+                     checks: RuleCheck[] } | null,       // what decided, whatever the card's policy is now
 }
 
 Evidence  { rule: string,                     // which check or signal
@@ -470,6 +473,7 @@ fixtures to it.
 
 15. Approvals pending card: `uncertainty.note` shows only when it says something the message does not (`lib/decisionMessage.ts` `noteAddsToMessage`); the note is usually the uncertain evidence row's detail, which the card lists anyway.
 16. Operator strip (`?demo=1`, operator only): reads D5 GET on each poll and labels the toggle with what the server reports (on, off, live only, replay only), never an assumed "on"; D1's 404 reads as "no replay yet", not as the backend being unreachable.
+17. `Decision.policy_applied` - DecisionDetail's "Policy applied" shows these checks (the rules that decided), with a note when they are the platform mandate's rules or differ from the card's current policy; the card link (manage / revoke) stays. Absent: the card's current policy, as before.
 
 No customer endpoint changes. No screen removals. Tighten UI stays dormant.
 

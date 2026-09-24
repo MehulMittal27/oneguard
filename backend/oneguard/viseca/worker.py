@@ -564,6 +564,16 @@ def _rule_kind(raw: Mapping[str, Any]) -> RuleKind:
 
 
 def _rule_text(raw: Mapping[str, Any]) -> str:
+    """The check's customer wording ("Each item at or below CHF 300"), as the compiler
+    writes it; the raw ``field operator value`` only for a rule outside the vocabulary."""
+    from oneguard.compiler.draft import describe_rule
+
+    described = describe_rule(
+        str(raw["field"]), str(raw["operator"]), raw["value"], currency=raw.get("currency"),
+        scope=raw.get("scope"), period_days=raw.get("period_days"), on_fail=raw.get("on_fail") or "decline",
+    )
+    if described:
+        return described
     value = raw["value"]
     shown = ", ".join(value) if isinstance(value, list) else str(value)
     text = f"{raw['field']} {raw['operator']} {shown}"
@@ -1964,6 +1974,8 @@ class VisecaWorker:
         waiting = envelope.get("status") == STEP_UP_WAITING  # decided already; served on every poll
         reference_rows = [] if waiting else await self._reference_rows(data, deadline_at)
         bound = viseca_run_id in self._runs and self._runs[viseca_run_id].ctx is not None
+        if not bound and data["mandate"]["mandate_id"] not in self._policies:
+            await asyncio.to_thread(self._restore_policy, str(data["mandate"]["mandate_id"]))
         run = self._bind_run(viseca_run_id, data)
         if not bound:
             # The ledger reads runs.kind (live) to carry the session watch and remembered
@@ -2027,6 +2039,32 @@ class VisecaWorker:
             )
             self._runs[viseca_run_id] = run
         return run
+
+    def _restore_policy(self, viseca_mandate_id: str) -> None:
+        """Bind our confirmed policy for a Viseca mandate from the store.
+
+        ``bind_policy`` lives in memory, so after a restart or redeploy every live run
+        would otherwise be decided from the platform snapshot, which carries only the
+        typed ``hard_rules``: the requested item (C5), "nothing extra" (C10) and
+        ``on_fail: ask`` are not in it. The newest mandate confirmed for that id wins;
+        a revoked one binds as revoked, so later purchases are still declined (T6).
+        """
+        from oneguard.api import policies
+
+        with session(self._db_engine) as s:
+            row = s.scalars(
+                select(Mandate)
+                .where(Mandate.viseca_mandate_id == viseca_mandate_id)
+                .order_by(Mandate.confirmed_at.desc())
+            ).first()
+            if row is None:
+                return
+            rules, flags = policies.load_rules(row.rules, row.checks)
+            policy = policies.policy_of(
+                row.mandate_id, row.status, row.instruction, rules, flags, row.uncertainty_policy
+            )
+        log.info("restored confirmed policy %s for mandate %s from the store", policy.mandate_id, viseca_mandate_id)
+        self.bind_policy(viseca_mandate_id, policy)
 
     def _bind_run(self, viseca_run_id: str, data: dict[str, Any]) -> RunState:
         run = self._run(viseca_run_id)

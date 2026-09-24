@@ -147,6 +147,18 @@ def mandate_policy(row: Mandate) -> Policy:
     return policies.policy_of(row.mandate_id, row.status, row.instruction, rules, flags, row.uncertainty_policy)
 
 
+def decided_by_platform(event: dict, entry: LedgerEntry) -> Policy:
+    """The policy a decision with no stored mandate was checked against: the platform
+    mandate's rules from its stored event (as the worker did, ``policy_from_snapshot``),
+    else a policy without rules (a replay whose policy was never stored)."""
+    from oneguard.viseca.worker import policy_from_snapshot
+
+    mandate = event.get("mandate") or {}
+    if mandate.get("mandate_id") == entry.mandate_id and mandate.get("hard_rules"):
+        return policy_from_snapshot(mandate)
+    return Policy(mandate_id=entry.mandate_id, status="active", instruction="", rules=[], uncertainty_policy="ask")
+
+
 def build_decisions(
     stored: list[queries.StoredDecision], history: HistoryIndex, mandates: dict[str, Mandate]
 ) -> list[api.Decision]:
@@ -165,9 +177,7 @@ def build_decisions(
             log.error("decision %s has no stored event; left out of C6", item.entry.live_authorization_id)
             continue
         view = merchant_view(item.entry, by_run[item.entry.run_id], history)
-        policy = decided_under.get(item.entry.mandate_id) or Policy(
-            mandate_id=item.entry.mandate_id, status="active", instruction="", rules=[], uncertainty_policy="ask"
-        )
+        policy = decided_under.get(item.entry.mandate_id) or decided_by_platform(item.event, item.entry)
         decisions.append(to_api_decision(item.event, item.entry, view, policy, item.run_started_at))
     return decisions
 
