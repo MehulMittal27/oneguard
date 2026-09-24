@@ -38,6 +38,13 @@ loop, never blocked by a human:
   (rules.md T6, Q6; pipeline step 3).
 - after each decision the feed ``GET /v1/events?since=<cursor>`` is compared with the
   ledger; a mismatch becomes an ``info`` evidence row on the next decision.
+- tier 3 (rules.md §4a, E8): once an engine decision is posted with its template message
+  and a provider is configured for the run, ``rewrite_explanation`` runs in a background
+  task, off the engine thread and outside the decision budget, so the poll loop never
+  waits for it. A changed message is stored with ``explanation_source="model"``
+  (``Ledger.set_explanation``, one short session) and C6 shows it on its next read. No
+  provider (none configured, or D5 switched the models off): nothing is scheduled. A
+  provider failure or a rejected rewrite leaves the template, which was posted first.
 
 ``status()`` is what ``/healthz`` reports: state, last poll, events cursor, runs.
 
@@ -82,11 +89,12 @@ from oneguard.engine.types import (
     Rule,
     RuleKind,
 )
-from oneguard.llm.provider import Provider
+from oneguard.llm.provider import Provider, provider_available
 from oneguard.pipeline import (
     PipelineContext,
     budget_ms_from_env,
     decide_event,
+    from_entry,
     period_days_of,
     to_api_decision,
 )
@@ -114,6 +122,8 @@ POST_MARGIN_S = 0.5
 """Time kept free before ``deadline_at`` to POST the step-up when the engine overruns its budget."""
 POST_RETRY_DELAYS_S = (0.2, 0.5, 1.0)
 LOOP_BACKOFF_MAX_S = 10.0
+TIER3_TIMEOUT_S = 8.0
+"""How long tier 3 may take to rewrite a posted message; it runs after posting (§4a)."""
 RECONCILE_TOLERANCE_CHF = Decimal("0.005")
 HISTORY_FILE = "authorization_history.csv"
 
@@ -600,7 +610,10 @@ class VisecaWorker:
         self._feed_mismatches: list[EvidenceRow] = []
         self._feed_seen: set[tuple[str, str]] = set()
         self._listeners: list[DecisionListener] = []
+        self._rewrites: set[asyncio.Task[None]] = set()
+        """Tier-3 rewrites in flight, cancelled by ``stop``."""
         self._warned_no_set_deadline = False
+        self._warned_no_set_explanation = False
         self.source_ids: dict[str, str] = {}
         """live authorization id → source ``AU…`` id (offline parity)."""
         self.related_ids: dict[str, str] = {}
@@ -703,17 +716,19 @@ class VisecaWorker:
         self._task = asyncio.create_task(self._loop(), name="viseca-worker")
 
     async def stop(self) -> None:
-        """Stop polling and cancel expiry timers (pending step-ups are recovered on start).
+        """Stop polling, cancel expiry timers (pending step-ups are recovered on start) and
+        tier-3 rewrites (their decisions keep the template message).
 
         Waits up to ``STOP_DRAIN_S`` for the engine thread's current work, then closes any
         ledger session still open, so no pooled connection outlives the worker.
         """
-        tasks = [t for t in [self._task, *self._expiry.values()] if t is not None]
+        tasks = [t for t in [self._task, *self._expiry.values(), *self._rewrites] if t is not None]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self._task = None
         self._expiry.clear()
+        self._rewrites.clear()
         self._state = "stopped"
         try:
             await asyncio.wait_for(
@@ -1443,6 +1458,7 @@ class VisecaWorker:
             await self._await_answer(run, decision, reply)
         else:
             self._notify(decision)
+        self._schedule_rewrite(run, data, decision)
 
     async def _await_answer(
         self, run: RunState, decision: api.Decision, reply: dict[str, Any] | None
@@ -1536,20 +1552,84 @@ class VisecaWorker:
             run.pending.discard(live_id)
             self._maybe_done(run)
             await asyncio.to_thread(self._save_run, run)
-        event = self._events.get(live_id)
-        if event is None or run is None or run.ctx is None:
+        if live_id not in self._events or run is None or run.ctx is None:
             return
-        view = await self._engine(
-            partial(
-                self.ledger.view,
-                run_id=entry.run_id,
-                customer_id=entry.customer_id,
-                card_id=entry.card_id,
-                at=entry.ts_sim,
-                period_days=period_days_of(run.ctx.policy),
-            )
+        view = await self._engine(self._view_of, entry, period_days_of(run.ctx.policy))
+        self._notify(to_api_decision(self._events[live_id], entry, view, run.ctx.policy))
+
+    def _view_of(self, entry: LedgerEntry, period_days: int | None) -> LedgerView:
+        return self.ledger.view(
+            run_id=entry.run_id,
+            customer_id=entry.customer_id,
+            card_id=entry.card_id,
+            at=entry.ts_sim,
+            period_days=period_days,
         )
-        self._notify(to_api_decision(event, entry, view, run.ctx.policy))
+
+    # Tier 3 ------------------------------------------------------------------------------
+
+    def _schedule_rewrite(self, run: RunState, data: dict[str, Any], decision: api.Decision) -> None:
+        """Rewrite a posted template message in the background, if the run has a provider.
+
+        The provider is the run's at posting time, so D5 switching the models off stops
+        rewrites of every later decision.
+        """
+        if run.ctx is None or decision.explanation_source != "template":
+            return
+        provider = run.ctx.provider
+        if provider is None or not provider_available(provider):
+            return
+        live_id = decision.authorization_id
+        task = asyncio.create_task(self._rewrite(run.ctx, provider, data, live_id), name=f"tier3-{live_id}")
+        self._rewrites.add(task)
+        task.add_done_callback(self._rewrites.discard)
+
+    async def _rewrite(
+        self, ctx: PipelineContext, provider: Provider, data: dict[str, Any], live_id: str
+    ) -> None:
+        """Tier 3 for one posted decision: the model call on its own thread, then one short
+        ledger session that stores the new message and reads it back for the listeners."""
+        try:
+            entry = await self._engine(self.ledger.get, live_id)
+            if entry is None or entry.explanation_source != "template":
+                return
+            message = await asyncio.to_thread(self._rewritten_message, ctx, provider, data, entry)
+            if message == entry.message:
+                return
+            stored, view = await self._engine(self._store_rewrite, live_id, message, period_days_of(ctx.policy))
+        except asyncio.CancelledError:
+            raise
+        except NotImplementedError:
+            if not self._warned_no_set_explanation:
+                log.warning("the ledger cannot store rewritten messages; decisions keep the template")
+                self._warned_no_set_explanation = True
+            return
+        except Exception:
+            log.exception("tier 3 failed on %s; the template message stands", live_id)
+            return
+        log.info("tier 3 rewrote the message of %s", live_id)
+        self._notify(to_api_decision(data, stored, view, ctx.policy))
+
+    @staticmethod
+    def _rewritten_message(
+        ctx: PipelineContext, provider: Provider, data: dict[str, Any], entry: LedgerEntry
+    ) -> str:
+        """``rewrite_explanation`` on the stored explanation; the template on any failure.
+
+        Facts are rebuilt from the event for the shop strings tier 3 redacts; the model
+        never sees the event itself.
+        """
+        facts = ctx.functions["build_facts"](data, ctx.history)
+        _, explanation = from_entry(entry)
+        return ctx.functions["rewrite_explanation"](
+            explanation, facts, provider, TIER3_TIMEOUT_S, instruction=ctx.policy.instruction or None
+        )
+
+    def _store_rewrite(
+        self, live_id: str, message: str, period_days: int | None
+    ) -> tuple[LedgerEntry, LedgerView]:
+        stored = self.ledger.set_explanation(live_id, message)
+        return stored, self._view_of(stored, period_days)
 
     # Event feed --------------------------------------------------------------------------
 

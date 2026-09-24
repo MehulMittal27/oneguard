@@ -225,6 +225,11 @@ expire — that is a broken state, not a degraded one.
   `POST /v1/mandates/{draft_id}/confirm`. The returned `TM…` id is stored; our `mandate_id`
   is our own and maps to it.
 - The instruction is stored **verbatim** and sent to Viseca verbatim.
+- Relative dates in the instruction ("must arrive by Friday", M13(b)) count from the
+  confirmation: C2 supplies its confirmation time as `compile_instruction(...,
+  confirmed_at=…)`, whose Europe/Zurich date is "today". Without it (C1's preview) the
+  compiler counts from the card's simulated present, its latest history row (M6). The
+  check text shows the resolved date.
 
 ### 3.3 Field vocabulary for typed rules (engine-side, informational)
 
@@ -253,6 +258,14 @@ C2 (`scope: period`) is not evaluated with the other customer rules: it needs th
 
 Extraction from `item_details` is allowlisted regex only, produces facts, never instructions.
 
+Two per-line facts (`ItemFacts`, engine-side) are a **second source** after the trusted
+fields, never in place of them. Both default to unknown, and unknown is never a pass:
+
+| `ItemFacts` field | type | source | read after |
+|---|---|---|---|
+| `matches_requested` | `FactValue[bool]` | `regex` or `model` (tier 2) | the requested-item name match (C5, C10) |
+| `delivery_date_text` | `FactValue[date]` | `model` (tier 2), from the shop's text | the live `delivery_by` (C12 `authorization.delivery_by`) |
+
 ### 3.4 Decision lifecycle and the ledger
 
 - One transaction in the store (docs/database.md) per decision: insert decision, consume
@@ -269,7 +282,10 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
   Re-quote: `related_authorization_id` points at a **declined** decision and the new facts
   comply → `requote_accepted`, `related.relation = 'requote_of'`, no duplicate penalty.
 - C6 may return the template message first (`explanation_source: 'template'`) and the
-  model rewrite on a later poll (`explanation_source: 'model'`).
+  model rewrite on a later poll (`explanation_source: 'model'`). The worker posts the
+  template, then, only while a provider is configured (D5 toggles it), rewrites it in the
+  background and updates the stored decision's `message` and `explanation_source`. A
+  failed or rejected rewrite leaves the template.
 - The engine reconciles `context.approved_spend_in_period_chf` from Viseca against its own
   ledger on every event, and each decision against the platform's event feed
   (`GET /v1/events?since=<cursor>`, advancing with the returned `next_cursor`) as well as

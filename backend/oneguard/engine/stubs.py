@@ -170,13 +170,15 @@ def explain(
 
 
 def rewrite_explanation(
-    explanation: Explanation, facts: Facts, provider: Provider, timeout_s: float
+    explanation: Explanation, facts: Facts, provider: Provider, timeout_s: float,
+    *, instruction: str | None = None,
 ) -> str:
     return explanation.message
 
 
 def compile_instruction(
-    text: str, history: HistoryIndex, card_id: str, provider: Provider
+    text: str, history: HistoryIndex, card_id: str, provider: Provider,
+    *, confirmed_at: datetime | None = None,
 ) -> CompiledDraft:
     return CompiledDraft(
         instruction=text,

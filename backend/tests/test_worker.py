@@ -26,7 +26,9 @@ from oneguard.api import models as api
 from oneguard.engine import stubs
 from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import InMemoryLedger
+from oneguard.engine.tier3 import rewrite_explanation
 from oneguard.engine.types import Policy
+from oneguard.llm.provider import NullProvider, ProviderUnavailable
 from oneguard.store import seed as seed_module
 from oneguard.store.db import make_engine, session
 from oneguard.store.history import StoreHistoryIndex
@@ -34,6 +36,7 @@ from oneguard.store.schema import AuthorizationHistory, EventRaw, Run
 from oneguard.viseca import worker as worker_module
 from oneguard.viseca.client import VisecaClient, VisecaError, store_sink
 from oneguard.viseca.worker import (
+    TIER3_TIMEOUT_S,
     NotAwaitingAnswer,
     ScopedStoreLedger,
     VisecaWorker,
@@ -767,3 +770,113 @@ def test_start_reseeds_history_when_viseca_serves_a_different_file(
     assert "RE-SEEDED authorization_history: 4696 rows" in caplog.text
     with session(db) as s:
         assert s.scalar(select(func.count()).select_from(AuthorizationHistory)) == 4696
+
+
+# Tier 3 ------------------------------------------------------------------------------------
+
+REWRITE = "We need your OK before this purchase goes through."
+WITH_TIER3 = {
+    "implementations": {**stubs.STUBS, "rewrite_explanation": rewrite_explanation},
+    "stubbed": frozenset(stubs.STUBS) - {"rewrite_explanation"},
+}
+
+
+class SlowRewriter:
+    """A provider that answers tier 3 only once released, recording every call."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.release = threading.Event()
+        self.fail = fail
+        self.calls: list[float] = []
+
+    def complete_json(self, schema: dict, system: str, user: str, timeout_s: float) -> dict:
+        self.calls.append(timeout_s)
+        self.release.wait(10)
+        if self.fail:
+            raise ProviderUnavailable("timed out")
+        return {"message": REWRITE}
+
+
+def test_tier3_rewrites_the_posted_message_later_without_holding_up_decisions(
+    db: Engine, history: StoreHistoryIndex
+) -> None:
+    """Every decision posts with its template while the model is still writing; the ledger
+    (what C6 reads) then shows the rewrite with ``explanation_source: model``."""
+
+    async def scenario() -> None:
+        provider = SlowRewriter()
+        seen: list[api.Decision] = []
+        async with harness(db, fast(), history=history, provider=provider, **WITH_TIER3) as (fake, client, worker):
+            worker.add_listener(seen.append)
+            await worker.start()
+            _, run_id = await start_run(client, worker, "SCEN0001")
+            auths = fake.runs[run_id].auths
+            live_ids = [a.live_id for a in auths]
+            # all ten decided and posted with the template while every rewrite still waits
+            await wait_until(lambda: all(a.decisions for a in auths) and len(provider.calls) == 10)
+            assert [a.decisions[0]["customer_message"] for a in auths] == ["stub"] * 10
+            entries = await worker.ledger_entries(live_ids)
+            assert {(e.message, e.explanation_source) for e in entries} == {("stub", "template")}
+            assert provider.calls == [TIER3_TIMEOUT_S] * 10
+
+            provider.release.set()
+
+            async def rewritten() -> bool:
+                entries = await worker.ledger_entries(live_ids)
+                return {(e.message, e.explanation_source) for e in entries} == {(REWRITE, "model")}
+
+            deadline = time.monotonic() + 10
+            while not await rewritten():
+                assert time.monotonic() < deadline, "the rewrites never reached the ledger"
+                await asyncio.sleep(0.02)
+            # listeners get the rewritten decision too; nothing was posted again
+            latest = {d.authorization_id: d for d in seen}
+            assert {(d.message, d.explanation_source) for d in latest.values()} == {(REWRITE, "model")}
+            assert all(len(a.decisions) == 1 for a in auths)
+            (entry,) = await worker.ledger_entries([live_ids[0]])
+            assert (entry.outcome, entry.uncertain_outcome, entry.reason_codes) == ("step_up", "pending", ["stub"])
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("provider", [None, NullProvider()], ids=["none", "null"])
+def test_tier3_is_not_scheduled_without_a_provider(
+    db: Engine, history: StoreHistoryIndex, provider: Any
+) -> None:
+    calls: list[str] = []
+
+    def spy(*args: Any, **kwargs: Any) -> str:
+        calls.append("called")
+        return REWRITE
+
+    async def scenario() -> None:
+        functions = {**stubs.STUBS, "rewrite_explanation": spy}
+        async with harness(
+            db, fast(), history=history, provider=provider, implementations=functions
+        ) as (fake, client, worker):
+            await worker.start()
+            _, run_id = await start_run(client, worker, "SCEN0001")
+            auths = fake.runs[run_id].auths
+            await wait_until(lambda: all(a.decisions for a in auths))
+            assert not worker._rewrites
+            entries = await worker.ledger_entries([a.live_id for a in auths])
+            assert {(e.message, e.explanation_source) for e in entries} == {("stub", "template")}
+        assert not calls
+
+    asyncio.run(scenario())
+
+
+def test_a_tier3_provider_failure_leaves_the_template(db: Engine, history: StoreHistoryIndex) -> None:
+    async def scenario() -> None:
+        provider = SlowRewriter(fail=True)
+        provider.release.set()
+        async with harness(db, fast(), history=history, provider=provider, **WITH_TIER3) as (fake, client, worker):
+            await worker.start()
+            _, run_id = await start_run(client, worker, "SCEN0001")
+            auths = fake.runs[run_id].auths
+            await wait_until(lambda: all(a.decisions for a in auths) and len(provider.calls) == 10)
+            await wait_until(lambda: not worker._rewrites)
+            entries = await worker.ledger_entries([a.live_id for a in auths])
+            assert {(e.message, e.explanation_source) for e in entries} == {("stub", "template")}
+
+    asyncio.run(scenario())

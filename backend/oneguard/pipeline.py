@@ -173,7 +173,7 @@ def decide_event(
             at=stored.ts_sim,
             period_days=period_days_of(ctx.policy),
         )
-        engine, explanation = _from_entry(stored)
+        engine, explanation = from_entry(stored)
         return engine, explanation, to_api_decision(event, stored, view, ctx.policy)
 
     def remaining_s() -> float:
@@ -279,11 +279,12 @@ def _record(
             ctx.ledger.flag_merchant(ctx.run_id, facts.merchant_id, signal.detail, decided_at)
 
     # The stored entry is the truth: under a concurrent redelivery it is the first one.
-    engine, explanation = _from_entry(stored)
+    engine, explanation = from_entry(stored)
     return engine, explanation, to_api_decision(event, stored, view, ctx.policy)
 
 
-def _from_entry(entry: LedgerEntry) -> tuple[EngineDecision, Explanation]:
+def from_entry(entry: LedgerEntry) -> tuple[EngineDecision, Explanation]:
+    """The engine decision and explanation a stored entry holds (redelivery, tier 3)."""
     related = (entry.related_live_id, entry.relation) if entry.related_live_id and entry.relation else None
     engine = EngineDecision(
         outcome=entry.outcome,

@@ -295,6 +295,14 @@ class StoreLedger(LedgerBase):
         self.session.commit()
         return _to_entry(row)
 
+    def set_explanation(self, authorization_id: str, message: str) -> LedgerEntry:
+        """Tier 3's rewrite of a posted decision's message (rules.md §4a, E8)."""
+        row = self._pending_row(authorization_id)
+        row.message = message
+        row.explanation_source = "model"
+        self.session.commit()
+        return _to_entry(row)
+
     def flag_merchant(self, run_id: str, merchant_id: str, reason: str, at: datetime) -> None:
         self.session.add(MerchantFlag(run_id=run_id, merchant_id=merchant_id, reason=reason, flagged_at=at))
         self.session.commit()

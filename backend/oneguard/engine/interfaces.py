@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any, TypeVar
 
 from oneguard.engine.types import (
@@ -91,16 +92,26 @@ def explain(
 
 
 def rewrite_explanation(
-    explanation: Explanation, facts: Facts, provider: Provider, timeout_s: float
+    explanation: Explanation, facts: Facts, provider: Provider, timeout_s: float,
+    *, instruction: str | None = None,
 ) -> str:
-    """P4 tier3.py. Tier 3 (§4a, E8): rewrite from structured evidence, after posting."""
+    """P4 tier3.py. Tier 3 (§4a, E8): rewrite from structured evidence, after posting.
+
+    ``instruction`` is the customer's instruction, for the language only. The worker
+    calls it in the background once the decision is posted and stores a changed message
+    with ``explanation_source="model"``."""
     raise NotImplementedError
 
 
 def compile_instruction(
-    text: str, history: HistoryIndex, card_id: str, provider: Provider
+    text: str, history: HistoryIndex, card_id: str, provider: Provider,
+    *, confirmed_at: datetime | None = None,
 ) -> CompiledDraft:
-    """P4 compiler/. Instruction → typed rules + dry-run (§10, api-contract §3.2)."""
+    """P4 compiler/. Instruction → typed rules + dry-run (§10, api-contract §3.2).
+
+    ``confirmed_at`` is when the customer confirmed the instruction (C2): relative dates
+    ("by Friday") count from its Europe/Zurich date; without it, from the card's
+    simulated present (its latest history row, M6)."""
     raise NotImplementedError
 
 

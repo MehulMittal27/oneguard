@@ -164,6 +164,17 @@ class Ledger(ABC):
         """
         raise NotImplementedError
 
+    def set_explanation(self, authorization_id: str, message: str) -> LedgerEntry:
+        """Store tier 3's rewrite of a posted decision's message and return the stored entry.
+
+        Sets ``message`` and ``explanation_source="model"`` (rules.md §4a, E8); the
+        outcome, evidence, amounts and resolution are unchanged, whatever the entry's
+        state. The worker calls this after posting, outside the decision budget; C6 then
+        shows the new message. Raises KeyError if unknown. Not abstract, as
+        ``set_deadline``; without it the template message stays.
+        """
+        raise NotImplementedError
+
 
 class InMemoryLedger(Ledger):
     """Dict-backed reference ledger for stubs and tests. Not persistent."""
@@ -313,5 +324,12 @@ class InMemoryLedger(Ledger):
             if entry.outcome != "step_up" or entry.final:
                 raise ValueError(f"{authorization_id} is not awaiting an answer")
             updated = entry.model_copy(update={"deadline_at": deadline_at})
+            self.entries[authorization_id] = updated
+            return updated
+
+    def set_explanation(self, authorization_id: str, message: str) -> LedgerEntry:
+        with self._lock:
+            entry = self.entries[authorization_id]
+            updated = entry.model_copy(update={"message": message, "explanation_source": "model"})
             self.entries[authorization_id] = updated
             return updated
