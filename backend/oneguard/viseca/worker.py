@@ -1279,7 +1279,7 @@ class VisecaWorker:
         stored, view = await self._engine(
             self._settle_overrun, live_id, period_days_of(run.ctx.policy)
         )
-        decision = to_api_decision(data, stored, view)
+        decision = to_api_decision(data, stored, view, run.ctx.policy)
         if stored.outcome == "step_up" and not stored.final:
             await self._await_answer(run, decision, reply)
         else:
@@ -1549,7 +1549,7 @@ class VisecaWorker:
                 period_days=period_days_of(run.ctx.policy),
             )
         )
-        self._notify(to_api_decision(event, entry, view))
+        self._notify(to_api_decision(event, entry, view, run.ctx.policy))
 
     # Event feed --------------------------------------------------------------------------
 
