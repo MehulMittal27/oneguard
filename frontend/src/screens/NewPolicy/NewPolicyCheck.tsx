@@ -1,6 +1,7 @@
 import type { PolicyDraft } from '../../api/types'
 import { formatShortDate } from '../../lib/datetime'
 import { formatChf } from '../../lib/money'
+import { canConfirmDraft, reviewQuestions } from '../../lib/policyReview'
 import { NewPolicyShell } from './NewPolicyShell'
 
 /**
@@ -56,6 +57,10 @@ export function NewPolicyCheck({
   error: boolean
 }) {
   const { dry_run: dryRun } = draft
+  // No checks read: C2 would refuse the draft, so confirming is off and the
+  // open question says what to write instead (contract §6 item 13).
+  const canConfirm = canConfirmDraft(draft)
+  const questions = reviewQuestions(draft)
 
   return (
     <NewPolicyShell
@@ -74,7 +79,7 @@ export function NewPolicyCheck({
           <button
             type="button"
             onClick={onConfirm}
-            disabled={confirming}
+            disabled={confirming || !canConfirm}
             className="h-14 rounded-row bg-ink text-[16px] font-semibold text-on-ink transition-opacity disabled:cursor-not-allowed disabled:opacity-70 enabled:hover:opacity-90"
           >
             {confirming ? 'Confirming…' : 'Confirm policy'}
@@ -145,9 +150,9 @@ export function NewPolicyCheck({
             </span>
           </div>
         ))}
-        {draft.open_questions.length > 0 && (
+        {questions.length > 0 && (
           <div className="rounded-row border border-asked-border bg-asked-tint px-4 py-3">
-            {draft.open_questions.map((question) => (
+            {questions.map((question) => (
               <p key={question} className="text-[13px] text-asked-ink">
                 {question}
               </p>

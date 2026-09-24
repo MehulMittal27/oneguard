@@ -405,6 +405,7 @@ neutral fallback for unknown codes.
 10. PolicyDraft.compiler == 'fallback' shown as a banner; Decision.explanation_source shown as a subtle tag
 11. Optional: `Mandate.usage.confirmations` as a "Things you've confirmed" list on the policy screen (names rendered as plain text)
 12. Optional: `Decision.confirmable` - on a step-up, "Approve, and treat <shop> as <phrase> from now on"; absent or null means the ordinary approve button
+13. Policy review: a draft with no checks disables "Confirm policy" (C2 would refuse it, §3.2) and shows its `open_questions`, falling back to "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'" when there are none
 
 No endpoint changes. No screen removals. Tighten UI stays dormant.
 
