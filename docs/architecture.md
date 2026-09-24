@@ -96,7 +96,8 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
   1 GB, never auto-stopped (the worker polls from inside the app), no volume: state lives in
   Supabase via `ONEGUARD_DATABASE_URL`. Health check `GET /healthz`, 60 s grace.
 - Fly secrets: `VISECA_API_KEY`, `OPENAI_API_KEY`, `ONEGUARD_DATABASE_URL`,
-  `ONEGUARD_LLM_PROVIDER`, `ONEGUARD_SOFT_SIGNALS`. Set with `fly secrets`, never in files.
+  `ONEGUARD_LLM_PROVIDER`, `ONEGUARD_SOFT_SIGNALS`; temporarily `ONEGUARD_ALLOW_RUNS=false`
+  (D3 and `make demo-live` refuse to start a run while it is set). Set with `fly secrets`, never in files.
 - Makefile: `make deploy` (`fly deploy -a oneguard --ha=false`), `make logs`, `make image`
   (the same image locally), `make demo-live SCEN=…`, `make demo-offline`, `make seed`,
   `make reset-db` (refused when `ONEGUARD_ENV=prod`); `make matrix` arrives with P5-4.

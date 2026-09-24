@@ -994,3 +994,26 @@ def test_operator_endpoints(db_url: str) -> None:
             assert TIMESTAMP.match(health["worker"]["last_poll_at"])
 
     asyncio.run(scenario())
+
+
+def test_d3_starts_nothing_while_runs_are_switched_off(db_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ONEGUARD_ALLOW_RUNS=false: D3 is 409 runs_disabled and no run reaches the platform."""
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast())) as run:
+            await confirm_form(run)
+            monkeypatch.setenv("ONEGUARD_ALLOW_RUNS", "false")
+            assert (await run.get("/healthz")).json()["runs_allowed"] is False
+            r = await run.post("/api/dev/runs", json={"scenario_id": "SCEN0001", "card_id": "CA0001"})
+            assert r.status_code == 409
+            assert r.json()["error"] == {
+                "code": "runs_disabled",
+                "message": "Starting scenario runs is switched off (ONEGUARD_ALLOW_RUNS=false); nothing was started.",
+            }
+            assert run.fake.runs == {} and run.services.worker.status().runs == []
+            monkeypatch.setenv("ONEGUARD_ALLOW_RUNS", "true")
+            assert (await run.get("/healthz")).json()["runs_allowed"] is True
+            ok = await run.post("/api/dev/runs", json={"scenario_id": "SCEN0000", "card_id": "CA0001"})
+            assert ok.status_code == 200 and len(run.fake.runs) == 1
+
+    asyncio.run(scenario())

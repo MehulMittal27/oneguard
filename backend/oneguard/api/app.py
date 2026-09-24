@@ -60,7 +60,7 @@ from oneguard.llm.provider import (
 from oneguard.store import seed as seed_module
 from oneguard.store.db import get_engine, init_db, make_engine, session
 from oneguard.store.history import StoreHistoryIndex
-from oneguard.viseca.client import API_KEY_ENV, VisecaClient, store_sink
+from oneguard.viseca.client import API_KEY_ENV, VisecaClient, runs_allowed, store_sink
 from oneguard.viseca.worker import VisecaWorker
 
 log = logging.getLogger(__name__)
@@ -286,6 +286,7 @@ async def healthz(request: Request) -> JSONResponse:
         "version": __version__,
         "worker": worker,
         "events_cursor": worker.get("events_cursor"),
+        "runs_allowed": runs_allowed(),
         "provider": {"name": s.provider_name, "configured": provider_available(s.provider)},
         "signals": {"backend": s.signals_backend, "enabled": s.live_models(), "model_loaded": s.model_loaded},
         "model_loaded": s.model_loaded,

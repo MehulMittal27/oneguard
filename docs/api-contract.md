@@ -69,7 +69,8 @@ Unchanged from the frontend README except: C1 gains `504`, C2 gains the two `409
 | D5 | POST | `/api/dev/soft-signals` | `{ enabled: boolean }` | `{ enabled }` — chaos toggle for the small decision model |
 | D6 | GET | `/api/dev/ledger/{card_id}` | — | `LedgerSnapshot` — the engine's own state, for the "reproduce this decision" view |
 
-D3 requires an active mandate on the card (409 otherwise). D1/D2 use the same engine and
+D3 requires an active mandate on the card (409 otherwise). While `ONEGUARD_ALLOW_RUNS=false` D3 starts nothing and
+answers 409 `runs_disabled` (unset: runs allowed); `make demo-live` refuses the same way. D1/D2 use the same engine and
 ledger as D3; only the event source differs (CSV vs Viseca long-poll).
 
 ---
@@ -325,7 +326,7 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 All errors: `{ error: { code: string, message: string, detail?: object } }`. Codes used:
 `not_found`, `validation`, `draft_confirmed`, `lint_failed`, `not_pure_addition`,
 `not_awaiting_answer`, `window_closed`, `upstream_unavailable`, `compiler_timeout`,
-`internal`.
+`internal`, `runs_disabled`.
 `upstream_unavailable` (503: Viseca or the database unreachable or too slow) never changes a
 stored decision; the UI shows its offline state ("Nothing was approved while we were
 offline"). `internal` (500) is an unexpected server error.

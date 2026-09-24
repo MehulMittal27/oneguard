@@ -28,6 +28,7 @@ from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import LedgerEntry
 from oneguard.engine.types import CompiledDraft, Policy
 from oneguard.replay.events import Pack, build_events
+from oneguard.viseca.client import RUNS_DISABLED_MESSAGE, runs_allowed
 from oneguard.viseca.worker import first_value
 
 log = logging.getLogger(__name__)
@@ -141,7 +142,12 @@ async def replay_restart(body: api.ReplayRestartRequest, request: Request) -> JS
 
 @router.post("/runs", response_model=api.LiveRun)
 async def create_run(body: api.CreateRunRequest, request: Request) -> JSONResponse:
-    """D3: a Viseca run under the card's active policy, followed by the worker."""
+    """D3: a Viseca run under the card's active policy, followed by the worker.
+
+    Refused with 409 ``runs_disabled`` before anything else while ``ONEGUARD_ALLOW_RUNS=false``.
+    """
+    if not runs_allowed():
+        raise ApiError(409, "runs_disabled", RUNS_DISABLED_MESSAGE)
     s = services(request)
     _scenario(body.scenario_id, body.card_id)
     row = await s.db(queries.latest_mandate, s.db_engine, body.card_id)
