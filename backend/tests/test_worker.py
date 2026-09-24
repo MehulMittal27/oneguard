@@ -260,6 +260,31 @@ def test_a_redelivered_event_is_counted_once(db: Engine, history: StoreHistoryIn
     asyncio.run(scenario())
 
 
+def test_the_live_run_row_is_written_before_its_first_decision(
+    db: Engine, history: StoreHistoryIndex
+) -> None:
+    """The ledger carries the session watch and remembered answers over from earlier live
+    runs only for a run whose ``runs`` row says ``kind = live``; a run with no row is a replay."""
+
+    async def scenario() -> None:
+        rows_at_decision: list[tuple[str, str, str] | None] = []
+
+        def check(decision: api.Decision) -> None:
+            with session(db) as s:
+                row = s.scalars(select(Run)).first()
+                rows_at_decision.append(row and (row.kind, row.mandate_id, row.card_id))
+
+        async with harness(db, fast(), history=history) as (_, client, worker):
+            worker.add_listener(check)
+            await worker.start()
+            await start_run(client, worker, "SCEN0000")
+            await wait_until(lambda: len(rows_at_decision) == 1)
+        kind, mandate_id, card_id = rows_at_decision[0] or ("", "", "")
+        assert kind == "live" and mandate_id and card_id
+
+    asyncio.run(scenario())
+
+
 def test_an_unanswered_step_up_is_declined_at_the_window(db: Engine, history: StoreHistoryIndex) -> None:
     async def scenario() -> None:
         seen: list[api.Decision] = []
