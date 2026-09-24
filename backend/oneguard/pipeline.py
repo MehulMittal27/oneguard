@@ -332,8 +332,18 @@ def confirmable(entry: LedgerEntry, policy: Policy) -> api.Confirmable | None:
     return api.Confirmable(rule_id=rule.id, phrase=phrase)
 
 
-def to_api_decision(event: dict, entry: LedgerEntry, view: LedgerView, policy: Policy) -> api.Decision:
-    """The contract's ``Decision`` for a stored entry and the event it decided."""
+def to_api_decision(
+    event: dict,
+    entry: LedgerEntry,
+    view: LedgerView,
+    policy: Policy,
+    run_started_at: datetime | None = None,
+) -> api.Decision:
+    """The contract's ``Decision`` for a stored entry and the event it decided.
+
+    ``run_started_at`` is the real-clock start of the entry's run, when the caller has read
+    its ``runs`` row (C6 does).
+    """
     auth = event["authorization"]
     merchant = auth["merchant"]
     step_up = entry.outcome == "step_up"
@@ -388,4 +398,6 @@ def to_api_decision(event: dict, entry: LedgerEntry, view: LedgerView, policy: P
         explanation_source=entry.explanation_source,
         resolved_by=entry.resolved_by,
         confirmable=confirmable(entry, policy),
+        run_id=entry.run_id,
+        run_started_at=run_started_at,
     )

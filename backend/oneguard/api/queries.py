@@ -55,11 +55,12 @@ def entry_of(row: Decision) -> LedgerEntry:
 
 @dataclass(frozen=True)
 class StoredDecision:
-    """A decision with the event it decided and the kind of run it belongs to."""
+    """A decision with the event it decided and the kind and start of the run it belongs to."""
 
     entry: LedgerEntry
     event: dict[str, Any] | None
     run_kind: str | None
+    run_started_at: datetime | None = None
 
 
 # Reference data -------------------------------------------------------------------------
@@ -137,11 +138,18 @@ def served_scenarios(db: Engine) -> list[str] | None:
 # Decisions ------------------------------------------------------------------------------
 
 
-def _run_kinds(s: Session, run_ids: Iterable[str]) -> dict[str, str]:
+def _runs(s: Session, run_ids: Iterable[str]) -> dict[str, tuple[str, datetime]]:
+    """``run_id`` → (kind, started_at) for the runs that have a ``runs`` row."""
     ids = sorted(set(run_ids))
     if not ids:
         return {}
-    return dict(s.execute(select(Run.run_id, Run.kind).where(Run.run_id.in_(ids))).all())
+    rows = s.execute(select(Run.run_id, Run.kind, Run.started_at).where(Run.run_id.in_(ids))).all()
+    return {run_id: (kind, started_at) for run_id, kind, started_at in rows}
+
+
+def _stored(entry: LedgerEntry, event: dict[str, Any] | None, run: tuple[str, datetime] | None) -> StoredDecision:
+    kind, started_at = run if run is not None else (None, None)
+    return StoredDecision(entry, event, kind, started_at)
 
 
 def _events(s: Session, live_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
@@ -168,10 +176,8 @@ def customer_decisions(db: Engine, customer_id: str) -> list[StoredDecision]:
         )
         entries = [entry_of(r) for r in rows]
         events = _events(s, (e.live_authorization_id for e in entries))
-        kinds = _run_kinds(s, (e.run_id for e in entries))
-    return [
-        StoredDecision(e, events.get(e.live_authorization_id), kinds.get(e.run_id)) for e in entries
-    ]
+        runs = _runs(s, (e.run_id for e in entries))
+    return [_stored(e, events.get(e.live_authorization_id), runs.get(e.run_id)) for e in entries]
 
 
 def decision(db: Engine, live_id: str) -> StoredDecision | None:
@@ -181,8 +187,8 @@ def decision(db: Engine, live_id: str) -> StoredDecision | None:
             return None
         entry = entry_of(row)
         event = _events(s, [live_id]).get(live_id)
-        kind = _run_kinds(s, [entry.run_id]).get(entry.run_id)
-    return StoredDecision(entry, event, kind)
+        run = _runs(s, [entry.run_id]).get(entry.run_id)
+    return _stored(entry, event, run)
 
 
 def latest_run_decisions(db: Engine, *, card_id: str, mandate_id: str | None = None) -> list[LedgerEntry]:

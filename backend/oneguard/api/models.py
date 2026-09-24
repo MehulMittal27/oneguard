@@ -267,6 +267,8 @@ class Decision(ApiModel):
             "latency_ms",
             "explanation_source",
             "resolved_by",
+            "run_id",
+            "run_started_at",
         }
     )
 
@@ -300,6 +302,8 @@ class Decision(ApiModel):
     explanation_source: Literal["template", "model"] | None = None
     resolved_by: Literal["customer", "timeout"] | None = None
     confirmable: Confirmable | None = None
+    run_id: str | None = None
+    run_started_at: Timestamp | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> Decision:
