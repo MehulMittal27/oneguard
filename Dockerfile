@@ -21,8 +21,10 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_
 WORKDIR /app
 COPY backend/pyproject.toml backend/
 COPY backend/oneguard backend/oneguard
-# Editable, so the package finds data/ next to it (store/seed.py DATA_DIR).
-RUN pip install -e backend
+# Editable, so the package finds data/ next to it (store/seed.py DATA_DIR). The compiler
+# extra brings the provider SDKs (C1 on the LLM path, tier-2 facts, tier-3 rewrites); the
+# signals extra (Laya) stays out of the image: the cloud runs keyword soft signals.
+RUN pip install -e "backend[compiler]"
 COPY data data
 COPY --from=frontend /dist frontend/dist
 RUN useradd --system --uid 10001 oneguard && chown -R oneguard /app

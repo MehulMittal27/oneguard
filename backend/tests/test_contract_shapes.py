@@ -370,6 +370,8 @@ EXPECTED_INTERFACES = {
     "explain",
     "rewrite_explanation",
     "compile_instruction",
+    "lint_accepted",
+    "dry_run",
 }
 
 
@@ -575,3 +577,30 @@ def test_tier2_is_skipped_without_a_provider_and_failures_are_contained() -> Non
     _, _, decision = decide_event(_event(), _context(implementations=functions, provider=Configured()))
     assert calls == ["tier2"]
     assert decision.status == "pending_human"
+
+
+def test_the_lint_stub_never_passes_everything() -> None:
+    """A stubbed C2 re-lint still asks for a per-order cap and every exact check."""
+    from oneguard.engine.types import Rule
+
+    cap = Rule(id="C1", field="authorization.billing_amount_chf", operator="<=", value=120, currency="CHF",
+               scope="purchase", text="Total at or below CHF 120 per order", source="exact")
+    shop = Rule(id="C9", field="merchant.known_shop", operator="=", value="true",
+                text="Only shops you have bought from before", source="inferred")
+    assert stubs.STUBS["lint_accepted"]([cap, shop], ["C1"]) == ([], [])
+    missing, reasons = stubs.STUBS["lint_accepted"]([cap, shop], ["C9"])
+    assert missing == ["per_order_limit", "C1"] and len(reasons) == 2
+
+
+def test_the_lint_stub_counts_only_an_upper_bound_as_a_per_order_cap() -> None:
+    """A ">=" or ">" floor on the amount limits nothing; "<", "<=" and an exact "=" are caps."""
+    from oneguard.engine.types import Rule
+
+    def amount(operator: str) -> Rule:
+        return Rule(id="C1", field="authorization.billing_amount_chf", operator=operator, value=20,
+                    currency="CHF", scope="purchase", text=f"Total {operator} CHF 20", source="inferred")
+
+    for floor in (">=", ">"):
+        assert stubs.STUBS["lint_accepted"]([amount(floor)], ["C1"])[0] == ["per_order_limit"]
+    for cap in ("<", "<=", "="):
+        assert stubs.STUBS["lint_accepted"]([amount(cap)], ["C1"]) == ([], [])

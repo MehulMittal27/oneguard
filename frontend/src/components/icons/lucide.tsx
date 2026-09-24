@@ -16,20 +16,33 @@ import {
 } from 'lucide-react'
 import type { IconProps } from './IconProps'
 
-export function ShieldIcon({ size = 28, strokeWidth = 1.8 }: IconProps) {
-  return <ShieldCheck size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+/**
+ * Tab-bar icons: `filled` switches the stock lucide glyph between its outline
+ * and a solid state. The stroke has to change colour too, not just the fill —
+ * stroking in `currentColor` over a `currentColor` fill hides the glyph's inner
+ * lines and leaves a featureless shape. lucide spreads extra props onto the
+ * `<svg>` after its own `fill`/`stroke`, so these override.
+ */
+function fillProps(filled: boolean | undefined, strokeWidth: number) {
+  return filled
+    ? { fill: 'var(--ink)', stroke: 'var(--surface)', strokeWidth }
+    : { fill: 'none', strokeWidth }
 }
 
-export function HomeIcon({ size = 22, strokeWidth = 1.8 }: IconProps) {
-  return <Home size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+export function ShieldIcon({ size = 28, strokeWidth = 1.8, filled }: IconProps) {
+  return <ShieldCheck size={size} {...fillProps(filled, strokeWidth)} aria-hidden="true" />
 }
 
-export function AccountsIcon({ size = 22, strokeWidth = 1.8 }: IconProps) {
-  return <CreditCard size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+export function HomeIcon({ size = 22, strokeWidth = 1.8, filled }: IconProps) {
+  return <Home size={size} {...fillProps(filled, strokeWidth)} aria-hidden="true" />
 }
 
-export function BellIcon({ size = 22, strokeWidth = 1.8 }: IconProps) {
-  return <Bell size={size} strokeWidth={strokeWidth} aria-hidden="true" />
+export function AccountsIcon({ size = 22, strokeWidth = 1.8, filled }: IconProps) {
+  return <CreditCard size={size} {...fillProps(filled, strokeWidth)} aria-hidden="true" />
+}
+
+export function BellIcon({ size = 22, strokeWidth = 1.8, filled }: IconProps) {
+  return <Bell size={size} {...fillProps(filled, strokeWidth)} aria-hidden="true" />
 }
 
 export function BackChevronIcon({ size = 20, strokeWidth = 2 }: IconProps) {

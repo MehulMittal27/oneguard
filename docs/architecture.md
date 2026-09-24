@@ -64,7 +64,11 @@ oneguard/
 - One database per environment via ONEGUARD_DATABASE_URL (docs/database.md). One transaction per decision.
 - Viseca key from `VISECA_API_KEY`; base URL from `VISECA_BASE_URL`; both server-side.
 - Worker (`oneguard/viseca/worker.py`, `VisecaWorker`): on start reads `/v1/bootstrap`
-  (`limits`: human window, decision deadline, long-poll cap) and `/v1/reference-data`. No
+  (`limits`: human window, decision deadline, long-poll cap) and `/v1/reference-data`. Every
+  reference table served under `tables` (a superset of `data/` during judging) is upserted
+  into the store in one transaction when its rows differ from the stored ones (count plus
+  content hash), never deleting a row, with per-table counts logged (`seed.sync_served`);
+  the history index is reloaded if anything changed. No
   history-file hash is served, so it downloads
   `/v1/reference-data/authorization-history.csv`, and if its SHA-256 differs from
   `data/metadata.json` it re-seeds `authorization_history` and logs it loudly. Every request is
@@ -75,7 +79,9 @@ oneguard/
   nothing for it and pauses briefly. At the deadline the expiry reads the platform's state
   first and posts the timeout `/resolve` (rules Q2) only if it is still pending; at most one
   `/resolve` per live id. Ledger calls run in short `ScopedStoreLedger` sessions.
-  All ledger and pipeline calls run on one dedicated thread. `VisecaWorker.status()` is the
+  All ledger and pipeline calls run on one dedicated thread. The event feed cursor is
+  stored in `worker_state` once a page is processed and resumed on start (0 only on first
+  boot), so a restart does not re-scan the team-wide feed. `VisecaWorker.status()` is the
   `/healthz` worker block: `state`, `ok`, `last_poll_at`, `events_cursor`,
   `human_window_s`, `pending_step_ups`, `history_reseeded`, `last_error`, `runs`.
 - Every Viseca call is summarised in `viseca_calls` (no key, bodies ≤ 4 KB) by
@@ -89,7 +95,8 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
 - `Dockerfile`: a node stage builds `frontend/dist` (only when `frontend/package.json` is in
   the context) with `VITE_API_BASE_URL=/api` and `VITE_USE_MOCKS=false`; the runtime stage is
   `python:3.12-slim` + `tzdata` (Europe/Zurich rules), the backend installed editable with
-  `data/` beside it and `frontend/dist` copied in, run as a non-root user; `uvicorn
+  its `compiler` extra (the OpenAI and Anthropic SDKs; the `signals` extra, Laya, stays out)
+  and `data/` beside it and `frontend/dist` copied in, run as a non-root user; `uvicorn
   oneguard.api.app:app` listens on `$PORT` (8080); `ONEGUARD_SOFT_SIGNALS=keywords` and
   `ONEGUARD_ENV=prod` are the image defaults.
 - `fly.toml`: region `lhr` (nearest Supabase in eu-west-1), one `shared-cpu-1x` machine with
@@ -126,3 +133,5 @@ Fact build < 5 ms · rules + protections + signs < 5 ms · ledger transaction < 
 signals ≤ 500 ms (parallel, optional) · tier 2 ≤ 1.5 s (only when a rule is `unknown`),
 inside the 2 s budget · Viseca POST ~100–300 ms. Internal budget 2 s; platform deadline
 8 s from queueing. Tier 3 runs after posting, not in the budget.
+Measured (docs/benchmark.md, `backend/scripts/bench_engine.py`): end-to-end P95 5.6 ms on
+SQLite with signals off; Laya agent_directed P95 99 ms per purchase on the laptop.

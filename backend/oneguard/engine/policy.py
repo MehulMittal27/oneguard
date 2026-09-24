@@ -22,24 +22,28 @@ Every result is pass / fail / unknown, with a readable ``detail`` (what was seen
 for a fail, a ``counterfactual`` (what would have passed). Explanations are built from
 these strings, so they are written for the customer.
 
-Period limits (C2, ``scope == "period"``) and remembered confirmations need the ledger,
+Period limits (C2, ``scope == "period"``: spend, or a purchase count with the field
+``cart.purchases_in_period``) and remembered confirmations need the ledger,
 which ``evaluate_rules`` does not receive. ``add_ledger_results(rules, facts, policy,
 ledger)`` adds them: the pipeline calls it after ``evaluate_rules`` (and after tier 2), so
 decide.py and explain.py both see them (P2 request to P1: one line in pipeline.py). Until
 then decide.py treats a period rule with no result as unknown (P3).
 
 Pure function: no I/O, no CSV, no history lookups. Familiarity (C9) is read from
-``facts.merchant_known``, set by the pipeline from the LedgerView.
+``facts.merchant_known``, set by the pipeline from the LedgerView; ``add_ledger_results``
+makes it unknown when the customer has no purchase history yet (rules.md C9).
 """
 from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from oneguard.engine.facts import CONTRADICTORY, to_chf
+from oneguard.engine.facts import CONTRADICTORY, ZURICH, to_chf
 from oneguard.engine.interfaces import register
+from oneguard.engine.ledger_base import confirmation_key, shop_confirmation_key
 from oneguard.engine.types import (
     STEP1_RULE_IDS,
     Facts,
@@ -54,6 +58,12 @@ from oneguard.engine.types import (
 # Marker decide.py uses for M5: a period limit that fails only because of reservations.
 RESERVATION_ONLY = "fails only because of pending reservations"
 CONFIRMED = "You confirmed this"  # detail prefix of a rule passed from a remembered answer
+# api-contract §3.3: how many purchases the period window may hold (scope period).
+COUNT_FIELD = "cart.purchases_in_period"
+# C9 when the customer has no approved purchase at all, in history or in this run.
+NO_HISTORY = ("You have no purchase history yet, so I can't tell whether you've used this shop"
+              " - approve once and I'll remember it")
+KNOWN_SHOP_FIELDS = ("merchant.known_shop", "merchant.familiar_on_card")  # api-contract §3.3: the same check
 
 _NUMERIC_FIELDS = {
     "authorization.billing_amount_chf",
@@ -446,14 +456,108 @@ def evaluate_period_rule(rule: Rule, facts: Facts, spent_chf: Any, reserved_chf:
                       counterfactual=counterfactual)
 
 
+_COUNT_WORDS = ("no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten")
+
+
+def _count(n: int) -> str:
+    return _COUNT_WORDS[n] if 0 <= n < len(_COUNT_WORDS) else str(n)
+
+
+def _orders(n: int) -> str:
+    return f"{_count(n)} order" + ("" if n == 1 else "s")
+
+
+def _per_period(days: int) -> str:
+    return {1: "per day", 7: "per week"}.get(days, f"in any {days} days")
+
+
+def _when(at: datetime, now: datetime) -> str:
+    """Simulated time in Europe/Zurich, relative to this purchase: "today at 12:10"."""
+    local, today = at.astimezone(ZURICH), now.astimezone(ZURICH).date()
+    day = {0: "today", -1: "yesterday", 1: "tomorrow"}.get((local.date() - today).days)
+    return f"{day or f'on {local:%a} {local.day} {local:%b}'} at {local:%H:%M}"
+
+
+def _allowed_count(rule: Rule) -> int | None:
+    """How many purchases the rule allows in its window, or None if it is not a cap."""
+    value = rule.value
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if not isinstance(value, int) or rule.operator not in ("<", "<="):
+        return None
+    return max(value if rule.operator == "<=" else value - 1, 0)
+
+
+def _not_counted(rule: Rule) -> RuleResult:
+    return RuleResult(rule_id=rule.id, outcome="unknown", source="history",
+                      detail=f'Orders for "{rule.text or rule.id}" could not be counted')
+
+
+def evaluate_count_rule(rule: Rule, facts: Facts, ledger: LedgerView) -> RuleResult:
+    """A purchase count per period (``cart.purchases_in_period``, M4, M5).
+
+    ``ledger.period_count``: this card's final approvals plus pending step-ups in the
+    rule's window; this purchase makes one more. Fails if that breaks the limit. If it
+    would pass on final approvals alone, the detail carries RESERVATION_ONLY so decide.py
+    asks instead (M5). Not counted (``None``) is unknown, never a pass (P3).
+    """
+    allowed = _allowed_count(rule)
+    if allowed is None or ledger.period_count is None or not rule.period_days:
+        return _not_counted(rule)
+    days = rule.period_days
+    counted, waiting = ledger.period_count, ledger.period_reserved_count
+    approved = counted - waiting
+    stated = f"You allowed {_orders(allowed)} {_per_period(days)}"
+    if counted + 1 <= allowed:
+        return RuleResult(rule_id=rule.id, outcome="pass", source="history",
+                          detail=f"{stated}; this is order {_count(counted + 1)}")
+    pending = f"{_count(waiting)} {'is' if waiting == 1 else 'are'} still waiting for your answer"
+    if approved + 1 <= allowed:
+        orders = "order" if waiting == 1 else f"{_count(waiting)} orders"
+        return RuleResult(rule_id=rule.id, outcome="fail", source="history",
+                          detail=f"{stated}; {pending}; {RESERVATION_ONLY}",
+                          counterfactual=f"Would approve if you decline the {orders} still waiting")
+    last = ledger.period_last_approved_at
+    when = f" {_when(last, facts.timestamp)}" if last is not None else ""
+    if approved == 1:
+        done = f"one was already approved{when}"
+    else:
+        done = f"{_count(approved)} were already approved" + (f", the last{when}" if when else "")
+    if waiting:
+        done += f" and {pending}"
+    if not allowed:
+        counterfactual = None
+    elif approved == 1 and not waiting and last is not None:
+        counterfactual = f"Would approve from {_when(last + timedelta(days=days), facts.timestamp)}"
+    else:
+        counterfactual = f"Would approve once fewer than {_orders(allowed + 1)} fall in the last {days} days"
+    return RuleResult(rule_id=rule.id, outcome="fail", source="history",
+                      detail=f"{stated}; {done}", counterfactual=counterfactual)
+
+
 def is_unverifiable(rule: Rule, facts: Facts, policy: Policy) -> bool:
     """A restriction no data can check ("official ticket seller"): no field, or a field
     outside the vocabulary. Only these can be passed from a remembered answer."""
     return not rule.field or _facts_for(rule.field, facts, policy) is None
 
 
-def _confirmation_key(rule_id: str, merchant_id: str, item_id: str) -> str:
-    return f"{rule_id}|{merchant_id}|{item_id}"  # same format as ledger.confirmation_key
+def checks_known_shop(result: RuleResult, rule: Rule | None) -> bool:
+    """C9: the ``requires_known_shop`` flag's result, or a typed rule on a known-shop field."""
+    return rule.field in KNOWN_SHOP_FIELDS if rule is not None else result.rule_id == "C9"
+
+
+def _known_shop_with_ledger(res: RuleResult, facts: Facts, ledger: LedgerView, confirmed: set[str]) -> RuleResult:
+    """C9 with the ledger. No purchase history yet (no approved purchase in history or in
+    this run, on any card) -> unknown, not a fail: the uncertainty setting decides. An
+    unknown passes when the customer already approved this rule at this shop, whatever
+    the items (ask once, then remember the shop)."""
+    if res.outcome == "pass":
+        return res
+    if not ledger.known_merchant_ids:
+        res = RuleResult(rule_id=res.rule_id, outcome="unknown", source="history", detail=NO_HISTORY)
+    if res.outcome == "unknown" and shop_confirmation_key(res.rule_id, facts.merchant_id) in confirmed:
+        return RuleResult(rule_id=res.rule_id, outcome="pass", source="history", detail=f"{CONFIRMED} shop earlier")
+    return res
 
 
 def add_ledger_results(
@@ -462,8 +566,10 @@ def add_ledger_results(
     """The rule results that need the ledger, added to ``evaluate_rules``' output.
 
     - C2: one result per period rule, from the LedgerView's spent and reserved amounts
-      (M4, M5). The view covers one window (the shortest period); a period rule with a
-      different window is unknown rather than checked against the wrong numbers (P3).
+      (M4, M5), or from its purchase count for ``cart.purchases_in_period``. The view
+      covers one window (the shortest period); a period rule with a different window is
+      unknown rather than checked against the wrong numbers (P3).
+    - C9: unknown with no purchase history yet; remembered per shop (``_known_shop_with_ledger``).
     - Ask once, then remember: an unknown restriction no data can check passes when the
       customer already approved it for this shop and every item in the cart.
     """
@@ -472,9 +578,11 @@ def add_ledger_results(
     out: list[RuleResult] = []
     for res in rules:
         rule = by_id.get(res.rule_id)
-        if (res.outcome == "unknown" and rule is not None and confirmed
+        if checks_known_shop(res, rule):
+            res = _known_shop_with_ledger(res, facts, ledger, confirmed)
+        elif (res.outcome == "unknown" and rule is not None and confirmed
                 and is_unverifiable(rule, facts, policy)
-                and all(_confirmation_key(rule.id, facts.merchant_id, ln.item_id) in confirmed
+                and all(confirmation_key(rule.id, facts.merchant_id, ln.item_id) in confirmed
                         for ln in facts.items)):
             res = RuleResult(rule_id=res.rule_id, outcome="pass", source="history",
                              detail=f'{CONFIRMED} for this shop and item earlier: "{rule.text or rule.id}"')
@@ -482,7 +590,10 @@ def add_ledger_results(
 
     view_days = (facts.timestamp - ledger.period_window_start).total_seconds() / 86400
     for rule in period_rules(policy):
-        if rule.period_days and abs(rule.period_days - view_days) < 1e-9:
+        in_view = bool(rule.period_days) and abs(rule.period_days - view_days) < 1e-9
+        if rule.field == COUNT_FIELD:
+            out.append(evaluate_count_rule(rule, facts, ledger) if in_view else _not_counted(rule))
+        elif in_view:
             out.append(evaluate_period_rule(rule, facts, ledger.period_spent_chf, ledger.period_reserved_chf))
         else:
             out.append(RuleResult(rule_id=rule.id, outcome="unknown", source="history",

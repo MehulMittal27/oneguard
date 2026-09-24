@@ -19,16 +19,25 @@ outside the requested category land in "would_ask" rather than being
 silently excluded: the fixture can't validate them (a category mismatch
 isn't necessarily a violation), so it says so instead of guessing.
 
+`dry_run.examples` and `dry_run.agent_history` (docs/api-contract.md §2,
+§6 item 9) are computed from the same history, not curated: the examples
+are real rows out of the same sample the counts came from, and the agent
+counts are real `initiator_type == "agent"` rows. Both are optional in the
+contract, so a scenario with nothing to show simply omits them.
+
 Run: python3 frontend/scripts/build_policy_fixture.py
 """
 
 import csv
 import json
+from collections import Counter
+from datetime import datetime, timedelta
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "data"
 OUT_PATH = REPO_ROOT / "frontend" / "src" / "mocks" / "fixtures" / "policy-drafts.json"
+DECISIONS_PATH = REPO_ROOT / "frontend" / "src" / "mocks" / "fixtures" / "decisions.json"
 
 
 def load_csv(name):
@@ -49,6 +58,22 @@ DRY_RUN_SPEC = {
 }
 
 SAMPLE_SIZE = 30
+
+# Restrictions the customer has already answered for a shop and item, which the
+# engine then stops asking about (LedgerView.confirmed_keys). Only a restriction
+# no data can check can be remembered this way (engine/policy.py
+# is_unverifiable), so the one here is SCEN0002's retailer rule — nothing in an
+# event settles whether a shop is "specialist". Curated, like the rest of this
+# file's review content: no ledger exists in mock mode to read them back from.
+CONFIRMATIONS = {
+    "SCEN0002": [
+        {
+            "rule_text": "Specialist sports retailer only",
+            "merchant_name": "Summit Thread",
+            "item_name": "Trail running shoes",
+        }
+    ],
+}
 
 # scenario_id -> (period_limit_chf, period_days) for the scenarios that state
 # one; the per-order limit comes from DRY_RUN_SPEC.
@@ -117,42 +142,160 @@ CURATION = {
 }
 
 
+def humanise(category):
+    """`sporting_goods` -> `sporting goods`, for the reason strings a customer reads."""
+    return category.replace("_", " ")
+
+
+def classify(row, limit, category):
+    """One history row against the two rule types this flat history can check.
+    Returns (outcome, reason) where outcome is the DryRunResult.examples
+    vocabulary ('violate' | 'fit' | 'ask') and reason is the short line shown
+    under the merchant. The reason never repeats the amount — the example row
+    already shows it in its own column."""
+    if row["merchant_category"] != category:
+        return "ask", f"{humanise(row['merchant_category'])}, not {humanise(category)}"
+    if float(row["billing_amount_chf"]) > limit:
+        return "violate", f"Over your CHF {limit} cap"
+    return "fit", f"Within your CHF {limit} cap"
+
+
+def pick_examples(classified):
+    """Up to 3 concrete rows behind the counters (docs/api-contract.md §2:
+    `examples`, <=3 rows). The most recent row of each outcome that actually
+    occurred, ordered violate -> ask -> fit, so each counter above has one
+    case the customer can recognise; an outcome with no rows is absent rather
+    than padded. `classified` arrives most-recent-first, so the first match
+    per outcome is the most recent one."""
+    examples = []
+    for outcome in ("violate", "ask", "fit"):
+        row, reason = next(((r, why) for r, o, why in classified if o == outcome), (None, None))
+        if row is None:
+            continue
+        examples.append(
+            {
+                "occurred_at": row["timestamp"],
+                # Shop-supplied text: carried through verbatim, rendered as a
+                # plain text node (frontend/.claude/CLAUDE.md hard rule 1).
+                "merchant_name": row["merchant_name"],
+                "billing_amount_chf": float(row["billing_amount_chf"]),
+                "outcome": outcome,
+                "reason": reason,
+            }
+        )
+    return examples
+
+
+def compute_agent_history(card_id, history_by_card):
+    """docs/api-contract.md §2: history rows with `initiator_type == 'agent'`.
+
+    Counted over this card's whole history, not the 30-row dry-run sample —
+    the contract scopes it to history rows, not to the sample.
+
+    Scoped to the CARD, not the customer. The screen this appears on is
+    card-scoped ("For card X only") and so is the dry run above it, so a
+    customer-wide count would be read as a card count. The two differ
+    materially in the pack (CA0001: 14 on the card, 29 across the customer),
+    and the UI copy says "on this card" to match. Open with P1: if the backend
+    counts customer-wide instead, this function and that one line of copy change
+    together.
+    """
+    rows = [r for r in history_by_card.get(card_id, []) if r["initiator_type"] == "agent"]
+    if not rows:
+        return None
+    return {
+        "attempts": len(rows),
+        "approved": sum(1 for r in rows if r["status"] == "approved"),
+    }
+
+
 def compute_dry_run(card_id, limit, category, history_by_card):
     rows = sorted(history_by_card.get(card_id, []), key=lambda r: r["timestamp"], reverse=True)
     sample = rows[:SAMPLE_SIZE]
-    violate = fit = ask = 0
-    for row in sample:
-        amount = float(row["billing_amount_chf"])
-        in_category = row["merchant_category"] == category
-        if not in_category:
-            ask += 1
-        elif amount > limit:
-            violate += 1
-        else:
-            fit += 1
-    return {
+    classified = [(row, *classify(row, limit, category)) for row in sample]
+    counts = Counter(outcome for _, outcome, _ in classified)
+    dry_run = {
         "sample_size": len(sample),
-        "would_violate": violate,
-        "would_fit": fit,
-        "would_ask": ask,
+        "would_violate": counts["violate"],
+        "would_fit": counts["fit"],
+        "would_ask": counts["ask"],
     }
+    examples = pick_examples(classified)
+    if examples:
+        dry_run["examples"] = examples
+    agent_history = compute_agent_history(card_id, history_by_card)
+    if agent_history:
+        dry_run["agent_history"] = agent_history
+    return dry_run
 
 
-def mandate_usage(scenario_id, limit, run_start):
-    """The `usage` a freshly confirmed mandate carries (docs/api-contract.md
-    §2, MandateUsage): its limits, and nothing spent or pending yet as of the
-    run's first purchase. Spend in mock mode is still computed client-side
-    from the decisions feed; this carries the limits."""
+def load_decisions_for(card_id):
+    """This card's rows out of the generated decisions fixture.
+
+    `usage` has to agree with what the decision feed shows, or mock mode
+    contradicts itself: the meter would read the ledger's figure while the
+    activity list below it adds up to a different one. So the numbers are read
+    back from decisions.json rather than assumed, which makes this script depend
+    on build_decisions_fixture.py having run first.
+    """
+    if not DECISIONS_PATH.exists():
+        raise SystemExit(
+            f"{DECISIONS_PATH.relative_to(REPO_ROOT)} not found — "
+            "run build_decisions_fixture.py first, usage is derived from it"
+        )
+    with open(DECISIONS_PATH, encoding="utf-8") as f:
+        rows = json.load(f)["decisions"]
+    return [r for r in rows if r["card_id"] == card_id]
+
+
+def is_spend(row):
+    """docs/rules.md M4: final approvals only, a customer-approved step-up included."""
+    return row["decision"] == "approved" or (
+        row["decision"] == "uncertain" and row.get("uncertain_outcome") == "approved"
+    )
+
+
+def mandate_usage(scenario_id, card_id, limit, run_start):
+    """The `usage` the engine ledger would carry (docs/api-contract.md §2).
+
+    Windowed exactly as `lib/spend.ts`'s computePeriodSpend does — ending at the
+    most recent spend on the card's own simulated clock, not the real one — so
+    the ledger figure and the mock fallback agree to the rappen.
+    """
     period_limit, period_days = PERIOD_SPEC.get(scenario_id, (None, None))
-    return {
+    rows = load_decisions_for(card_id)
+    spend_rows = [r for r in rows if is_spend(r)]
+
+    if spend_rows and period_days is not None:
+        window_end = max(r["occurred_at"] for r in spend_rows)
+        start = datetime.fromisoformat(window_end.replace("Z", "+00:00")) - timedelta(
+            days=period_days
+        )
+        window_start = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+        in_window = [r for r in spend_rows if r["occurred_at"] > window_start]
+    else:
+        # No period limit: nothing to window against, so the figure is the card's
+        # whole run. It is carried for completeness — MandateUsage requires it —
+        # but no meter reads it, since a per-order-only policy draws the dot ruler.
+        window_start = run_start
+        in_window = spend_rows
+
+    usage = {
         "per_order_limit_chf": limit,
         "period_limit_chf": period_limit,
         "period_days": period_days,
-        "period_spent_chf": 0,
-        "period_window_start": run_start,
-        "pending_chf": 0,
-        "as_of": run_start,
+        "period_spent_chf": round(sum(r["billing_amount_chf"] for r in in_window), 2),
+        "period_window_start": window_start,
+        # Stepped up and waiting: a reservation, never spend.
+        "pending_chf": round(
+            sum(r["billing_amount_chf"] for r in rows if r["status"] == "pending_human"), 2
+        ),
+        "as_of": max((r["occurred_at"] for r in rows), default=run_start),
     }
+    confirmations = CONFIRMATIONS.get(scenario_id)
+    if confirmations:
+        usage["confirmations"] = confirmations
+    return usage
 
 
 def build():
@@ -187,7 +330,7 @@ def build():
                 "compiler": "llm",
                 # Not a PolicyDraft field: mock confirmPolicy copies it onto the
                 # Mandate it returns, as the real backend's C2 would.
-                "usage": mandate_usage(scenario_id, limit, run_start[scenario_id]),
+                "usage": mandate_usage(scenario_id, card_id, limit, run_start[scenario_id]),
             }
         )
 

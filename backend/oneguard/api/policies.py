@@ -23,10 +23,17 @@ POLICY_KEY = "__policy__"
 
 AMOUNT_FIELD = "authorization.billing_amount_chf"
 KNOWN_SHOP_FIELDS = ("merchant.known_shop", "merchant.familiar_on_card")
-PER_ORDER_OPERATORS = ("<", "<=")
+PER_ORDER_OPERATORS = ("<", "<=", "=")
+"""An amount rule with one of these bounds one purchase; an exact price ("same price as
+last time") counts, a floor (``>=``, ``>``) does not (docs/decisions.md)."""
+PERIOD_OPERATORS = ("<", "<=")
 DRY_RUN_DAYS = 90
 ALL_HISTORY_DAYS = 36500
 NO_CAP_QUESTION = "No amount stated: what is the most one purchase may cost?"
+NO_CHECKS_QUESTION = "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'"
+"""C1's open question when no check at all was read; it stands in for ``NO_CAP_QUESTION``."""
+NO_CHECKS_REASON = "no restriction could be read"
+"""C2's ``lint_failed`` reason for a draft with no checks."""
 
 FX_TO_CHF = {"CHF": Decimal(1), "EUR": Decimal("0.95"), "GBP": Decimal("1.12"), "USD": Decimal("0.87")}
 """rules.md M1: the fixed conversion rates."""
@@ -136,29 +143,10 @@ def period_limit(rules: Iterable[Rule]) -> tuple[float, int] | None:
         if r.field == AMOUNT_FIELD
         and r.scope == "period"
         and r.period_days
-        and r.operator in PER_ORDER_OPERATORS
+        and r.operator in PERIOD_OPERATORS
         and isinstance(r.value, (int, float))
     ]
     return min(limits, key=lambda x: (x[1], x[0])) if limits else None
-
-
-def relint(draft_checks: Sequence[api.RuleCheck], accepted: Sequence[Rule]) -> tuple[list[str], list[str]]:
-    """C2 re-lint of the accepted subset: (missing, reasons); both empty when it passes.
-
-    ``missing`` names ``per_order_limit`` when no per-purchase amount cap is left and the
-    id of every dropped check whose source is ``exact``.
-    """
-    missing: list[str] = []
-    reasons: list[str] = []
-    if per_order_cap(accepted) is None:
-        missing.append("per_order_limit")
-        reasons.append("the policy needs a limit on what one purchase may cost")
-    kept = {r.id for r in accepted}
-    for check in draft_checks:
-        if check.source == "exact" and check.id not in kept:
-            missing.append(check.id)
-            reasons.append(f'you stated "{check.text}" and it was left out')
-    return missing, reasons
 
 
 # C1 with a form: rules built directly, no model -----------------------------------------
@@ -205,8 +193,13 @@ def form_rules(form: api.FormInput) -> tuple[list[Rule], dict[str, Any]]:
     return rules, flags
 
 
+FORM_INSTRUCTION = "Built from the form"
+"""A form draft's ``instruction``: the form has no words of the customer's to keep."""
+
+
 def form_instruction(rules: Sequence[Rule], uncertainty: str) -> str:
-    """The form's rules as one plain sentence list (the form has no free text)."""
+    """The form's rules as one plain sentence list, the instruction a form policy sends to
+    Viseca (the platform wants text). Never stored or served as the customer's words."""
     ask = "Ask me when uncertain." if uncertainty == "ask" else "Decline when uncertain."
     return " ".join([*(f"{r.text}." for r in rules), ask])
 

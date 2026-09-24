@@ -26,7 +26,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from oneguard.compiler.draft import MONEY_FIELDS, ParsedDraft, to_chf
+from oneguard.compiler.draft import COUNT_FIELD, MONEY_FIELDS, ParsedDraft, to_chf
 from oneguard.compiler.parser import (
     _AMOUNT,
     _EXACT_BEFORE,
@@ -35,6 +35,9 @@ from oneguard.compiler.parser import (
     _STRICT_BEFORE,
     ASK_IF_CHANGED,
     NUMBER_WORDS,
+    PERIOD_WORD_DAYS,
+    TIMES_WORDS,
+    with_shared_currency,
 )
 from oneguard.engine.types import Rule
 
@@ -44,7 +47,7 @@ IssueCode = Literal[
     "restriction_dropped",
 ]
 _AMOUNT_QUESTION = re.compile(r"\b(?:amount|limit|cost|price|spend|budget|CHF)\b", re.IGNORECASE)
-_STATED_NUMBERS = {"items[].size_eu", "order.return_window_days", "cart.quantity", "items[].quantity"}
+_STATED_NUMBERS = {"items[].size_eu", "order.return_window_days", "cart.quantity", "items[].quantity", COUNT_FIELD}
 
 
 class LintIssue(BaseModel):
@@ -71,7 +74,9 @@ class LintResult(BaseModel):
 
 
 def _stated_amounts(text: str) -> list[tuple[Decimal, str | None]]:
-    """(value, expected operator) for each amount in the instruction."""
+    """(value, expected operator) for each amount in the instruction ("and 300 a week"
+    after a CHF amount is CHF too)."""
+    text = with_shared_currency(text)
     out = []
     for m in _AMOUNT.finditer(text):
         raw = (m.group("num") or m.group("num2")).replace(",", "").replace("'", "")
@@ -88,15 +93,26 @@ def _stated_amounts(text: str) -> list[tuple[Decimal, str | None]]:
     return out
 
 
+def stated_boundary(text: str, value: Decimal) -> str | None:
+    """T3: the one operator the customer's boundary words give this amount ("under" is
+    "<"), or None when the words give none or disagree."""
+    ops = {op for v, op in _stated_amounts(text) if v == value and op}
+    return ops.pop() if len(ops) == 1 else None
+
+
 def _numbers_in(text: str) -> set[Decimal]:
     found = {Decimal(n.replace(",", ".")) for n in re.findall(r"\d+(?:[.,]\d+)?", text.replace("'", ""))}
-    found |= {Decimal(n) for w, n in NUMBER_WORDS.items() if re.search(rf"\b{w}\b", text, re.IGNORECASE)}
+    words = NUMBER_WORDS | TIMES_WORDS  # "once a week" states 1
+    found |= {Decimal(n) for w, n in words.items() if re.search(rf"\b{w}\b", text, re.IGNORECASE)}
     found |= {Decimal(n.replace(",", "")) for n in re.findall(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?", text)}
     return found
 
 
 def _has_amount_cap(rules: list[Rule]) -> bool:
-    return any(r.field == "authorization.billing_amount_chf" and r.scope != "period" for r in rules)
+    return any(
+        r.field == "authorization.billing_amount_chf" and r.operator in ("<", "<=", "=") and r.scope != "period"
+        for r in rules
+    )
 
 
 def _check_boundaries(draft: ParsedDraft) -> list[LintIssue]:
@@ -121,13 +137,28 @@ def _check_boundaries(draft: ParsedDraft) -> list[LintIssue]:
     return issues
 
 
+def _period_days_in(text: str) -> set[Decimal]:
+    """Windows the instruction names: "a day" is 1, "a week" 7, "a month" 30, "14 days" 14."""
+    days = {Decimal(d) for w, d in PERIOD_WORD_DAYS.items()
+            if re.search(rf"\b(?:a|per|each|every|any)\s+{w}\b|\b{w}ly\b", text, re.IGNORECASE)}
+    return days | _numbers_in(text)
+
+
 def _check_numbers(draft: ParsedDraft) -> list[LintIssue]:
     numbers = _numbers_in(draft.instruction)
-    return [
+    issues = [
         LintIssue(code="invented_value", rule_id=r.id, message=f"{r.text}: {r.value} is not in your instruction")
         for r in draft.rules
         if r.field in _STATED_NUMBERS and r.id not in draft.resolved and Decimal(str(r.value)) not in numbers
     ]
+    windows = _period_days_in(draft.instruction)
+    issues += [
+        LintIssue(code="invented_value", rule_id=r.id,
+                  message=f"{r.text}: a {r.period_days}-day window is not in your instruction")
+        for r in draft.rules
+        if r.field == COUNT_FIELD and (not r.period_days or Decimal(r.period_days) not in windows)
+    ]
+    return issues
 
 
 def _check_amounts_used(draft: ParsedDraft) -> list[LintIssue]:
@@ -255,11 +286,11 @@ def lint_accepted(rules: list[Rule], accepted_ids: list[str]) -> LintResult:
     accepted = set(accepted_ids)
     kept = [r for r in rules if r.id in accepted]
     issues = [
-        LintIssue(code="exact_check_dropped", rule_id=r.id, message=f'"{r.text}" is what you asked for')
+        LintIssue(code="exact_check_dropped", rule_id=r.id, message=f'you stated "{r.text}" and it was left out')
         for r in rules if r.source == "exact" and r.id not in accepted
     ]
     if not _has_amount_cap(kept):
         issues.insert(0, LintIssue(code="no_amount_cap", rule_id="per_order_limit",
-                                   message="A per-order amount limit is required"))
+                                   message="the policy needs a limit on what one purchase may cost"))
     issues += _bounds_conflict(kept)
     return LintResult(issues=issues)

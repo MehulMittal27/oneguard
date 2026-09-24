@@ -204,7 +204,7 @@ async def create_draft(card_id: str, body: api.PolicyDraftRequest, request: Requ
     if body.form is not None:
         rules, flags = policies.form_rules(body.form)
         uncertainty = body.form.uncertainty_policy
-        instruction = policies.form_instruction(rules, uncertainty)
+        instruction = policies.FORM_INSTRUCTION
         open_questions: list[str] = []
         dry_run = policies.form_dry_run(rules, flags, s.history, card_id, customer_id)
         compiler = "form"
@@ -218,7 +218,9 @@ async def create_draft(card_id: str, body: api.PolicyDraftRequest, request: Requ
         open_questions = list(compiled.open_questions)
         dry_run = compiled.dry_run
         compiler = compiled.compiler
-    if policies.per_order_cap(rules) is None and policies.NO_CAP_QUESTION not in open_questions:
+    if not rules:
+        open_questions = [policies.NO_CHECKS_QUESTION, *(q for q in open_questions if q != policies.NO_CAP_QUESTION)]
+    elif policies.per_order_cap(rules) is None and policies.NO_CAP_QUESTION not in open_questions:
         open_questions.append(policies.NO_CAP_QUESTION)
 
     checks = [policies.rule_check(r) for r in rules]
@@ -291,8 +293,10 @@ async def _with_usage(s: Services, row: Mandate) -> api.Mandate:
 async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: Request) -> JSONResponse:
     """C2: the checks sent back are accepted ids; their text is ignored.
 
+    A draft with no checks at all is refused (409 ``lint_failed``) before anything else.
     The accepted subset is re-linted (a per-purchase cap, no dropped ``exact`` check),
-    then created and confirmed at Viseca with the instruction verbatim, then stored.
+    then created and confirmed at Viseca with the instruction verbatim (a form draft sends
+    its accepted checks as sentences instead: the platform wants text), then stored.
     A new policy replaces the card's active one, which is revoked.
     """
     s = services(request)
@@ -302,6 +306,10 @@ async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: R
             raise not_found(f"No policy draft {draft_id}.")
         if row.confirmed_at is not None:
             raise ApiError(409, "draft_confirmed", "This draft is already confirmed.")
+        if not row.checks:
+            raise ApiError(
+                409, "lint_failed", f"Not confirmed: {policies.NO_CHECKS_REASON}.", {"missing": ["per_order_limit"]}
+            )
         draft_rules, flags = policies.load_rules(row.rules, row.checks)
         by_id = {r.id: r for r in draft_rules}
         chosen = [c.id for c in body.checks]
@@ -309,8 +317,7 @@ async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: R
         if unknown:
             raise ApiError(422, "validation", "Some checks are not part of this draft.", {"unknown": unknown})
         accepted = [r for r in draft_rules if r.id in set(chosen)]
-        draft_checks = [api.RuleCheck.model_validate(c) for c in row.checks]
-        missing, reasons = policies.relint(draft_checks, accepted)
+        missing, reasons = s.functions["lint_accepted"](draft_rules, [r.id for r in accepted])
         if missing:
             raise ApiError(409, "lint_failed", "Not confirmed: " + "; ".join(reasons) + ".", {"missing": missing})
         flags = policies.accepted_flags(flags, draft_rules, accepted)
@@ -321,7 +328,7 @@ async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: R
         if s.client is not None:
             created = await s.viseca(
                 s.client.create_mandate(
-                    row.instruction,
+                    policies.form_instruction(accepted, uncertainty) if row.compiler == "form" else row.instruction,
                     [rule_to_viseca(r) for r in accepted],
                     uncertainty,
                     guidance=[r.text for r in accepted],

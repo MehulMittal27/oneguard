@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import csv
 import json
 import logging
 import shutil
@@ -12,7 +14,8 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import Engine, func, select
-from sqlalchemy.exc import OperationalError, StatementError
+from sqlalchemy.exc import IntegrityError, OperationalError, StatementError
+from sqlalchemy.orm import Session
 
 from oneguard.engine.types import HistoryIndex
 from oneguard.store import seed as seed_module
@@ -22,9 +25,13 @@ from oneguard.store.schema import (
     REFERENCE_TABLES,
     AuthorizationHistory,
     Base,
+    Card,
     Decision,
     Merchant,
+    ScenarioCatalogue,
+    WorkerState,
 )
+from tests.fake_viseca import JUDGING_EXTRA
 
 DATA = Path(__file__).resolve().parents[2] / "data"
 
@@ -80,7 +87,7 @@ def test_every_table_in_database_md_exists(engine: Engine) -> None:
         "customers", "accounts", "cards", "merchants", "items", "fx_rates",
         "authorization_history", "scenario_catalogue", "scenario_authorities",
         "policy_drafts", "mandates", "runs", "events_raw", "decisions",
-        "merchant_flags", "viseca_calls",
+        "merchant_flags", "worker_state", "viseca_calls",
     }  # fmt: skip
     assert set(Base.metadata.tables) == expected
     index_columns = {tuple(c.name for c in i.columns) for i in AuthorizationHistory.__table__.indexes}
@@ -171,6 +178,76 @@ def test_familiarity_counts_approved_purchases_only(history: StoreHistoryIndex) 
     assert set(history.known_merchants("CU0019")) == approved
 
 
+def served_tables(extra: dict[str, list[dict]] | None = None) -> dict[str, list[dict]]:
+    """``/v1/reference-data`` ``tables`` as the live sandbox serves them: the pack's rows as
+    CSV strings (the catalogue with four columns and an int count), plus ``extra``."""
+    tables = {}
+    for name in ("customers", "accounts", "cards", "merchants", "items", "fx_rates", "scenario_catalogue"):
+        with (DATA / f"{name}.csv").open(newline="", encoding="utf-8") as f:
+            tables[name] = list(csv.DictReader(f))
+    tables["scenario_catalogue"] = [
+        {k: (int(v) if k == "event_count" else v) for k, v in row.items()
+         if k in ("scenario_id", "scenario_name", "cardholder_instruction", "event_count")}
+        for row in tables["scenario_catalogue"]
+    ]  # fmt: skip
+    for name, rows in (extra or {}).items():
+        tables[name] = tables.get(name, []) + copy.deepcopy(rows)
+    return tables
+
+
+def test_served_tables_matching_the_store_change_nothing(engine: Engine) -> None:
+    with Session(engine) as s:
+        results = seed_module.sync_served(s, served_tables())
+        assert [(r.table, r.changed, r.before, r.after) for r in results] == [
+            (name, False, n, n)
+            for name, n in pack_row_counts().items()
+            if name not in ("authorization_history", "scenario_authorities")
+        ]
+        s.rollback()
+
+
+def test_served_superset_is_upserted_once_and_nothing_is_deleted(engine: Engine) -> None:
+    before = stored_row_counts(engine)
+    served = served_tables(JUDGING_EXTRA)
+    served["scenario_catalogue"] = [r for r in served["scenario_catalogue"] if r["scenario_id"] != "SCEN0004"]
+    changed = next(m for m in served["merchants"] if m["merchant_id"] == "ME0002")
+    changed["merchant_name"], changed["merchant_city"] = "Neighbour Pantry Plus", "Thun"
+    with Session(engine) as s:
+        first = {r.table: r for r in seed_module.sync_served(s, served)}
+        assert {t: (r.inserted, r.updated) for t, r in first.items()} == {
+            "customers": (1, 0), "accounts": (1, 0), "cards": (1, 0), "merchants": (1, 1),
+            "items": (1, 0), "fx_rates": (0, 0), "scenario_catalogue": (1, 0),
+        }  # fmt: skip
+        assert first["customers"].after == before["customers"] + 1
+        again = seed_module.sync_served(s, served)
+        assert [r.table for r in again if r.changed] == []
+        assert [r.served_sha256 for r in again] == [r.served_sha256 for r in first.values()]
+
+        card = s.get(Card, "CA9001")
+        assert (card.online_enabled, card.first_used_on.isoformat()) == (True, "2024-11-26")
+        merchant = s.get(Merchant, "ME0002")
+        assert (merchant.merchant_city, merchant.name_normalised) == ("Thun", "neighbourpantryplus")
+        served_only = s.get(ScenarioCatalogue, "SCEN9001")
+        assert (served_only.event_count, served_only.control_theme) == (1, "")
+        kept = s.get(ScenarioCatalogue, "SCEN0004")  # not served: kept, with its own notes
+        assert kept is not None and kept.control_theme
+        s.rollback()
+    assert stored_row_counts(engine) == before
+
+
+def test_a_bad_served_table_leaves_the_store_as_it_was(engine: Engine) -> None:
+    before = stored_row_counts(engine)
+    orphan = copy.deepcopy(JUDGING_EXTRA["cards"][0]) | {"card_id": "CA9002", "account_id": "AC9999"}
+    for served, error in (
+        (served_tables({"cards": [orphan]}), IntegrityError),  # foreign key the store lacks
+        (served_tables({"cards": [{**orphan, "online_enabled": "maybe"}]}), seed_module.PackMismatch),
+        (served_tables({"customers": [{"customer_id": "CU9002"}]}), seed_module.PackMismatch),
+    ):
+        with Session(engine) as s, pytest.raises(error), s.begin():
+            seed_module.sync_served(s, served)
+    assert stored_row_counts(engine) == before
+
+
 def test_pack_hash_mismatch_is_refused(tmp_path: Path) -> None:
     pack = tmp_path / "data"
     shutil.copytree(DATA, pack)
@@ -178,6 +255,27 @@ def test_pack_hash_mismatch_is_refused(tmp_path: Path) -> None:
         f.write("JPY,CHF,0.006000,2026-08-01,synthetic_fixed\n")
     with pytest.raises(seed_module.PackMismatch, match="fx_rates.csv"):
         seed_module.verify_pack(pack)
+
+
+def test_init_db_adds_a_new_table_to_an_existing_store_and_keeps_its_rows(tmp_path: Path) -> None:
+    """A table added to the schema reaches a live database (Supabase) without a reset."""
+    engine = make_engine(f"sqlite:///{tmp_path / 'existing.sqlite'}")
+    Base.metadata.create_all(engine, tables=[Merchant.__table__])
+    with session(engine) as s:
+        s.add(Merchant(
+            merchant_id="M1", merchant_name="Shop", name_normalised="shop", merchant_category="c",
+            merchant_mcc="5411", merchant_country="CH", merchant_city="Zurich",
+            availability="online", recurring_capable=False,
+        ))  # fmt: skip
+    init_db(engine)
+    init_db(engine)
+    at = datetime(2026, 9, 24, tzinfo=UTC)
+    with session(engine) as s:
+        s.add(WorkerState(key="events_cursor", value=42, updated_at=at))
+    with session(engine) as s:
+        assert s.scalar(select(func.count()).select_from(Merchant)) == 1
+        assert s.get(WorkerState, "events_cursor").value == 42
+    engine.dispose()
 
 
 def test_reset_is_refused_in_prod(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

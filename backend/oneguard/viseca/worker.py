@@ -4,7 +4,11 @@ Runs as an asyncio task inside the API process (docs/architecture.md Runtime). O
 loop, never blocked by a human:
 
 - ``start``: ``GET /v1/bootstrap`` (``limits``: human window, decision deadline, long-poll
-  cap) and ``GET /v1/reference-data``. The sandbox serves no history-file hash, so the
+  cap) and ``GET /v1/reference-data``. Every reference table it serves under ``tables``
+  (customers, accounts, cards, merchants, items, fx rates, the scenario catalogue) is
+  upserted into the store in one transaction when it differs from the stored rows, with
+  per-table counts logged (``seed.sync_served``); served-only customers, cards and
+  scenarios then exist for the API. The sandbox serves no history-file hash, so the
   file is downloaded from ``/v1/reference-data/authorization-history.csv`` and hashed; if
   it differs from the one the seed checked (``data/metadata.json``),
   ``authorization_history`` is re-seeded from it and that is logged loudly.
@@ -37,7 +41,9 @@ loop, never blocked by a human:
   anything delivered afterwards is declined with ``card_or_authority_inactive``
   (rules.md T6, Q6; pipeline step 3).
 - after each decision the feed ``GET /v1/events?since=<cursor>`` is compared with the
-  ledger; a mismatch becomes an ``info`` evidence row on the next decision.
+  ledger; a mismatch becomes an ``info`` evidence row on the next decision. Once a page is
+  processed its ``next_cursor`` is stored (``worker_state``); ``start`` resumes from the
+  stored cursor, so a restart never re-scans the team-wide feed (0 only on first boot).
 
 ``status()`` is what ``/healthz`` reports: state, last poll, events cursor, runs.
 
@@ -72,6 +78,7 @@ from sqlalchemy.orm import Session
 
 from oneguard import __version__
 from oneguard.api import models as api
+from oneguard.engine.explain import expired_message
 from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import Ledger, LedgerEntry
 from oneguard.engine.types import (
@@ -93,7 +100,7 @@ from oneguard.pipeline import (
 from oneguard.store import seed as seed_module
 from oneguard.store.db import get_engine, session
 from oneguard.store.history import StoreHistoryIndex
-from oneguard.store.schema import EventRaw, Mandate, Run
+from oneguard.store.schema import EventRaw, Mandate, Run, WorkerState
 from oneguard.viseca.client import VisecaClient, VisecaError, cap
 from oneguard.viseca.schema import event_errors
 
@@ -116,6 +123,7 @@ POST_RETRY_DELAYS_S = (0.2, 0.5, 1.0)
 LOOP_BACKOFF_MAX_S = 10.0
 RECONCILE_TOLERANCE_CHF = Decimal("0.005")
 HISTORY_FILE = "authorization_history.csv"
+EVENTS_CURSOR_KEY = "events_cursor"
 
 TIMEOUT_MESSAGE = "No answer within {seconds} s; nothing was approved"
 """rules.md Q2 / api-contract §3.1, §3.5, with the human window from /v1/bootstrap."""
@@ -188,6 +196,38 @@ def first_value(obj: Any, *keys: str) -> Any:
         if key in keys and value is not None:
             return value
     return None
+
+
+@dataclass(frozen=True)
+class ServedProfile:
+    """The fixture profile ``/v1/bootstrap`` names for the team."""
+
+    scenario_id: str
+    customer_id: str
+    card_id: str
+
+
+def served_profile(bootstrap: Any) -> ServedProfile | None:
+    """The bootstrap ``profile``'s scenario, customer and card, if it names all three.
+
+    Live shape: ``profile{profile_id, scenario_id, profile_context{customer_id, account_id,
+    card_id}, customer{...}, account{...}, card{...}}``.
+    """
+    profile = bootstrap.get("profile") if isinstance(bootstrap, dict) else None
+    if not isinstance(profile, dict):
+        return None
+
+    def part(key: str) -> dict[str, Any]:
+        value = profile.get(key)
+        return value if isinstance(value, dict) else {}
+
+    context = part("profile_context")
+    scenario = profile.get("scenario_id")
+    customer = context.get("customer_id") or part("customer").get("customer_id")
+    card = context.get("card_id") or part("card").get("card_id")
+    if not all(isinstance(v, str) and v for v in (scenario, customer, card)):
+        return None
+    return ServedProfile(scenario_id=scenario, customer_id=customer, card_id=card)
 
 
 def seconds_setting(
@@ -575,6 +615,8 @@ class VisecaWorker:
         self.bootstrap: dict[str, Any] | None = None
         self.reference_data: dict[str, Any] | None = None
         self.history_reseeded = False
+        self.served_tables: list[seed_module.TableSync] = []
+        """What the start-up pack check did to each served reference table."""
         self.served_history_sha256: str | None = None
         """SHA-256 of the history file Viseca serves, once checked at start."""
 
@@ -707,11 +749,13 @@ class VisecaWorker:
         self._state = "starting"
         await self._load_settings()
         await self._check_reference_data()
-        if self._history is None:
+        refresh = self.history_reseeded or any(t.changed for t in self.served_tables)
+        if self._history is None or refresh:
             self._history = await asyncio.to_thread(self._load_history)
         if self._ledger is None:
             self._ledger = default_ledger(self._db_engine, self._history)
         await self._recover_pending()
+        self._cursor = await asyncio.to_thread(self._load_cursor)
         self._task = asyncio.create_task(self._loop(), name="viseca-worker")
 
     async def stop(self) -> None:
@@ -823,7 +867,11 @@ class VisecaWorker:
             # still pending after an answer that was already sent: the platform's own
             # expiry will decline it, so the timeout decline is recorded
             decision, by = result or ("decline", "timeout")
-            resolved = await self._engine(self.ledger.resolve, authorization_id, decision, by, self._now())
+            expired = expired_message(self.human_window_s) if by == "timeout" else None
+            resolved = await self._engine(
+                partial(self.ledger.resolve, message=expired),
+                authorization_id, decision, by, self._now(),
+            )
         log.info("step-up %s closed at its window: %s (%s)", authorization_id, resolved.uncertain_outcome, by)
         await self._after_resolution(authorization_id, resolved)
         return True
@@ -886,6 +934,7 @@ class VisecaWorker:
         except VisecaError as exc:
             self._note_error(f"reference data unavailable, keeping the seeded history: {exc}")
             return
+        await self._sync_served_tables()
         meta = find_history_metadata(self.reference_data)
         served = str(meta.get("sha256", "")).strip().lower() if meta else ""
         expected = seed_module.pack_file_sha256(HISTORY_FILE, self._data_dir)
@@ -931,6 +980,41 @@ class VisecaWorker:
             digest,
             banner,
         )
+
+    async def _sync_served_tables(self) -> None:
+        """Upsert the served reference tables before the history check, so a served history
+        file's customers and cards already exist when it is re-seeded."""
+        tables = self.reference_data.get("tables") if isinstance(self.reference_data, dict) else None
+        if not isinstance(tables, dict):
+            self._note_error("reference data serves no tables; keeping the seeded reference tables")
+            return
+        try:
+            self.served_tables = await asyncio.to_thread(self._sync_served, tables)
+        except Exception as exc:
+            log.exception("syncing the served reference tables failed")
+            self._note_error(f"served reference tables not synced, keeping the stored ones: {exc}")
+            return
+        for t in self.served_tables:
+            log.info(
+                "reference table %-18s served %3d, store %3d -> %3d rows (%d added, %d updated)%s",
+                t.table,
+                t.served,
+                t.before,
+                t.after,
+                t.inserted,
+                t.updated,
+                "" if t.changed else ", unchanged",
+            )
+        missing = sorted(set(seed_module.SERVED_TABLES) - {t.table for t in self.served_tables})
+        ignored = sorted(set(tables) - set(seed_module.SERVED_TABLES))
+        if missing:
+            log.info("reference tables not served, kept as stored: %s", ", ".join(missing))
+        if ignored:
+            log.info("served tables the store does not keep, ignored: %s", ", ".join(ignored))
+
+    def _sync_served(self, tables: dict[str, Any]) -> list[seed_module.TableSync]:
+        with session(self._db_engine) as s:
+            return seed_module.sync_served(s, tables)
 
     def _reseed_history(self, text: str) -> int:
         with session(self._db_engine) as s:
@@ -1143,7 +1227,7 @@ class VisecaWorker:
         at = _parse_time(data["authorization"]["timestamp"])
         assert at is not None
         ours = await self._engine(
-            self._approved_spend, list(run.live_ids), at, period_days_of(run.ctx.policy)
+            self._approved_spend, list(run.live_ids), at, period_days_of(run.ctx.policy, spend_only=True)
         )
         if abs(Decimal(str(theirs)) - ours) <= RECONCILE_TOLERANCE_CHF:
             return []
@@ -1580,7 +1664,8 @@ class VisecaWorker:
             for item in items:
                 if isinstance(item, dict):
                     await self._check_feed_item(item)
-        if next_cursor is not None:
+        if next_cursor is not None and next_cursor != self._cursor:
+            await asyncio.to_thread(self._save_cursor, next_cursor)
             self._cursor = next_cursor
 
     async def _check_feed_item(self, item: dict[str, Any]) -> None:
@@ -1648,6 +1733,19 @@ class VisecaWorker:
                     last_error=run.last_error,
                 )
             )
+
+    def _load_cursor(self) -> int | str:
+        with session(self._db_engine) as s:
+            row = s.get(WorkerState, EVENTS_CURSOR_KEY)
+        if row is None or not isinstance(row.value, int | str) or isinstance(row.value, bool):
+            log.info("no stored event feed cursor; reading the feed from 0")
+            return 0
+        log.info("event feed cursor resumed at %s", row.value)
+        return row.value
+
+    def _save_cursor(self, cursor: int | str) -> None:
+        with session(self._db_engine) as s:
+            s.merge(WorkerState(key=EVENTS_CURSOR_KEY, value=cursor, updated_at=self._now()))
 
     def _mark_mandate_revoked(self, viseca_mandate_id: str) -> None:
         with session(self._db_engine) as s:

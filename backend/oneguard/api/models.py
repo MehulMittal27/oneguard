@@ -136,9 +136,11 @@ class PolicyDraft(ApiModel):
     draft_id: str
     card_id: str
     instruction: str
+    """The C1 text verbatim, or exactly ``policies.FORM_INSTRUCTION`` for a form draft."""
     checks: list[RuleCheck]
     uncertainty_policy: UncertaintyChoice
     open_questions: list[str]
+    """With no checks read, the first entry is ``policies.NO_CHECKS_QUESTION`` and C2 refuses the draft."""
     dry_run: DryRunResult
     compiler: Literal["llm", "form", "fallback"] | None = None
 
@@ -176,6 +178,7 @@ class Mandate(ApiModel):
     mandate_id: str
     card_id: str
     instruction: str
+    """Its draft's ``instruction``, unchanged by C4; never the joined check texts."""
     checks: list[RuleCheck]
     uncertainty_policy: Literal["ask", "decline", "approve"]
     open_questions: list[str]

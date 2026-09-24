@@ -29,6 +29,7 @@ from oneguard.store.db import (
 )
 from oneguard.store.history import StoreHistoryIndex
 from tests.test_store import (  # noqa: F401  collected again here, against the fixtures below
+    test_a_bad_served_table_leaves_the_store_as_it_was,
     test_every_reference_table_matches_the_pack,
     test_every_table_in_database_md_exists,
     test_familiarity_counts_approved_purchases_only,
@@ -39,6 +40,8 @@ from tests.test_store import (  # noqa: F401  collected again here, against the 
     test_runtime_tables_round_trip_json_and_utc,
     test_seed_is_idempotent,
     test_seed_loads_every_reference_table,
+    test_served_superset_is_upserted_once_and_nothing_is_deleted,
+    test_served_tables_matching_the_store_change_nothing,
     test_values_come_back_typed_and_in_utc,
 )
 

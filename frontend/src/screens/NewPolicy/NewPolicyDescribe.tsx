@@ -14,14 +14,18 @@ function AiSwitchVisual({ on }: { on: boolean }) {
   return (
     <span
       aria-hidden="true"
-      className={`relative h-[32px] w-[52px] shrink-0 rounded-pill transition-colors ${
-        on ? 'bg-ink' : 'bg-[#8a8478]'
-      }`}
+      /* The off track was a literal warm grey (#8a8478) belonging to the old
+         cream palette, which reads as a stain against the recalibrated cool
+         near-white. `ink-tab` is the one palette grey that clears 3:1 both
+         ways: 6.0:1 under the white knob, 3.1:1 against the near-black on
+         state, so neither the knob nor the on/off difference relies on
+         position alone. */
+      className={`relative h-[32px] w-13 shrink-0 rounded-pill transition-colors ${on ? 'bg-ink' : 'bg-ink-tab'
+        }`}
     >
       <span
-        className={`absolute top-[4px] size-[24px] rounded-full transition-transform ${
-          on ? 'translate-x-[26px] bg-ground' : 'translate-x-[4px] bg-surface'
-        }`}
+        className={`absolute top-[4px] size-[24px] rounded-full transition-transform ${on ? 'translate-x-6.5 bg-ground' : 'translate-x-[4px] bg-surface'
+          }`}
       />
     </span>
   )
