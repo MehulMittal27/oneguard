@@ -47,7 +47,7 @@ oneguard/
       engine/     facts.py policy.py protections.py warnings.py ledger.py decide.py explain.py signals.py
       compiler/   llm.py parser.py lint.py dryrun.py
       llm/        provider.py openai.py anthropic.py   provider interface: openai first, anthropic stub
-      replay/     events.py runner.py            CSV → live-shaped events; offline replay
+      replay/     events.py runner.py oracle.py matrix.py   CSV → live-shaped events; offline replay; replay matrix
       viseca/     client.py worker.py schema.py  sandbox client + long-poll worker
       api/        app.py models.py routes_customer.py routes_dev.py static.py
       store/      db.py schema.py seed.py history.py   SQLAlchemy; SQLite for tests/local, Supabase Postgres in the cloud
@@ -150,7 +150,8 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
   it back.
 - Makefile: `make deploy` (`fly deploy -a oneguard --ha=false`), `make logs`, `make image`
   (the same image locally), `make demo-live SCEN=…`, `make demo-offline`, `make seed`,
-  `make reset-db` (refused when `ONEGUARD_ENV=prod`); `make matrix` arrives with P5-4.
+  `make reset-db` (refused when `ONEGUARD_ENV=prod`), `make matrix` (regenerates
+  `docs/replay-matrix.md`; `tests/test_replay_matrix.py` fails when it is stale).
 - App start (`oneguard/api/app.py` lifespan): `init_db` (creates missing tables, never drops),
   seeds only an empty store, loads `HistoryIndex`, warms the pool (5 connections), warms
   soft signals if enabled, then starts the worker in the background only when

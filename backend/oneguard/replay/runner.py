@@ -16,6 +16,7 @@ import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 from sqlalchemy.orm import Session
@@ -63,8 +64,18 @@ def _cell(text: str | None) -> str:
     return (text or "").replace("|", "\\|")
 
 
-def decide_all(pack: Pack, scenario_id: str, policy: Policy, signals: bool) -> list[tuple[str, str, str, str]]:
-    """Every event of the scenario through the real pipeline: (id, outcome, message, counterfactual)."""
+class Decided(NamedTuple):
+    """One replayed purchase as the customer reads it."""
+
+    source_id: str
+    outcome: str
+    reason_codes: list[str]
+    message: str
+    counterfactual: str
+
+
+def decide_all(pack: Pack, scenario_id: str, policy: Policy, signals: bool) -> list[Decided]:
+    """Every event of the scenario through the real pipeline, in delivery order."""
     implementations = load_implementations()
     missing = sorted(DECIDING - set(implementations))
     if missing:  # the real pipeline only: never a stand-in
@@ -83,14 +94,17 @@ def decide_all(pack: Pack, scenario_id: str, policy: Policy, signals: bool) -> l
             for event in build_events(pack, scenario_id, mandate_id=policy.mandate_id, now=now):
                 decision, explanation, _ = decide_event(event, ctx)
                 source = event["authorization"]["source_authorization_id"]
-                rows.append((source, decision.outcome, explanation.message, explanation.counterfactual or ""))
+                rows.append(Decided(
+                    source, decision.outcome, list(decision.reason_codes), explanation.message,
+                    explanation.counterfactual or "",
+                ))  # fmt: skip
         engine.dispose()
     return rows
 
 
-def _decisions_table(rows: list[tuple[str, str, str, str]]) -> str:
+def _decisions_table(rows: list[Decided]) -> str:
     lines = ["| id | outcome | message | counterfactual |", "|---|---|---|---|"]
-    lines += [f"| {i} | {o} | {_cell(m)} | {_cell(c)} |" for i, o, m, c in rows]
+    lines += [f"| {r.source_id} | {r.outcome} | {_cell(r.message)} | {_cell(r.counterfactual)} |" for r in rows]
     return "\n".join(lines)
 
 
