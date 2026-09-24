@@ -209,7 +209,7 @@ def decide_event(
             rules = fn["evaluate_rules"](facts, ctx.policy)
 
     protections: list[Signal] = fn["protections"](facts, ctx.policy, view)
-    warnings: list[Signal] = fn["warning_signs"](facts, view)
+    warnings: list[Signal] = fn["warning_signs"](facts, view, ctx.policy)
     soft: list[Signal] = []
     if ctx.signals_enabled:
         budget = min(SOFT_SIGNALS_MAX_S, remaining_s())

@@ -57,8 +57,8 @@ def protections(facts: Facts, policy: Policy, ledger: LedgerView) -> list[Signal
     raise NotImplementedError
 
 
-def warning_signs(facts: Facts, ledger: LedgerView) -> list[Signal]:
-    """P5 warnings.py. W1–W6 (§8)."""
+def warning_signs(facts: Facts, ledger: LedgerView, policy: Policy) -> list[Signal]:
+    """P5 warnings.py. W1–W6 (§8); ``policy`` gives W4 the stated per-order limit (C1)."""
     raise NotImplementedError
 
 

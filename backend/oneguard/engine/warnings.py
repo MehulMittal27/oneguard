@@ -1,6 +1,6 @@
 """Warning signs W1–W6 (docs/rules.md §8): detection only.
 
-``warning_signs(facts, ledger)`` returns one Signal per sign, triggered or not, with its
+``warning_signs(facts, ledger, policy)`` returns one Signal per sign, triggered or not, with its
 strength. decide.py applies the W-rules (one strong → ask; two or more weak → ask; one
 weak alone → nothing). Signs are evaluated per purchase and never carry over (W-rule 4).
 
@@ -17,7 +17,8 @@ weak alone → nothing). Signs are evaluated per purchase and never carry over (
 from __future__ import annotations
 
 from oneguard.engine.interfaces import register
-from oneguard.engine.types import Facts, LedgerView, Signal
+from oneguard.engine.protections import per_order_limit
+from oneguard.engine.types import Facts, LedgerView, Policy, Signal
 
 BURST_ATTEMPTS = 2
 NIGHT_START_HOUR = 0
@@ -103,8 +104,6 @@ def evaluate(facts: Facts, ledger: LedgerView, per_order_limit_chf: float | None
 
 
 @register("warning_signs")
-def warning_signs(facts: Facts, ledger: LedgerView) -> list[Signal]:
-    # The interface does not pass the policy, so W4 cannot see a stated per-order limit
-    # here (contract request: add `policy`). Until then W4 is reported unsuppressed; it
-    # is weak, so on its own it changes nothing (W-rule 2).
-    return evaluate(facts, ledger)
+def warning_signs(facts: Facts, ledger: LedgerView, policy: Policy) -> list[Signal]:
+    limit = per_order_limit(policy)
+    return evaluate(facts, ledger, limit[0] if limit else None)

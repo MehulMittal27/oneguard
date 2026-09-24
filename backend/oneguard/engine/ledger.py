@@ -29,8 +29,7 @@ Remembered confirmations (PM decision "ask once, then remember"): when the custo
 approves a step-up, each of its ``deciding_ids`` is remembered for that shop and those
 items. For a live run, answers from earlier live runs under the same mandate count too;
 a new or changed instruction (new mandate) starts with no memory. Exposed as
-``LedgerView.confirmed_keys`` when the contract has the field (P2 contract request);
-``decide.py`` only uses it for restrictions no data can check.
+``LedgerView.confirmed_keys``; ``decide.py`` only uses it for restrictions no data can check.
 
 Writes commit per call, so a decision is durable before it is posted to Viseca.
 """
@@ -44,17 +43,18 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from oneguard.engine.ledger_base import PRIOR_WINDOW, Ledger, LedgerEntry
+from oneguard.engine.ledger_base import (
+    PRIOR_WINDOW,
+    Ledger,
+    LedgerEntry,
+    confirmation_key,
+    is_final_approval,
+    known_merchant_names,
+)
 from oneguard.engine.types import HistoryIndex, LedgerView, PriorDecision
 from oneguard.store.schema import Decision, MerchantFlag, Run
 
 CENT = Decimal("0.01")
-_HAS_CONFIRMED_KEYS = "confirmed_keys" in LedgerView.model_fields
-
-
-def confirmation_key(rule_id: str, merchant_id: str, item_id: str) -> str:
-    """One remembered answer: this rule, at this shop, for this item."""
-    return f"{rule_id}|{merchant_id}|{item_id}"
 
 
 def _money(x: Any) -> Decimal:
@@ -129,10 +129,7 @@ class StoreLedger(Ledger):
             maxima.append(hist_max)
 
         flagged = set(self.session.scalars(select(MerchantFlag.merchant_id).where(MerchantFlag.run_id == run_id)))
-
-        extra: dict[str, Any] = {}
-        if _HAS_CONFIRMED_KEYS:
-            extra["confirmed_keys"] = self._confirmed_keys(run_id, at)
+        known = set(on_card) | set(other_cards)
 
         return LedgerView(
             period_spent_chf=float(sum((_money(d.spent_chf) for d in in_window), Decimal(0))),
@@ -148,12 +145,16 @@ class StoreLedger(Ledger):
                     item_ids=list(d.item_ids),
                     billing_amount_chf=_f(d.billing_amount_chf),
                     reserved=_money(d.reserved_chf) > 0,
+                    # P1 contract change, P2 to review: approval flag for A3/A4.
+                    approved=is_final_approval(d.outcome, d.final, d.uncertain_outcome),
                 )
                 for d in run
                 if d.ts_sim >= at - PRIOR_WINDOW
             ],
-            known_merchant_ids=set(on_card) | set(other_cards),
+            known_merchant_ids=known,
             known_merchant_ids_on_card=set(on_card),
+            # P1 contract change, P2 to review: catalogue names of known shops for A7.
+            known_merchant_names=known_merchant_names(self.history, known),
             merchant_approvals_on_card=on_card,
             merchant_approvals_other_cards=other_cards,
             known_device_ids=set(self.history.known_devices(customer_id)) if self.history else set(),
@@ -162,7 +163,8 @@ class StoreLedger(Ledger):
             flagged_merchant_ids=flagged,
             frozen=self._frozen(self._earlier_card_decisions(run_id, card_id)
                                 + [d for d in run if d.card_id == card_id]),
-            **extra,
+            # P1 contract change, P2 to review: the field exists now, so no feature check.
+            confirmed_keys=self._confirmed_keys(run_id, at),
         )
 
     @staticmethod

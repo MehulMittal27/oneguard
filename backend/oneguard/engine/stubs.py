@@ -137,7 +137,7 @@ def protections(facts: Facts, policy: Policy, ledger: LedgerView) -> list[Signal
     return []
 
 
-def warning_signs(facts: Facts, ledger: LedgerView) -> list[Signal]:
+def warning_signs(facts: Facts, ledger: LedgerView, policy: Policy) -> list[Signal]:
     return []
 
 

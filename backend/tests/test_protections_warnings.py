@@ -11,7 +11,7 @@ import pytest
 from oneguard.engine import warnings as W
 from oneguard.engine.facts import build_facts
 from oneguard.engine.types import Signal
-from tests.test_protections import facts, line, view
+from tests.test_protections import facts, limit_rule, line, policy, view
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "data" / "scenario_fixtures" / "example_authorization_request.json"
 
@@ -110,3 +110,10 @@ def test_registered_warning_signs_is_the_interface_function():
     from oneguard.engine.interfaces import load_implementations
 
     assert load_implementations()["warning_signs"] is W.warning_signs
+
+
+def test_registered_warning_signs_takes_the_per_order_limit_from_the_policy():
+    f = facts(amount=600.0, items=[line(price=600.0)])
+    assert signal(W.warning_signs(f, view(), policy()), "W4").triggered
+    assert not signal(W.warning_signs(f, view(), policy([limit_rule(600)])), "W4").triggered
+    assert signal(W.warning_signs(f, view(), policy([limit_rule(599.99)])), "W4").triggered
