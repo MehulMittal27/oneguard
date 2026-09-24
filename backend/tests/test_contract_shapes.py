@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from oneguard import pipeline
 from oneguard.api import models as api
 from oneguard.engine import interfaces, stubs
 from oneguard.engine.ledger_base import InMemoryLedger
@@ -212,6 +213,41 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
         "total": 10,
         "worker_ok": True,
         "last_error": None,
+        "customer_id": "CU1217",
+        "customer_name": "Omar Chen",
+    },
+    api.ScenarioProfile: {
+        "customer_id": "CU1217",
+        "name": "Omar Chen",
+        "card_id": "CA1331",
+        "profile_id": "PROFILE_AUTH0101",
+        "source": "bootstrap",
+    },
+    api.Scenario: {
+        "scenario_id": "S1",
+        "scenario_name": "Connection check",
+        "cardholder_instruction": "Buy one grocery item for CHF 20 or less.",
+        "served": True,
+        "profile": None,
+        "active_run_id": "run_1",
+    },
+    api.ScenariosResponse: {
+        "scenarios": [
+            {
+                "scenario_id": "S1",
+                "scenario_name": "Connection check",
+                "cardholder_instruction": "Buy one grocery item for CHF 20 or less.",
+                "served": True,
+                "profile": {
+                    "customer_id": "CU1217",
+                    "name": "Omar Chen",
+                    "card_id": "CA1331",
+                    "profile_id": None,
+                    "source": "run",
+                },
+                "active_run_id": None,
+            }
+        ]
     },
     api.LedgerSnapshotEntry: {
         "authorization_id": "live_1",
@@ -244,8 +280,9 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
     api.TightenRequest: {"add_checks": [CHECK], "uncertainty_policy": "decline"},
     api.ResolveRequest: {"decision": "approve"},
     api.ReplayRestartRequest: {"scenario_id": "S1", "card_id": "CA0001", "speed_ms": 4000},
-    api.CreateRunRequest: {"scenario_id": "S1", "card_id": "CA0001"},
+    api.CreateRunRequest: {"scenario_id": "S1", "card_id": "CA0001", "force": True},
     api.SoftSignalsToggle: {"enabled": True},
+    api.SoftSignalsState: {"live": True, "replay": False},
     api.ErrorBody: {"code": "lint_failed", "message": "No per-order cap.", "detail": {"missing": ["amount"]}},
     api.ErrorResponse: {"error": {"code": "not_found", "message": "No such card."}},
 }
@@ -601,6 +638,27 @@ def test_tier2_is_skipped_without_a_provider_and_failures_are_contained() -> Non
     _, _, decision = decide_event(_event(), _context(implementations=functions, provider=Configured()))
     assert calls == ["tier2"]
     assert decision.status == "pending_human"
+
+
+@pytest.mark.parametrize(
+    ("raw", "budget_s"), [(None, 0.5), ("1000", 1.0), (" 250 ", 0.25), ("0", 0.5), ("-5", 0.5), ("fast", 0.5)]
+)
+def test_the_soft_signal_budget_comes_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None, budget_s: float
+) -> None:
+    if raw is None:
+        monkeypatch.delenv(pipeline.SIGNAL_BUDGET_ENV, raising=False)
+    else:
+        monkeypatch.setenv(pipeline.SIGNAL_BUDGET_ENV, raw)
+    budgets: list[float] = []
+
+    def soft_signals(facts, budget):
+        budgets.append(budget)
+        return []
+
+    functions = {**stubs.STUBS, "soft_signals": soft_signals}
+    decide_event(_event(), _context(implementations=functions, signals_enabled=True))
+    assert budgets == [budget_s]
 
 
 def test_the_lint_stub_never_passes_everything() -> None:

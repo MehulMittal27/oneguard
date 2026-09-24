@@ -1,0 +1,655 @@
+# Model responses for the compiler's LLM path: the 10 served judging instructions (docs/judging-pack.md) (lane P4).
+# TEST DATA ONLY: read by backend/tests/test_compiler_judging.py, never by oneguard/.
+#
+# Captured once from the live OpenAI provider (gpt-4.1, temperature 0, structured output)
+# on 2026-09-24 with the prompt in compiler/llm.py at that commit. Each `response` is
+# the provider's JSON output (compiler/llm.py SCHEMA), replayed offline by a scripted provider.
+# The replay does not see the prompt: re-record after changing it (the parser tests still pin the floor).
+# SCEN0113 re-recorded on 2026-09-24 (gpt-4.1, same settings) after the prompt learned
+# cart.purchases_in_period (p4/purchases-in-period); the other entries are unchanged.
+# SCEN0124 re-recorded on 2026-09-24 (gpt-4.1, same settings) after the prompt learned requested
+# products and their catalogue types (p4/requested-item): "no insurance" is now only the excluded
+# travel type, as the parser reads it. The other nine read the same under the new prompt (two
+# live runs each), so they are unchanged.
+- scenario: SCEN0101
+  response:
+    uncertainty_policy: ask
+    requested_item: ordinary grocery item
+    nothing_extra: false
+    rules:
+    - field: items[].item_category
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - groceries
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: grocery item
+      source: inferred
+      on_fail: decline
+    - field: cart.quantity
+      operator: '='
+      value_number: 1
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: Buy one ordinary grocery item
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 20
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: CHF 20 or less
+      source: exact
+      on_fail: decline
+    - field: merchant.familiar_on_card
+      operator: '='
+      value_number: null
+      value_text: 'true'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: shop I use regularly
+      source: exact
+      on_fail: decline
+    open_questions: []
+- scenario: SCEN0104
+  response:
+    uncertainty_policy: ask
+    requested_item: hiking boots
+    nothing_extra: false
+    rules:
+    - field: items[].size_eu
+      operator: '='
+      value_number: 46
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: size 46
+      source: exact
+      on_fail: decline
+    - field: merchant.merchant_country
+      operator: '='
+      value_number: null
+      value_text: AT
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: Austrian
+      source: exact
+      on_fail: decline
+    - field: merchant.merchant_category
+      operator: '='
+      value_number: null
+      value_text: sporting_goods
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: outdoor retailer
+      source: inferred
+      on_fail: decline
+    - field: merchant.familiar_on_card
+      operator: '='
+      value_number: null
+      value_text: 'true'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: retailer I already know
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 200
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: EUR
+      scope: purchase
+      period_days: null
+      words: Pay no more than EUR 200
+      source: exact
+      on_fail: decline
+    - field: order.order_returnable
+      operator: '='
+      value_number: null
+      value_text: 'true'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: only if they can be returned
+      source: exact
+      on_fail: decline
+    open_questions: []
+- scenario: SCEN0106
+  response:
+    uncertainty_policy: ask
+    requested_item: null
+    nothing_extra: false
+    rules:
+    - field: items[].item_category
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - electronics
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: small electronics and accessories
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 300
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: purchases up to CHF 300 each
+      source: exact
+      on_fail: decline
+    - field: merchant.familiar_on_card
+      operator: '='
+      value_number: null
+      value_text: 'true'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: retailers I already use
+      source: exact
+      on_fail: decline
+    open_questions: []
+- scenario: SCEN0113
+  response:
+    uncertainty_policy: ask
+    requested_item: null
+    nothing_extra: false
+    rules:
+    - field: items[].item_category
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - dining
+      - food_delivery
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: dinners
+      source: inferred
+      on_fail: decline
+    - field: cart.purchases_in_period
+      operator: <=
+      value_number: 1
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: period
+      period_days: 1
+      words: one delivery a day
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 40
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: CHF 40 maximum including the delivery fee
+      source: exact
+      on_fail: decline
+    - field: merchant.familiar_on_card
+      operator: '='
+      value_number: null
+      value_text: 'true'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: from my usual services
+      source: exact
+      on_fail: decline
+    - field: authorization.weekday
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - mon
+      - tue
+      - wed
+      - thu
+      - fri
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: weeknight dinners only; Never at the weekend
+      source: inferred
+      on_fail: decline
+    open_questions: []
+- scenario: SCEN0117
+  response:
+    uncertainty_policy: ask
+    requested_item: null
+    nothing_extra: false
+    rules:
+    - field: items[].item_category
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - groceries
+      - household
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: Groceries and everyday household items only
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 100
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: maximum CHF 100 per order
+      source: exact
+      on_fail: decline
+    - field: merchant.familiar_on_card
+      operator: '='
+      value_number: null
+      value_text: 'true'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: from the shops I use
+      source: exact
+      on_fail: decline
+    - field: items[].item_category
+      operator: not_in
+      value_number: null
+      value_text: null
+      value_list:
+      - gift_card
+      - cosmetics
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: no gift cards, no cosmetics
+      source: exact
+      on_fail: decline
+    - field: unverifiable
+      operator: '='
+      value_number: null
+      value_text: no alcohol
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: no alcohol
+      source: exact
+      on_fail: decline
+    open_questions: []
+- scenario: SCEN0122
+  response:
+    uncertainty_policy: ask
+    requested_item: camera lens
+    nothing_extra: true
+    rules:
+    - field: merchant.familiar_on_card
+      operator: '='
+      value_number: null
+      value_text: 'true'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: from a seller I have bought from before
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 900
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: for CHF 900 or less
+      source: exact
+      on_fail: decline
+    open_questions: []
+- scenario: SCEN0124
+  response:
+    uncertainty_policy: ask
+    requested_item: null
+    nothing_extra: false
+    rules:
+    - field: items[].item_category
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - hotel
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: a hotel
+      source: exact
+      on_fail: decline
+    - field: unverifiable
+      operator: '='
+      value_number: null
+      value_text: in Munich
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: in Munich
+      source: exact
+      on_fail: decline
+    - field: unverifiable
+      operator: '='
+      value_number: null
+      value_text: for 3 nights from 10 September to 13 September
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: for 3 nights from 10 September to 13 September
+      source: exact
+      on_fail: decline
+    - field: items[].unit_price_chf
+      operator: <=
+      value_number: 200
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: at most CHF 200 per night
+      source: exact
+      on_fail: decline
+    - field: order.order_cancellable
+      operator: '='
+      value_number: null
+      value_text: 'true'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: refundable rate only
+      source: exact
+      on_fail: decline
+    - field: items[].item_category
+      operator: not_in
+      value_number: null
+      value_text: null
+      value_list:
+      - travel
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: No flights, no insurance
+      source: exact
+      on_fail: decline
+    open_questions:
+    - 'No per-order limit stated: is the order limit CHF 600 (3 nights at CHF 200 each)?'
+- scenario: SCEN0130
+  response:
+    uncertainty_policy: ask
+    requested_item: hiking boots
+    nothing_extra: true
+    rules:
+    - field: items[].size_eu
+      operator: '='
+      value_number: 42
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: size 42
+      source: exact
+      on_fail: decline
+    - field: merchant.merchant_category
+      operator: '='
+      value_number: null
+      value_text: sporting_goods
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: proper sports shop
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 180
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: Maximum CHF 180
+      source: exact
+      on_fail: decline
+    - field: order.return_window_days
+      operator: '>='
+      value_number: 14
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: return them within at least 14 days
+      source: exact
+      on_fail: decline
+    open_questions: []
+- scenario: SCEN0135
+  response:
+    uncertainty_policy: ask
+    requested_item: null
+    nothing_extra: false
+    rules:
+    - field: merchant.merchant_category
+      operator: '='
+      value_number: null
+      value_text: groceries
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: at supermarkets
+      source: inferred
+      on_fail: decline
+    - field: merchant.familiar_on_card
+      operator: '='
+      value_number: null
+      value_text: 'true'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: supermarkets I already use
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 100
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: purchase
+      period_days: null
+      words: Never spend more than CHF 100 per order
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <=
+      value_number: 250
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: period
+      period_days: 7
+      words: CHF 250 in any 7-day window
+      source: exact
+      on_fail: decline
+    - field: items[].item_category
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - groceries
+      - household
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: groceries and household basics only
+      source: exact
+      on_fail: decline
+    open_questions: []
+- scenario: SCEN0136
+  response:
+    uncertainty_policy: ask
+    requested_item: null
+    nothing_extra: false
+    rules:
+    - field: items[].item_category
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - subscriptions
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: subscriptions
+      source: exact
+      on_fail: decline
+    - field: authorization.billing_amount_chf
+      operator: <
+      value_number: 80
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: CHF
+      scope: period
+      period_days: 30
+      words: Total per month must stay under CHF 80
+      source: exact
+      on_fail: decline
+    - field: merchant.familiar_on_card
+      operator: '='
+      value_number: null
+      value_text: 'true'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: No new services
+      source: exact
+      on_fail: decline
+    - field: unverifiable
+      operator: '='
+      value_number: null
+      value_text: no premium tiers
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: no premium tiers
+      source: exact
+      on_fail: decline
+    - field: unverifiable
+      operator: '='
+      value_number: null
+      value_text: no annual prepayments
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: no annual prepayments
+      source: exact
+      on_fail: decline
+    - field: unverifiable
+      operator: '='
+      value_number: null
+      value_text: the price has not changed since last time
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: If a price changes, ask me
+      source: exact
+      on_fail: ask
+    open_questions:
+    - 'No amount stated: what is the most one purchase may cost?'

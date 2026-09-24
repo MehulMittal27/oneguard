@@ -1,7 +1,7 @@
 """Engine latency benchmark: the 45 public purchases through the real pipeline (docs/benchmark.md).
 
     python scripts/bench_engine.py [--reps 100] [--warmup 3]
-    ONEGUARD_SOFT_SIGNALS=laya python scripts/bench_engine.py --laya [--reps 10]
+    ONEGUARD_SOFT_SIGNALS=laya python scripts/bench_engine.py --laya [--reps 10] [--lines-only]
 
 Default mode: every scenario's events, each with its policy fixture
 (``tests/fixtures/policies``), go through ``pipeline.decide_event`` with the registered
@@ -16,7 +16,8 @@ Each stage is timed with ``time.perf_counter`` around the call; end to end is th
 ``--laya`` mode: loads Laya once with ``signals.warm()`` (reported as load time), then
 times only the soft signal: ``soft_signals`` per purchase (45) and the model call per
 item line (56), ``--reps`` times each. If Laya cannot load, the error is printed and
-the rows are skipped.
+the rows are skipped. ``--lines-only`` times only the model call per item line: a short
+run that leaves a shared-CPU machine's burst balance intact (docs/benchmark.md §3).
 """
 
 from __future__ import annotations
@@ -178,7 +179,7 @@ def bench_engine(reps: int, warmup: int) -> int:
     return 0 if verdict == "PASS" else 1
 
 
-def bench_laya(reps: int) -> int:
+def bench_laya(reps: int, lines_only: bool = False) -> int:
     from oneguard.engine import signals
     from oneguard.engine.interfaces import load_implementations
     from oneguard.replay.events import Pack, build_events
@@ -213,7 +214,7 @@ def bench_laya(reps: int) -> int:
     per_line: list[float] = []
     triggered = 0
     for _ in range(reps):
-        for f in facts:
+        for f in [] if lines_only else facts:
             start = time.perf_counter()
             [signal] = signals.soft_signals(f, LAYA_BUDGET_S)
             per_event.append((time.perf_counter() - start) * 1000)
@@ -223,7 +224,10 @@ def bench_laya(reps: int) -> int:
             signals.BACKEND.predict(text)
             per_line.append((time.perf_counter() - start) * 1000)
     print(f"{len(facts)} purchases / {len(lines)} item lines × {reps} reps\n")
-    print(table([("soft_signals per purchase (laya)", per_event), ("Laya agent_directed per item line", per_line)]))
+    rows = [("soft_signals per purchase (laya)", per_event)] if per_event else []
+    print(table([*rows, ("Laya agent_directed per item line", per_line)]))
+    if lines_only:
+        return 0
     over = sum(ms > signals_budget_ms() for ms in per_event)
     print(f"\npurchases over the pipeline's {signals_budget_ms():.0f} ms soft-signal budget: {over}/{len(per_event)}")
     print(f"model-only triggers: {triggered}/{len(per_event)}")
@@ -231,14 +235,15 @@ def bench_laya(reps: int) -> int:
 
 
 def signals_budget_ms() -> float:
-    from oneguard.pipeline import SOFT_SIGNALS_MAX_S
+    from oneguard.pipeline import signal_budget_s_from_env
 
-    return SOFT_SIGNALS_MAX_S * 1000
+    return signal_budget_s_from_env() * 1000
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--laya", action="store_true", help="time the Laya soft signal instead of the engine")
+    parser.add_argument("--lines-only", action="store_true", help="with --laya: only the model call per item line")
     parser.add_argument("--reps", type=int, help="repetitions (default 100, or 10 with --laya)")
     parser.add_argument("--warmup", type=int, default=3, help="untimed repetitions first (engine mode)")
     args = parser.parse_args()
@@ -250,7 +255,7 @@ def main() -> int:
     if args.laya:
         logging.getLogger("oneguard.engine.signals").setLevel(logging.INFO)  # which checkpoint loaded
         os.environ.setdefault("ONEGUARD_SOFT_SIGNALS", "laya")
-        return bench_laya(args.reps or 10)
+        return bench_laya(args.reps or 10, args.lines_only)
     os.environ["ONEGUARD_SOFT_SIGNALS"] = "off"
     return bench_engine(args.reps or 100, args.warmup)
 

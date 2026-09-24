@@ -136,9 +136,11 @@ class PolicyDraft(ApiModel):
     draft_id: str
     card_id: str
     instruction: str
+    """The C1 text verbatim, or exactly ``policies.FORM_INSTRUCTION`` for a form draft."""
     checks: list[RuleCheck]
     uncertainty_policy: UncertaintyChoice
     open_questions: list[str]
+    """With no checks read, the first entry is ``policies.NO_CHECKS_QUESTION`` and C2 refuses the draft."""
     dry_run: DryRunResult
     compiler: Literal["llm", "form", "fallback"] | None = None
 
@@ -176,6 +178,7 @@ class Mandate(ApiModel):
     mandate_id: str
     card_id: str
     instruction: str
+    """Its draft's ``instruction``, unchanged by C4; never the joined check texts."""
     checks: list[RuleCheck]
     uncertainty_policy: Literal["ask", "decline", "approve"]
     open_questions: list[str]
@@ -264,6 +267,8 @@ class Decision(ApiModel):
             "latency_ms",
             "explanation_source",
             "resolved_by",
+            "run_id",
+            "run_started_at",
         }
     )
 
@@ -297,6 +302,8 @@ class Decision(ApiModel):
     explanation_source: Literal["template", "model"] | None = None
     resolved_by: Literal["customer", "timeout"] | None = None
     confirmable: Confirmable | None = None
+    run_id: str | None = None
+    run_started_at: Timestamp | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> Decision:
@@ -318,6 +325,11 @@ class ReplayStatus(ApiModel):
 
 
 class LiveRun(ApiModel):
+    """D3, D4, D7. ``customer_id`` / ``customer_name``: who holds ``card_id`` (the card the
+    platform's fixture profile runs the scenario on), once known."""
+
+    _omit_if_none = frozenset({"customer_id", "customer_name"})
+
     run_id: str
     scenario_id: str
     card_id: str
@@ -329,6 +341,32 @@ class LiveRun(ApiModel):
     total: int = Field(ge=0)
     worker_ok: bool
     last_error: str | None
+    customer_id: str | None = None
+    customer_name: str | None = None
+
+
+class ScenarioProfile(ApiModel):
+    """D8: the customer and card a scenario runs on, and who said so (``pack``: the local
+    data pack's authorities; the others: the platform, see ``store.schema.ScenarioProfile``)."""
+
+    customer_id: str
+    name: str
+    card_id: str
+    profile_id: str | None
+    source: Literal["pack", "bootstrap", "run", "authorization"]
+
+
+class Scenario(ApiModel):
+    """D8. ``served``: the platform serves it now; ``profile`` null until a bootstrap
+    profile or a run of it names its card; ``active_run_id``: a run of it still in
+    progress (running, or with purchases still open at the platform), else null."""
+
+    scenario_id: str
+    scenario_name: str
+    cardholder_instruction: str
+    served: bool
+    profile: ScenarioProfile | None
+    active_run_id: str | None
 
 
 class LedgerSnapshotEntry(ApiModel):
@@ -426,16 +464,33 @@ class ReplayRestartRequest(ApiModel):
 
 
 class CreateRunRequest(ApiModel):
-    """D3."""
+    """D3. ``force``: start even while the scenario (or another) has a run in progress."""
+
+    _omit_if_none = frozenset({"force"})
 
     scenario_id: str
     card_id: str
+    force: bool | None = None
+
+
+class ScenariosResponse(ApiModel):
+    """D8."""
+
+    scenarios: list[Scenario]
 
 
 class SoftSignalsToggle(ApiModel):
     """D5 request and response body."""
 
     enabled: bool
+
+
+class SoftSignalsState(ApiModel):
+    """D5 GET: whether the models run now, for live runs and for the offline replay. The
+    two differ until an operator sets D5 (api-contract §3.7)."""
+
+    live: bool
+    replay: bool
 
 
 # §3.8 errors --------------------------------------------------------------------------
@@ -452,6 +507,7 @@ ErrorCode = Literal[
     "compiler_timeout",
     "internal",
     "runs_disabled",
+    "run_active",
 ]
 
 

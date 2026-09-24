@@ -6,6 +6,7 @@ setup:
 
 test:
 	cd backend && . .venv/bin/activate && pytest -q
+	cd frontend && npm test
 
 lint:
 	cd backend && . .venv/bin/activate && ruff check .
@@ -13,6 +14,7 @@ lint:
 
 check:
 	cd backend && . .venv/bin/activate && ruff check . && pytest -q
+	cd frontend && npm run lint && npm test
 
 seed:
 	cd backend && . .venv/bin/activate && python -m oneguard.store.seed
@@ -43,9 +45,10 @@ demo-offline:
 	curl -s -X POST localhost:8000/api/dev/replay/restart -H 'Content-Type: application/json' \
 	  -d '{"scenario_id":"$(SCEN)","card_id":"$(CARD)","speed_ms":4000}'
 
+# The server at ONEGUARD_API (default the cloud app) decides; this only starts and follows the run.
 demo-live: SCEN ?= SCEN0101
 demo-live:
-	cd backend && . .venv/bin/activate && python -m oneguard.viseca.demo --scenario $(SCEN)
+	cd backend && . .venv/bin/activate && python -m oneguard.viseca.demo --scenario $(SCEN) $(if $(CARD),--card $(CARD)) $(if $(FORCE),--force)
 
 # The image Fly builds (Dockerfile); runs locally with `docker run -p 8080:8080 --env-file .env oneguard`.
 image:

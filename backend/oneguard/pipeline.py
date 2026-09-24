@@ -38,7 +38,7 @@ from oneguard import __version__
 from oneguard.api import models as api
 from oneguard.engine import stubs
 from oneguard.engine.ledger_base import Ledger, LedgerEntry
-from oneguard.engine.policy import add_ledger_results
+from oneguard.engine.policy import COUNT_FIELD, add_ledger_results
 from oneguard.engine.types import (
     EngineDecision,
     EvidenceRow,
@@ -57,7 +57,8 @@ log = logging.getLogger(__name__)
 BUDGET_ENV = "ONEGUARD_ENGINE_BUDGET_MS"
 DEFAULT_BUDGET_MS = 2000
 TIER2_MAX_S = 1.5
-SOFT_SIGNALS_MAX_S = 0.5
+SIGNAL_BUDGET_ENV = "ONEGUARD_SIGNAL_BUDGET_MS"
+DEFAULT_SIGNAL_BUDGET_MS = 500
 HUMAN_WINDOW_S = 120
 
 _API_DECISION = {"approve": "approved", "decline": "stopped", "step_up": "uncertain"}
@@ -71,6 +72,25 @@ _SESSION_NOTES = {
 def budget_ms_from_env() -> int:
     raw = os.environ.get(BUDGET_ENV, "").strip()
     return int(raw) if raw else DEFAULT_BUDGET_MS
+
+
+def signal_budget_s_from_env() -> float:
+    """The soft-signal cut-off (``ONEGUARD_SIGNAL_BUDGET_MS``, default 500 ms) in seconds.
+
+    Past it the keyword answer stands (signals.py). A value that is not a positive whole
+    number of ms keeps the default: a typo must not turn the model off or wait forever.
+    """
+    raw = os.environ.get(SIGNAL_BUDGET_ENV, "").strip()
+    if not raw:
+        return DEFAULT_SIGNAL_BUDGET_MS / 1000
+    try:
+        ms = int(raw)
+    except ValueError:
+        ms = 0
+    if ms <= 0:
+        log.warning("%s=%r is not a positive number of ms; using %d", SIGNAL_BUDGET_ENV, raw, DEFAULT_SIGNAL_BUDGET_MS)
+        ms = DEFAULT_SIGNAL_BUDGET_MS
+    return ms / 1000
 
 
 @dataclass
@@ -111,9 +131,16 @@ class PipelineContext:
         return version
 
 
-def period_days_of(policy: Policy) -> int | None:
-    """The shortest period window among the policy's period rules, or None (C2)."""
-    days = [r.period_days for r in policy.rules if r.scope == "period" and r.period_days]
+def period_days_of(policy: Policy, *, spend_only: bool = False) -> int | None:
+    """The shortest period window among the policy's period rules, or None (C2).
+
+    ``spend_only`` leaves out purchase counts (``cart.purchases_in_period``): the window
+    the platform's ``approved_spend_in_period_chf`` is reconciled over.
+    """
+    days = [
+        r.period_days for r in policy.rules
+        if r.scope == "period" and r.period_days and not (spend_only and r.field == COUNT_FIELD)
+    ]
     return min(days) if days else None
 
 
@@ -216,7 +243,7 @@ def decide_event(
     warnings: list[Signal] = fn["warning_signs"](facts, view, ctx.policy)
     soft: list[Signal] = []
     if ctx.signals_enabled:
-        budget = min(SOFT_SIGNALS_MAX_S, remaining_s())
+        budget = min(signal_budget_s_from_env(), remaining_s())
         soft = _optional_stage("soft_signals", lambda: fn["soft_signals"](facts, budget), [])
 
     engine: EngineDecision = fn["decide"](rules, protections, warnings, soft, ctx.policy, view)
@@ -326,8 +353,18 @@ def confirmable(entry: LedgerEntry, policy: Policy) -> api.Confirmable | None:
     return api.Confirmable(rule_id=rule.id, phrase=phrase)
 
 
-def to_api_decision(event: dict, entry: LedgerEntry, view: LedgerView, policy: Policy) -> api.Decision:
-    """The contract's ``Decision`` for a stored entry and the event it decided."""
+def to_api_decision(
+    event: dict,
+    entry: LedgerEntry,
+    view: LedgerView,
+    policy: Policy,
+    run_started_at: datetime | None = None,
+) -> api.Decision:
+    """The contract's ``Decision`` for a stored entry and the event it decided.
+
+    ``run_started_at`` is the real-clock start of the entry's run, when the caller has read
+    its ``runs`` row (C6 does).
+    """
     auth = event["authorization"]
     merchant = auth["merchant"]
     step_up = entry.outcome == "step_up"
@@ -382,4 +419,6 @@ def to_api_decision(event: dict, entry: LedgerEntry, view: LedgerView, policy: P
         explanation_source=entry.explanation_source,
         resolved_by=entry.resolved_by,
         confirmable=confirmable(entry, policy),
+        run_id=entry.run_id,
+        run_started_at=run_started_at,
     )

@@ -68,14 +68,14 @@ The first step that applies decides.
 | ID | Rule | Fail → | Unknown → |
 |---|---|---|---|
 | C1 | **Order limit.** Total in CHF, delivery included, vs the per-order limit. "At or below / no more than / max / up to" → equal passes. "Under / less than / below" → equal fails. | Decline | Uncertainty setting (total missing) |
-| C2 | **Period limit.** Final approvals in the window + reserved pending + this purchase ≤ limit. "Any seven days" = rolling 168 h before purchase time. "Per month" = rolling 30 days unless "calendar month". Declines never count. | Decline | — |
+| C2 | **Period limit.** Final approvals in the window + reserved pending + this purchase ≤ limit. "Any seven days" = rolling 168 h before purchase time. "Per month" = rolling 30 days unless "calendar month". Declines never count. A purchase count per period ("one a day", "two orders a week", field `cart.purchases_in_period`) counts the same way: final approvals + pending step-ups on this card in the window + this purchase ≤ the count; declines never count, a redelivery counts once, and a breach caused only by pending step-ups asks (M5). | Decline | Uncertainty setting (count not available, or its window differs from the policy's shortest period) |
 | C3 | **Allowed item types.** Every cart line's `item_category` in the allowed set. Shop category proves nothing about the basket. | Decline | — |
 | C4 | **Blocked item types.** No cart line in the blocked set. | Decline | — |
 | C5 | **Specific item.** The item bought is the item asked for; a similar item is not it (trail ≠ road shoe; gift voucher ≠ monitor). | Decline | — |
 | C6 | **Item details.** Named details (size, colour, model, dimensions) match. Often only in shop text: extract, trust nothing else in it. | Decline | Uncertainty setting (not stated or self-contradictory) |
 | C7 | **Order terms.** Returns/cancellation/warranty as named. "14 days or more" → 14 passes, 7 fails. "Final sale / no returns / non-returnable" = 0 days. Cancellation reads `order_cancellable`: `"false"` fails a named cancellation term. When sources disagree, the stricter applies. | Decline | Uncertainty setting (not stated, `order_returnable = "unknown"`, or `order_cancellable = "unknown"` when cancellation is named) |
 | C8 | **Shop type.** `merchant_category` is the named type (sustainable goods ≠ specialist sports retailer, even selling the right shoe). `merchant_mcc` is secondary evidence; `merchant_category` decides. | Decline | — |
-| C9 | **Known shop.** As defined in §3. "Shop I use regularly" and "seller I have bought from before" both map here; see Q9 for a stricter reading of "regularly". | Decline | — |
+| C9 | **Known shop.** As defined in §3. "Shop I use regularly" and "seller I have bought from before" both map here; see Q9 for a stricter reading of "regularly". A customer with no purchase history yet (no approved purchase in history on any card, none in this run) makes C9 `unknown` (reason code `no_purchase_history`), not a fail: "You have no purchase history yet, so I can't tell whether you've used this shop - approve once and I'll remember it." The customer's yes on that ask is remembered for the shop, whatever the items. | Decline | Uncertainty setting (no purchase history yet) |
 | C10 | **Nothing extra.** Cart contains only what was asked; add-ons (protection plans, subscriptions, accessories) fail. Explanation says what to remove. | Decline | — |
 | C11 | **Uncertainty setting.** Apply the customer's choice when any rule is `unknown`. Default `ask`. | — | — |
 | C12 | **Other restrictions** (expected in hidden scenarios): per-item limit and quantity; country or currency; time of day / weekday; delivery date. Same pass/fail/unknown logic. | Decline | Uncertainty setting |
@@ -119,12 +119,25 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 - **W-rule 2** Two or more weak signs → Ask. One weak sign alone → no effect.
 - **W-rule 3** "Pause anything that looks like someone else is driving" confirms this section is wanted; it does not lower the bar.
 - **W-rule 4** Recovery: after a burst (session watch on), the next otherwise-clean purchase asks once; the customer's approval turns the watch off; a no or a timeout keeps it on. The watch is per card and carries into later live sessions.
+- **W-rule 5** No baseline yet: with no approved purchase in history (any card) and no final approval in this run, W1, W3 and W4 do not trigger and show "no baseline yet" as info; from the first final approval in the run, that purchase's device, shop country and amount count as known (a purchase with no device id still triggers W1).
 
 ## 9. Explanations
 
-- **E1** One plain sentence per outcome, written for the customer.
-- **E2** Names the customer's own rule and the deciding fact: "Declined: returns are only 7 days; you asked for at least 14."
-- **E3** For Decline, what would make it a yes: "Remove the protection plan and I'll approve the shoes." (API: `counterfactual`.)
+- **E1** One sentence: "{Outcome} CHF {amount}: {clause}." Outcome is Approved, Declined or Waiting for you. The clause comes from the deciding rule or signal, one clause, at most 15 words (an amount counts as one word). At most one short clause is joined to it: the second of two warning signs that decide together, else "the shop's instructions to the agent were ignored" when shop text tried to instruct the agent but did not decide. Other failing rules and signs stay in the evidence. Approvals read "Approved CHF {amount}: it is within the limits you set."; a re-quote reads "Approved CHF {amount}: it re-quotes the CHF {x} order declined {n} days earlier and is within your limits.". A lookalike shop (A7) is named whenever it fired, even when another rule decided. No authorization id ever appears in a message or counterfactual: an earlier order is named by amount and time ("the CHF 70.00 order 6 min earlier"); the id stays in `related`. A step-up closed by the timeout reads "Expired: no answer within {n} s; nothing was approved."
+- **E2** One template per field names the customer's own rule and the deciding fact (clause / counterfactual):
+  - known shop: "You haven't bought from {shop} before." / "Would approve at a shop you've bought from before."
+  - amount: "CHF {x} is over your CHF {cap} limit." / "Would approve at CHF {cap} or less." (per item: "{item} at CHF {x} is over your CHF {cap} item limit.")
+  - period: "This would take the week to CHF {total}, over your CHF {limit}." / "Would approve at CHF {room} or less this week." ("day" / "today" for 1 day, "month" / "this month" for 30, "{n} days" / "in these {n} days" otherwise; no room left: "Nothing more fits this week."). Only because of step-ups still waiting: "With CHF {w} unanswered, this would take …" / "Would approve if you decline the unanswered CHF {w}."
+  - purchase count: "You allowed one order per day; one was already approved today at 12:10." / "Would approve from tomorrow at 12:10."
+  - item type: "{item} is {category}, not {allowed}." (excluded: "{item} is {category}, which you excluded.") / "Would approve without {item}."
+  - shop type: "{shop} is a {type} shop, not a {wanted} shop." / "Would approve at a {wanted} shop."
+  - size: "Size {x}; you asked for {y}." / "Would approve in size {y}."
+  - returns: "Returns: {x}; you asked for {y} days or more." ({x} is "none" for final sale, "not stated" when the shop is silent) / "Would approve with returns of {y} days or more."
+  - country: "{shop} is in {country}, not {wanted}." / "Would approve at a shop in {wanted}."; weekday: "Placed on a {day}, not {days}." / "Would approve on {days}."; quantity: "Quantity {x}; you allowed {n} or fewer." / "Would approve with a quantity of {n} or fewer."
+  - requested item: "The cart has {items}, not the {wanted} you asked for." / "Would approve with the {wanted}."; nothing extra: "The cart adds {items}, which you didn't ask for." / "Would approve without {items}."
+  - signs and protections: injection "The shop's text had instructions aimed at the agent; they were ignored, so you decide."; duplicate "Same shop and items as the CHF {x} order {n} min earlier."; split "Together with the CHF {x} order {n} min earlier, CHF {total} is over your CHF {cap} limit."; recurring "{item} adds a recurring charge you did not ask for."; lookalike "{shop} is 1 letter away from {known shop}, a shop you know; it's a different shop."; no history "You have no purchase history yet, so we can't tell if you know this shop."; session watch "After recent unusual attempts on this card, we check with you until you approve one."
+  A broken rule's clause is also its evidence detail (engine/policy.py); a typed rule on known shop, item type or shop type is checked by the same check as the flag, so both read alike.
+- **E3** What would make it a yes is the API's `counterfactual` ("Would approve …"), never part of the message. A decline joins every failing rule's counterfactual ("Would approve at CHF 400.00 or less and without Extended protection plan."); a step-up has the deciding rule's or signal's, when there is one.
 - **E4** For Ask, what is uncertain: "The seller doesn't state a return policy."
 - **E5** For A1: say instructions were found and ignored; never repeat the injected instruction as if true.
 - **E6** No codes, jargon or "risk detected".
@@ -134,13 +147,14 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 ## 10. Turning words into rules
 
 - **T1** Every stated restriction becomes a rule. **T2** No invented limits; vague requests produce open questions. **T3** Boundary wording preserved ("under" ≠ "at or below"). **T4** Foreign-currency limits converted with M1 and shown. **T5** Customer confirms before rules apply; then tighten only. **T6** Revoke stops everything: later purchases under it are declined (platform pre-check; queued ones per Q6). **T7** Same rules from DE/FR/IT/EN — LLM compiler path only; the fallback parser is English.
+- A requested product ("buy/order/get a|an|the|my|one <product>") is C5 on both compiler paths. When the item catalogue files that product under one item type ("hiking boots": sporting goods; "27-inch monitor": electronics; "camera lens": photography), C3 is added with that type (inferred); when it files it under none ("a bag"; bare "boots", which the catalogue has as sporting goods and clothing), C5 stays and the open question is "Which kind of item or shop counts as <product>?". Category words ("groceries", "electronics") stay C3 and are never a requested item. An LLM reading that loses the parser's requested item is rejected for the parser's (lint floor).
 
 ## 11. Open questions and defaults
 
 | # | Question | Default | Why |
 |---|---|---|---|
 | Q1 | One purchase or several per policy? | Each purchase judged on its own; only near-identical repeats caught (A3). | Viseca's notes call AU0023 "fully compliant" and AU0042 "a legitimate re-quote". |
-| Q2 | Ask with no answer in 120 s? | **Closed.** Expiry → post `/resolve` `decline` with message "No answer within 120 s; nothing was approved", evidence `resolved_by: timeout`. Not spent; reservation released. The sandbox expires step-ups itself at the same moment, so the worker reads the platform's state first and posts only while it is still pending (decisions.md). | Viseca Q&A 24 Sep; live smoke 24 Sep. |
+| Q2 | Ask with no answer in 120 s? | **Closed.** Expiry → post `/resolve` `decline` with message "No answer within 120 s; nothing was approved", evidence `resolved_by: timeout`. Not spent; reservation released. The stored and served message becomes "Expired: no answer within 120 s; nothing was approved." (the configured human window), the counterfactual is dropped and `explanation_source` is kept. The sandbox expires step-ups itself at the same moment, so the worker reads the platform's state first and posts only while it is still pending (decisions.md). | Viseca Q&A 24 Sep; live smoke 24 Sep. |
 | Q3 | Hidden scenarios at judging? | Assume yes. | Rules must survive unseen wording. |
 | Q4 | Seven days rolling or calendar? | Rolling 168 h. | Standard reading. |
 | Q5 | Pending reserved against limits? | Yes (M5). | Otherwise late approval overspends. |

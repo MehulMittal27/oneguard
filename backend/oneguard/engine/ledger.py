@@ -13,7 +13,10 @@ Rules it enforces (docs/rules.md):
 - Q2  an expired step-up is recorded as ``expired``, declined, and releases its hold.
 - C2  the period window is rolling on simulated time: final approvals with
       ``ts_sim >= at - period_days`` and ``ts_sim < at`` (api-contract §3.3), per card.
+      The same window counts purchases (``period_count``: approvals + pending).
 - Q7  known shops are customer level: history (any card) plus this run's approvals.
+- W1, W3 known devices and countries: history plus this run's approvals (their stored
+      events); W4 the largest approved purchase, the same way.
 
 Both PM decisions below carry over between sessions for live runs, and stay inside the
 run for replays (``runs.kind``), so replaying a scenario always decides the same way.
@@ -27,9 +30,11 @@ watch does.
 
 Remembered confirmations (PM decision "ask once, then remember"): when the customer
 approves a step-up, each of its ``deciding_ids`` is remembered for that shop and those
-items. For a live run, answers from earlier live runs under the same mandate count too;
-a new or changed instruction (new mandate) starts with no memory. Exposed as
-``LedgerView.confirmed_keys``; ``decide.py`` only uses it for restrictions no data can check.
+items, and for that shop whatever the items (``ledger_base.confirmation_keys``). For a
+live run, answers from earlier live runs under the same mandate count too; a new or
+changed instruction (new mandate) starts with no memory. Exposed as
+``LedgerView.confirmed_keys``; ``policy.add_ledger_results`` reads the shop keys only for
+a known-shop check (C9) and the item keys only for restrictions no data can check.
 
 Writes commit per call, so a decision is durable before it is posted to Viseca.
 """
@@ -46,13 +51,15 @@ from sqlalchemy.orm import Session
 from oneguard.engine.ledger_base import (
     PRIOR_WINDOW,
     LedgerEntry,
-    confirmation_key,
+    check_resolution,
+    confirmation_keys,
     is_final_approval,
     known_merchant_names,
+    period_counts,
 )
 from oneguard.engine.ledger_base import Ledger as LedgerBase
 from oneguard.engine.types import HistoryIndex, LedgerView, PriorDecision
-from oneguard.store.schema import Decision, MerchantFlag, Run
+from oneguard.store.schema import Decision, EventRaw, MerchantFlag, Run
 
 CENT = Decimal("0.01")
 
@@ -129,12 +136,14 @@ class StoreLedger(LedgerBase):
             maxima.append(hist_max)
 
         flagged = set(self.session.scalars(select(MerchantFlag.merchant_id).where(MerchantFlag.run_id == run_id)))
+        run_devices, run_countries = self._approved_devices_and_countries([d.live_authorization_id for d in approved])
         known = set(on_card) | set(other_cards)
 
         return LedgerView(
             period_spent_chf=float(sum((_money(d.spent_chf) for d in in_window), Decimal(0))),
             period_reserved_chf=float(sum((_money(d.reserved_chf) for d in in_window), Decimal(0))),
             period_window_start=window_start,
+            **period_counts(in_window),
             priors=[
                 PriorDecision(
                     authorization_id=d.live_authorization_id,
@@ -149,7 +158,7 @@ class StoreLedger(LedgerBase):
                     approved=is_final_approval(d.outcome, d.final, d.uncertain_outcome),
                 )
                 for d in run
-                if d.ts_sim >= at - PRIOR_WINDOW
+                if d.ts_sim >= at - PRIOR_WINDOW or d.outcome == "decline"  # declines: A5 re-quotes
             ],
             known_merchant_ids=known,
             known_merchant_ids_on_card=set(on_card),
@@ -157,8 +166,9 @@ class StoreLedger(LedgerBase):
             known_merchant_names=known_merchant_names(self.history, known),
             merchant_approvals_on_card=on_card,
             merchant_approvals_other_cards=other_cards,
-            known_device_ids=set(self.history.known_devices(customer_id)) if self.history else set(),
-            known_countries=set(self.history.known_countries(customer_id)) if self.history else set(),
+            known_device_ids=(set(self.history.known_devices(customer_id)) if self.history else set()) | run_devices,
+            known_countries=(set(self.history.known_countries(customer_id)) if self.history else set())
+            | run_countries,
             max_approved_chf=max(maxima) if maxima else None,
             flagged_merchant_ids=flagged,
             frozen=self._frozen(self._earlier_card_decisions(run_id, card_id)
@@ -166,6 +176,22 @@ class StoreLedger(LedgerBase):
             # P1 contract change, P2 to review: the field exists now, so no feature check.
             confirmed_keys=self._confirmed_keys(run_id, at),
         )
+
+    def _approved_devices_and_countries(self, live_ids: list[str]) -> tuple[set[str], set[str]]:
+        """Device and shop country of this run's final approvals (W1, W3), read from the
+        stored events (``events_raw``, written by the worker and the offline replay before
+        the next decision). An approval with no stored event teaches nothing."""
+        if not live_ids:
+            return set(), set()
+        devices: set[str] = set()
+        countries: set[str] = set()
+        for event in self.session.scalars(select(EventRaw.event).where(EventRaw.live_authorization_id.in_(live_ids))):
+            auth = event.get("authorization") or {}
+            if auth.get("customer_device_id"):
+                devices.add(auth["customer_device_id"])
+            if (auth.get("merchant") or {}).get("merchant_country"):
+                countries.add(auth["merchant"]["merchant_country"])
+        return devices, countries
 
     @staticmethod
     def _frozen(decisions: list[Decision]) -> bool:
@@ -222,8 +248,7 @@ class StoreLedger(LedgerBase):
         earlier = self._earlier_live_runs(run_id, "mandate")
         if earlier:
             rows += self.session.scalars(select(Decision).where(Decision.run_id.in_(earlier), *customer_ok))
-        return {confirmation_key(rule_id, d.merchant_id, item_id)
-                for d in rows for rule_id in d.deciding_ids for item_id in d.item_ids}
+        return {key for d in rows for key in confirmation_keys(d.deciding_ids, d.merchant_id, d.item_ids)}
 
     # --- writes (each commits: a decision is durable before it is posted) ---------------
     def record(self, entry: LedgerEntry) -> LedgerEntry:
@@ -269,13 +294,17 @@ class StoreLedger(LedgerBase):
         decision: Literal["approve", "decline"],
         resolved_by: Literal["customer", "timeout"],
         at: datetime,
+        *,
+        message: str | None = None,
     ) -> LedgerEntry:
         row = self._pending_row(authorization_id)
         if row.outcome != "step_up" or row.final:
             raise ValueError(f"{authorization_id} is not awaiting an answer")
-        if resolved_by == "timeout" and decision != "decline":
-            raise ValueError("a timeout only ever declines (rules.md Q2)")
+        check_resolution(decision, resolved_by, message)
         approved = decision == "approve"
+        if message is not None:
+            row.message = message
+            row.counterfactual = None
         row.final = True
         row.uncertain_outcome = "expired" if resolved_by == "timeout" else ("approved" if approved else "declined")
         row.spent_chf = _money(row.billing_amount_chf) if approved else _money(0)

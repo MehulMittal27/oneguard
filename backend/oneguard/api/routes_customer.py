@@ -47,23 +47,30 @@ def reply(model: BaseModel, status: int = 200) -> JSONResponse:
 
 @router.get("/customers", response_model=api.CustomersResponse)
 async def list_customers(request: Request) -> JSONResponse:
-    """C12. ``card_id``: the card a scenario runs on, else the card of an active policy."""
+    """C12. ``scenario_ids``: every scenario bound to the customer's cards (the local pack's
+    and the ones the platform named, ``Services.bindings``). ``live``: one of them is served
+    now (the worker's ``served_scenarios``); a store that never reached the platform counts
+    every bound scenario, so the offline replay still has its customers. ``card_id``: the
+    card of their newest live scenario, else newest scenario, else of an active policy."""
     s = services(request)
     rows = await s.db(queries.customers, s.db_engine)
     active = await s.db(queries.mandates, s.db_engine, "active")
+    bound = await s.bindings()
+    served = await s.db(queries.served_scenarios, s.db_engine)
     policy_card = {m.customer_id: m.card_id for m in active}
     customers = []
     for row in rows:
-        bindings = s.scenarios.get(row.customer_id, [])
-        card = bindings[0].card_id if bindings else policy_card.get(row.customer_id)
+        bindings = bound.get(row.customer_id, [])
+        live = [b for b in bindings if served is None or b.scenario_id in served]
+        newest = max(live or bindings, key=lambda b: b.scenario_id, default=None)
         customers.append(
             api.Customer(
                 customer_id=row.customer_id,
                 name=row.persona_name,
                 home_region=row.home_region,
-                card_id=card,
+                card_id=newest.card_id if newest else policy_card.get(row.customer_id),
                 scenario_ids=[b.scenario_id for b in bindings],
-                live=bool(bindings),
+                live=bool(live),
             )
         )
     return reply(api.CustomersResponse(customers=customers))
@@ -161,7 +168,7 @@ def build_decisions(
         policy = decided_under.get(item.entry.mandate_id) or Policy(
             mandate_id=item.entry.mandate_id, status="active", instruction="", rules=[], uncertainty_policy="ask"
         )
-        decisions.append(to_api_decision(item.event, item.entry, view, policy))
+        decisions.append(to_api_decision(item.event, item.entry, view, policy, item.run_started_at))
     return decisions
 
 
@@ -204,7 +211,7 @@ async def create_draft(card_id: str, body: api.PolicyDraftRequest, request: Requ
     if body.form is not None:
         rules, flags = policies.form_rules(body.form)
         uncertainty = body.form.uncertainty_policy
-        instruction = policies.form_instruction(rules, uncertainty)
+        instruction = policies.FORM_INSTRUCTION
         open_questions: list[str] = []
         dry_run = policies.form_dry_run(rules, flags, s.history, card_id, customer_id)
         compiler = "form"
@@ -218,7 +225,9 @@ async def create_draft(card_id: str, body: api.PolicyDraftRequest, request: Requ
         open_questions = list(compiled.open_questions)
         dry_run = compiled.dry_run
         compiler = compiled.compiler
-    if policies.per_order_cap(rules) is None and policies.NO_CAP_QUESTION not in open_questions:
+    if not rules:
+        open_questions = [policies.NO_CHECKS_QUESTION, *(q for q in open_questions if q != policies.NO_CAP_QUESTION)]
+    elif policies.per_order_cap(rules) is None and policies.NO_CAP_QUESTION not in open_questions:
         open_questions.append(policies.NO_CAP_QUESTION)
 
     checks = [policies.rule_check(r) for r in rules]
@@ -291,8 +300,10 @@ async def _with_usage(s: Services, row: Mandate) -> api.Mandate:
 async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: Request) -> JSONResponse:
     """C2: the checks sent back are accepted ids; their text is ignored.
 
+    A draft with no checks at all is refused (409 ``lint_failed``) before anything else.
     The accepted subset is re-linted (a per-purchase cap, no dropped ``exact`` check),
-    then created and confirmed at Viseca with the instruction verbatim, then stored.
+    then created and confirmed at Viseca with the instruction verbatim (a form draft sends
+    its accepted checks as sentences instead: the platform wants text), then stored.
     A new policy replaces the card's active one, which is revoked.
     """
     s = services(request)
@@ -302,6 +313,10 @@ async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: R
             raise not_found(f"No policy draft {draft_id}.")
         if row.confirmed_at is not None:
             raise ApiError(409, "draft_confirmed", "This draft is already confirmed.")
+        if not row.checks:
+            raise ApiError(
+                409, "lint_failed", f"Not confirmed: {policies.NO_CHECKS_REASON}.", {"missing": ["per_order_limit"]}
+            )
         draft_rules, flags = policies.load_rules(row.rules, row.checks)
         by_id = {r.id: r for r in draft_rules}
         chosen = [c.id for c in body.checks]
@@ -320,7 +335,7 @@ async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: R
         if s.client is not None:
             created = await s.viseca(
                 s.client.create_mandate(
-                    row.instruction,
+                    policies.form_instruction(accepted, uncertainty) if row.compiler == "form" else row.instruction,
                     [rule_to_viseca(r) for r in accepted],
                     uncertainty,
                     guidance=[r.text for r in accepted],
@@ -350,7 +365,7 @@ async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: R
         replaced = await s.db(queries.confirm_draft, s.db_engine, draft_id, mandate, viseca_draft_id, now)
         for old in replaced:
             s.bind_mandate(old)
-            await _revoke_at_platform(s, old, strict=False)
+            await revoke_at_platform(s, old, strict=False)
         s.bind_mandate(mandate)
         return reply(await _with_usage(s, mandate))
 
@@ -426,7 +441,7 @@ async def tighten_policy(card_id: str, body: api.TightenRequest, request: Reques
         return reply(await _with_usage(s, updated))
 
 
-async def _revoke_at_platform(s: Services, row: Mandate, *, strict: bool) -> None:
+async def revoke_at_platform(s: Services, row: Mandate, *, strict: bool) -> None:
     """Revoke at Viseca (the worker flips its policy first, so nothing more is approved).
 
     A platform that already has it revoked (404 / 409) counts as done. With ``strict``
@@ -473,7 +488,7 @@ async def revoke_policy(card_id: str, request: Request) -> Response:
                 queries.update_mandate, s.db_engine, row.mandate_id, status="revoked", revoked_at=s.now()
             )
             s.bind_mandate(row)
-        await _revoke_at_platform(s, row, strict=True)
+        await revoke_at_platform(s, row, strict=True)
     return Response(status_code=204)
 
 

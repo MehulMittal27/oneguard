@@ -84,8 +84,71 @@ and the bare Laya `agent_directed` call per item line (56).
   two runs before it; the first includes torch's first import after install). It happens
   once at API startup, never inside a decision.
 - 0 of 450 purchases went over the pipeline's 500 ms soft-signal budget
-  (`SOFT_SIGNALS_MAX_S`), so on this machine Laya never falls back to keywords for time.
+  (`ONEGUARD_SIGNAL_BUDGET_MS`), so on this machine Laya never falls back to keywords for time.
 - No purchase in the pack triggered on the model alone (0/450): with Laya on, the soft
   signal answers exactly as the keywords do on this pack.
 - Laya warns at load that the checkpoint ships out-of-range temperatures and treats the
   affected confidences as uncalibrated; the 0.6 threshold (signals.py) is unchanged.
+
+## 3. Soft signal: Laya in the image (CPU torch)
+
+The deploy image (Dockerfile: CPU-only torch, `laya-typed-decisions` baked in), the same
+`bench_engine.py --laya --reps 10`, run inside the container
+(`docker exec <container> python scripts/bench_engine.py --laya`).
+
+Local container, Docker Desktop on an Apple-silicon laptop (linux/aarch64, 6 CPUs), torch
+CPU only:
+
+| stage | n | P50 ms | P95 ms | max ms |
+|---|---:|---:|---:|---:|
+| soft_signals per purchase (laya) | 450 | 324.2 | 656.7 | 1357.5 |
+| Laya agent_directed per item line | 560 | 285.4 | 395.8 | 711.1 |
+
+- Load 13.5 s in the bench process; the app itself was answering `/healthz` with
+  `model_loaded: true` 7 s after start. App RSS with the model: 2.1 GB.
+- 115 of 450 purchases went over the 500 ms budget: a purchase asks once per item line, so
+  multi-line carts fall back to keywords for time (never less cautious, signals.py).
+- A second process with its own model copy takes another ~2.5 GB, so on the 4 GB machine the
+  bench does not run beside the app: it runs on a throwaway machine of the same size and
+  image, flags before the image and the command after `--`:
+
+```bash
+fly machine run -a oneguard --vm-size performance-2x --vm-memory 4096 -r lhr --restart no --rm \
+  --detach registry.fly.io/oneguard:<tag> -- python scripts/bench_engine.py --laya --lines-only --reps 3
+fly logs -a oneguard -i <machine id> --no-tail
+```
+
+Fly, `shared-cpu-4x` with 4 GB in lhr (x86_64), image `oneguard:9aeb5d2`, 24 Sep 2026: one
+warm-up call, then the 56 item lines three times (168 calls):
+
+| pass | n | P50 ms | P95 ms | max ms | CPU steal |
+|---|---:|---:|---:|---:|---:|
+| 1 | 56 | 267.1 | 361.2 | 391.7 | 1% |
+| 2 | 56 | 268.8 | 367.1 | 654.9 | 1% |
+| 3 | 56 | 260.1 | 308.0 | 353.0 | 1% |
+| **all** | 168 | **263.8** | **343.8** | 654.9 | |
+
+Then a fresh machine of the same size, `bench_engine.py --laya --reps 3` (per purchase 135,
+then per item line 168, about 340 model calls after the load):
+
+| stage | n | P50 ms | P95 ms | max ms |
+|---|---:|---:|---:|---:|
+| soft_signals per purchase (laya) | 135 | 327.5 | 3712.0 | 6556.4 |
+| Laya agent_directed per item line | 168 | 320.1 | 3996.4 | 5763.3 |
+
+55 of 135 purchases went over the 500 ms budget.
+
+- Load (`signals.warm()`) 34-35 s; the live app took about as long (checkpoint loaded 41 s
+  after the machine update) before it answered, inside the 120 s health grace. Live app RSS
+  with the model: 2.2 GB of 4 GB.
+- **Shared CPU throttles.** A shared vCPU bursts on a balance and drops to its baseline share
+  when the balance runs out. The short run above stayed inside it (1% steal); the model load
+  plus a few hundred calls did not (P95 over 3.5 s), and the full `--laya` run (1,120 calls)
+  reached 57% steal and had not finished after 30 minutes. So the shared P95 is above 450 ms
+  and the machine moves to `performance-2x` (dedicated CPUs, docs/decisions.md).
+- The budget is per purchase: `pipeline.py` gives `soft_signals` one budget, and
+  `LayaSignals` waits that long for one job that asks every item line in turn. Past it the
+  keyword answer stands (`source: merchant_text`): the decision is the one `keywords` would
+  give, never less cautious, and it waits at most the budget. The pack has no model-only
+  trigger, so its outcomes do not change. The unfinished job keeps the one Laya thread busy,
+  so a purchase right behind it waits in the queue and can fall back too.
