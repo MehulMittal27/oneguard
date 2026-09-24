@@ -10,7 +10,7 @@ avoid overwriting each other. Paste it into your agent together with `CLAUDE.md`
 | Lane | Person | Owns these paths (and only these) | Does not touch |
 |---|---|---|---|
 | P1 Integration & platform | Mehul | `backend/oneguard/pipeline.py`, `backend/oneguard/viseca/`, `backend/oneguard/api/`, `backend/oneguard/store/` (schema, engines, seed, HistoryIndex), `Dockerfile`, `fly.toml`, `Makefile`, root `README.md`, all of `docs/`, the interface files in §3 | engine internals, compiler internals, frontend |
-| P2 Engine core | Trim | `backend/oneguard/engine/facts.py`, `policy.py`, `ledger.py`, `decide.py`, `backend/tests/test_engine_core*.py` | protections, warnings, explain, signals, anything outside engine/ |
+| P2 Engine core | Trim | `backend/oneguard/engine/facts.py`, `policy.py`, `ledger.py`, `decide.py`, `backend/tests/test_engine_core*.py`, `backend/scripts/bench_engine.py` | protections, warnings, explain, signals, anything outside engine/ |
 | P3 Frontend | Yasin | everything under `frontend/` | anything under `backend/`, `docs/api-contract.md` (propose changes to P1) |
 | P4 LLM layer | Rozhina | `backend/oneguard/llm/` (except `provider.py` interface), `backend/oneguard/compiler/`, `backend/oneguard/engine/tier2.py`, `backend/oneguard/engine/tier3.py`, `backend/tests/test_compiler*.py`, `test_tier*.py` | the deterministic engine, api, viseca |
 | P5 Guardrails & quality | Dinesh | `backend/oneguard/engine/protections.py`, `warnings.py`, `signals.py`, `explain.py`, `backend/oneguard/replay/`, `backend/tests/test_oracle.py`, `test_protections*.py`, `test_replay*.py`, `test_no_scenario_refs.py`, `.github/workflows/` | facts/policy/ledger/decide, compiler, api, frontend |

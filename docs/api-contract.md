@@ -122,6 +122,9 @@ MandateUsage { per_order_limit_chf: number|null,                      // NEW —
                period_window_start: string,    // simulated time, ISO 8601
                pending_chf: number,            // stepped-up, awaiting the customer — not spent
                fulfilment?: { bought: number, requested: number } | null,   // single-item mandates
+               confirmations?: [{ rule_text: string, merchant_name: string,  // NEW: "things you've confirmed":
+                                  item_name: string }],                     // remembered yeses (ask once,
+                                                                            // then remember); names untrusted
                as_of: string }                 // simulated time of the last decision
 
 Decision {
@@ -244,7 +247,7 @@ expire — that is a broken state, not a degraded one.
 | `authorization.local_hour` | purchase time in Europe/Zurich, 0–23; time-of-day rules |
 | `unverifiable` | a stated restriction no field can check (e.g. "from the official ticket seller"); always `unknown`, so C11 applies |
 
-C2 (`scope: period`) is not evaluated with the other customer rules: it needs the run's spending memory, so decide.py evaluates it via `policy.evaluate_period_rule` with the LedgerView's spent and reserved amounts (M4, M5).
+C2 (`scope: period`) is not evaluated with the other customer rules: it needs the run's spending memory. C2 and remembered answers are added by the pipeline via `policy.add_ledger_results`, from the LedgerView's spent and reserved amounts (M4, M5) and `confirmed_keys`, so decide and explain both see them.
 
 Extraction from `item_details` is allowlisted regex only, produces facts, never instructions.
 
@@ -279,9 +282,12 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 - The worker never blocks on a pending step-up; polling continues.
 - C8 after the window → 409. A GET of C6 after the window marks the decision
   `uncertain_outcome: 'expired'`, `status: 'final'` server-side (so a reload agrees). On
-  expiry the backend posts `/resolve` `decline`, message "No answer within 120 s; nothing
-  was approved", `resolved_by: timeout` (rules.md Q2). Not spent. A customer answer through
-  C8 sets `resolved_by: 'customer'`.
+  expiry the backend first reads the platform's state (`GET /v1/authorizations?run_id=`):
+  Viseca expires step-ups itself at the same moment, and if it already has, that result is
+  recorded and nothing is posted. Still pending → `/resolve` `decline`, message "No answer
+  within 120 s; nothing was approved", `resolved_by: timeout` (rules.md Q2); on a 409 the
+  state is read again and recorded. Never a second `/resolve` for the same id. Not spent. A
+  customer answer through C8 sets `resolved_by: 'customer'`.
 - A step-up renders the **complete** purchase (all lines, delivery fee, currency, recurring
   flag, flagged text).
 
@@ -291,8 +297,9 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
   deleted. Pending step-ups are shown as cancelled **only** after Viseca confirms their
   state. A revoked card can receive a new policy (new draft → new mandate).
 - Session freeze (`session.trust = 'frozen'`) is engine state, not a mandate change: after a
-  burst the engine step-ups the next otherwise-clean purchase once
-  (`session_recovered` on approval), then relaxes. The step-up card may offer a shortcut to
+  burst the engine step-ups the next otherwise-clean purchase once (`session_watch`;
+  `session_recovered` on approval), then relaxes; a no or a timeout keeps the watch on. The
+  watch is per card and carries into later live sessions (rules.md W-rule 4). The step-up card may offer a shortcut to
   the existing RevokeSheet.
 
 ### 3.7 Soft signals (Laya)
@@ -303,6 +310,8 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
   `evidence` rows with `source: 'model'` and may raise `approve → uncertain`. It can never
   lower `stopped` or override a policy check. `engine_version` records whether the model
   was on, so a replay with it off is comparable.
+- `ONEGUARD_SOFT_SIGNALS`: `off` = no soft signal; `keywords` = the A1 pattern list;
+  `laya` = triggered if keywords OR Laya fire (Laya can only add, never clear a keyword hit).
 - Tier-2 fact extraction and tier-3 explanation use the same provider interface as the
   compiler (OpenAI first, model-agnostic).
 
@@ -340,7 +349,9 @@ Existing: `within_limits`, `rule_satisfied`, `per_order_limit_exceeded`,
 Added: `split_order_suspected`, `requote_accepted`, `already_fulfilled`,
 `recurring_charge_added`, `wrong_size`, `session_recovered`, `on_other_card`,
 `foreign_currency_converted` (info), `ledger_mismatch` (info), `period_reserved_pending`,
-`shop_terms_contradictory`.
+`shop_terms_contradictory`, `rule_not_met` (a C12 rule with no specific code: per-item
+price, quantity, country, weekday, delivery date), `unusual_activity` (two weak warning
+signs), `session_watch` (the one ask after a burst, rules.md W-rule 4).
 
 Development only: `stub`, emitted only while `ONEGUARD_STUBS` stubs `decide`
 (`backend/oneguard/engine/stubs.py`); never in a live run.
@@ -373,6 +384,7 @@ neutral fallback for unknown codes.
 8. `Decision.explanation_source` and `Decision.resolved_by` in `types.ts`; `mergeDecisions.sameDecision` also compares `explanation_source` and `counterfactual` so a tier-3 rewrite re-renders.
 9. Policy screen renders DryRunResult.examples and dry_run.agent_history as one line
 10. PolicyDraft.compiler == 'fallback' shown as a banner; Decision.explanation_source shown as a subtle tag
+11. Optional: `Mandate.usage.confirmations` as a "Things you've confirmed" list on the policy screen (names rendered as plain text)
 
 No endpoint changes. No screen removals. Tighten UI stays dormant.
 

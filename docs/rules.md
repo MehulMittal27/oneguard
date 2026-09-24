@@ -118,7 +118,7 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 - **W-rule 1** One strong sign → Ask.
 - **W-rule 2** Two or more weak signs → Ask. One weak sign alone → no effect.
 - **W-rule 3** "Pause anything that looks like someone else is driving" confirms this section is wanted; it does not lower the bar.
-- **W-rule 4** Recovery: signs are evaluated per purchase. Known device back and burst over → judged normally. Earlier signs don't carry over (they remain visible as evidence).
+- **W-rule 4** Recovery: after a burst (session watch on), the next otherwise-clean purchase asks once; the customer's approval turns the watch off; a no or a timeout keeps it on. The watch is per card and carries into later live sessions.
 
 ## 9. Explanations
 
@@ -140,7 +140,7 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 | # | Question | Default | Why |
 |---|---|---|---|
 | Q1 | One purchase or several per policy? | Each purchase judged on its own; only near-identical repeats caught (A3). | Viseca's notes call AU0023 "fully compliant" and AU0042 "a legitimate re-quote". |
-| Q2 | Ask with no answer in 120 s? | **Closed.** Expiry → post `/resolve` `decline` with message "No answer within 120 s; nothing was approved", evidence `resolved_by: timeout`. Not spent; reservation released. | Viseca Q&A 24 Sep. |
+| Q2 | Ask with no answer in 120 s? | **Closed.** Expiry → post `/resolve` `decline` with message "No answer within 120 s; nothing was approved", evidence `resolved_by: timeout`. Not spent; reservation released. The sandbox expires step-ups itself at the same moment, so the worker reads the platform's state first and posts only while it is still pending (decisions.md). | Viseca Q&A 24 Sep; live smoke 24 Sep. |
 | Q3 | Hidden scenarios at judging? | Assume yes. | Rules must survive unseen wording. |
 | Q4 | Seven days rolling or calendar? | Rolling 168 h. | Standard reading. |
 | Q5 | Pending reserved against limits? | Yes (M5). | Otherwise late approval overspends. |
