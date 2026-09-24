@@ -28,6 +28,20 @@ working before any of it is rendered. If this file and `backend/app/domain.py` d
 
 ## 1. Endpoints
 
+### 1.0 Envelopes
+
+The envelope is **not uniform**; the client depends on the exact shape per endpoint
+(merged from the former frontend/API-CONTRACT.md §1.2).
+
+| Style | Endpoints | Shape |
+| --- | --- | --- |
+| Wrapped in a named key | C12, C6, C10, C3 | `{ "customers": [...] }`, `{ "decisions": [...] }`, `{ "accounts": [...] }`, `{ "mandate": {...} \| null }` |
+| Bare object | C1, C2, C4 | The `PolicyDraft` / `Mandate` object at the top level, no wrapper |
+| No body | C5, C8 | `204 No Content` |
+
+The frontend ignores unknown fields, so additions are safe. Removing or renaming a field
+(or changing its type or null-ability) is breaking.
+
 ### 1.1 Customer-facing (called by the UI)
 
 | # | Method | Path | Request | Response | Errors |
@@ -134,7 +148,9 @@ Decision {
   merchant_meta?: { category: string, country: string, familiar: boolean,       // NEW, trusted fields
                     prior_approvals_on_card: number, prior_approvals_other_cards: number },
   engine_version?: string,                    // NEW
-  latency_ms?: number                         // NEW: engine wall time for this decision
+  latency_ms?: number,                        // NEW: engine wall time for this decision
+  explanation_source?: 'template' | 'model', // NEW: who wrote `message` (rules.md §4a, tier 3)
+  resolved_by?: 'customer' | 'timeout'        // NEW: resolved step-ups only (§3.5)
 }
 
 Evidence  { rule: string,                     // which check or signal
@@ -166,6 +182,22 @@ LedgerSnapshot { card_id, mandate_id, entries: [{ authorization_id, occurred_at,
 
 A step-up **stays** `decision: 'uncertain'` after resolution; the history must keep showing
 that a person was needed.
+
+### 3.1a Consistency matrix
+
+Valid combinations — nothing else is legal:
+
+| `decision` | `uncertain_outcome` | `status` | `deadline_at` | Means |
+| --- | --- | --- | --- | --- |
+| `approved` | `null` | `final` | absent | Approved automatically |
+| `stopped` | `null` | `final` | absent | Declined automatically |
+| `uncertain` | `pending` | `pending_human` | **required** | Waiting on the customer |
+| `uncertain` | `approved` | `final` | absent | The customer approved it |
+| `uncertain` | `declined` | `final` | absent | The customer rejected it |
+| `uncertain` | `expired` | `final` | absent | Nobody answered in time |
+
+A `pending_human` row without `deadline_at` renders a step-up with no countdown and can never
+expire — that is a broken state, not a degraded one.
 
 ### 3.2 Policy drafts (C1, C2)
 
@@ -223,6 +255,8 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
   within the duplicate window → `duplicate_suspected`, `related.relation = 'duplicate_of'`.
   Re-quote: `related_authorization_id` points at a **declined** decision and the new facts
   comply → `requote_accepted`, `related.relation = 'requote_of'`, no duplicate penalty.
+- C6 may return the template message first (`explanation_source: 'template'`) and the
+  model rewrite on a later poll (`explanation_source: 'model'`).
 - The engine reconciles `context.approved_spend_in_period_chf` from Viseca against its own
   ledger on every event and logs a mismatch as an `info` evidence row.
 
@@ -232,12 +266,12 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
   Viseca** + human window from `/v1/bootstrap` (default 120 s). Real clock.
 - The worker never blocks on a pending step-up; polling continues.
 - C8 after the window → 409. A GET of C6 after the window marks the decision
-  `uncertain_outcome: 'expired'`, `status: 'final'` server-side (so a reload agrees). The
-  backend does **not** call `/resolve` for an expired window.
+  `uncertain_outcome: 'expired'`, `status: 'final'` server-side (so a reload agrees). On
+  expiry the backend posts `/resolve` `decline` with the message "No answer within 120 s;
+  nothing was approved" and `resolved_by: 'timeout'` (rules.md Q2). Not spent. A customer
+  answer through C8 sets `resolved_by: 'customer'`.
 - A step-up renders the **complete** purchase (all lines, delivery fee, currency, recurring
-  flag, flagged text). C8 is bound to a hash of that rendering; if the pending
-  authorization's facts have changed since (checked against `GET /v1/authorizations`), the
-  backend returns 409 and the UI shows the refreshed decision.
+  flag, flagged text).
 
 ### 3.6 Revoke (C5)
 
@@ -257,6 +291,8 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
   `evidence` rows with `source: 'model'` and may raise `approve → uncertain`. It can never
   lower `stopped` or override a policy check. `engine_version` records whether the model
   was on, so a replay with it off is comparable.
+- Tier-2 fact extraction and tier-3 explanation use the same provider interface as the
+  compiler (OpenAI first, model-agnostic).
 
 ### 3.8 Errors
 
@@ -265,6 +301,19 @@ All errors: `{ error: { code: string, message: string, detail?: object } }`. Cod
 `not_awaiting_answer`, `window_closed`, `upstream_unavailable`, `compiler_timeout`.
 `upstream_unavailable` (Viseca down) never changes a stored decision; the UI shows its
 offline state ("Nothing was approved while we were offline").
+
+### 3.9 Check wording
+
+Until `Mandate.usage` is consumed by the UI, the backend phrases limit checks exactly
+(case-insensitive match in `src/lib/spend.ts`; `<amount>` may contain thousands separators
+and decimals):
+
+```
+Total at or below CHF <amount> per order
+Total at or below CHF <amount> across any <n> days
+```
+
+The backend emits both this wording and `usage`.
 
 ---
 
@@ -305,5 +354,53 @@ neutral fallback for unknown codes.
 5. `Evidence.outcome: 'info'` — neutral styling; unknown values fall back to neutral.
 6. Optional: `Decision.session` banner on DecisionDetail when trust ≠ normal; a "Revoke policy" shortcut on the Approvals card.
 7. Fixtures: add the new fields to `build_decisions_fixture.py` / `build_policy_fixture.py` so mock mode matches.
+8. `Decision.explanation_source` and `Decision.resolved_by` in `types.ts`; `mergeDecisions.sameDecision` also compares `explanation_source` and `counterfactual` so a tier-3 rewrite re-renders.
 
 No endpoint changes. No screen removals. Tighten UI stays dormant.
+
+---
+
+## Appendix A. Backend checklist
+
+Merged from the former frontend/API-CONTRACT.md §7 (section references point at this file).
+`backend/tests/test_api_contract.py` must cover every line of it.
+
+Shape:
+
+- [ ] All nine endpoints on `/api`, served from the same origin as the app
+- [ ] Static file mount registered **after** every API route
+- [ ] Envelope per endpoint exactly as §1.0 (wrapped vs. bare vs. `204`)
+- [ ] Every documented key present; nullable keys present with explicit `null`
+- [ ] `cards`, `items`, `evidence`, `reason_codes`, `open_questions` are arrays, never `null`
+
+Correctness:
+
+- [ ] `decision` / `uncertain_outcome` / `status` only ever in a combination from §3.1a's matrix
+- [ ] `deadline_at` present on every `pending_human` row, stable across polls
+- [ ] Every timestamp ISO-8601 UTC with `Z`, fixed width, no mixed offsets
+- [ ] `occurred_at` is simulated time; `deadline_at` is the real clock
+- [ ] `evidence` non-empty on every decision, `message` names the actual number
+- [ ] Limit checks worded exactly as §3.9, or the meter shows nothing
+- [ ] `amount` includes delivery; `billing_amount_chf` present on every row
+- [ ] `order_returnable` is one of the four strings; `unknown` / `not_applicable` / `null` distinct
+- [ ] C6 returns the full history for that customer only, on every poll
+- [ ] `authorization_id` unique and stable
+
+Safety:
+
+- [ ] Viseca key server-side only; nothing secret reachable from `/api` responses
+- [ ] `injection_flag` set by the backend; `null` when clean, never omitted
+- [ ] A resolve for a closed window is refused, not recorded
+- [ ] Lapsed step-ups closed server-side so expiry survives a reload
+- [ ] Revoke touches the policy only, never a purchase in flight
+- [ ] Tighten rejects anything that is not a pure addition
+- [ ] No endpoint ever returns `2xx` for work that did not happen
+
+Also carried over from the frontend contract:
+
+- [ ] JSON request and response bodies (`application/json`, UTF-8); base URL `/api` is relative
+- [ ] `not_applicable` is not uncertainty and never causes an escalation
+- [ ] Merchants joined by `merchant_id`, never by name
+- [ ] `amount`/`currency` and `billing_amount_chf` both sent, even when the currency is CHF
+- [ ] `deadline_at` reflects the platform's real window; the UI's 120 s constant is not assumed
+- [ ] Every call bounded server-side: a fast failure, never a hang

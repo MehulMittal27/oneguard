@@ -1,17 +1,16 @@
 SCEN ?= SCEN0000
 PYTHON ?= $(shell command -v python3.12 2>/dev/null || uv python find 3.12 2>/dev/null || echo python3.12)
-FRONTEND_SKIP = echo "skipping frontend step: frontend/package.json not found (UI not copied in yet)"
 
 setup:
 	cd backend && $(PYTHON) -m venv .venv && . .venv/bin/activate && pip install -e ".[dev]"
-	@if [ -f frontend/package.json ]; then cd frontend && npm install; else $(FRONTEND_SKIP); fi
+	cd frontend && npm install
 
 test:
 	cd backend && . .venv/bin/activate && pytest -q
 
 lint:
 	cd backend && . .venv/bin/activate && ruff check .
-	@if [ -f frontend/package.json ]; then cd frontend && npm run lint; else $(FRONTEND_SKIP); fi
+	cd frontend && npm run lint
 
 replay:
 	cd backend && . .venv/bin/activate && python -m oneguard.replay.runner --scenario $(SCEN)
@@ -21,10 +20,10 @@ replay-all:
 
 dev:
 	cd backend && . .venv/bin/activate && uvicorn oneguard.api.app:app --reload --port 8000 &
-	@if [ -f frontend/package.json ]; then cd frontend && npm run dev; else $(FRONTEND_SKIP); fi
+	cd frontend && npm run dev
 
 build-frontend:
-	@if [ -f frontend/package.json ]; then cd frontend && npm run build; else $(FRONTEND_SKIP); fi
+	cd frontend && npm run build
 
 serve: build-frontend
 	cd backend && . .venv/bin/activate && uvicorn oneguard.api.app:app --port 8000

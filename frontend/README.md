@@ -10,10 +10,9 @@ tightens or revokes the policy.
 synthetic.
 
 This README is self-contained: everything needed to run, navigate, and safely change this app is
-below. The companion document `API-CONTRACT.md` in this folder states the same contract from the
-backend's side — what the backend must return and guarantee — and is written for whoever builds it.
-The binding contract in this repo is `../docs/api-contract.md`, and its §6 is the only list of
-changes this UI takes; where the two differ, that one wins.
+below. The canonical contract is `../docs/api-contract.md`, which now also holds the backend's
+side (what it must return and guarantee); `API-CONTRACT.md` in this folder only points there. Its
+§6 is the only list of changes this UI takes; where this README differs, that one wins.
 
 **Contents**
 
@@ -214,6 +213,7 @@ Three consequences to respect:
 
 ## 5. The API contract
 
+Canonical: [`../docs/api-contract.md`](../docs/api-contract.md); this section mirrors it for the UI.
 Base URL `/api`. These nine capabilities are the entire surface between this app and the backend.
 The types below are mirrored in `src/api/types.ts`, which is the authority for the frontend.
 

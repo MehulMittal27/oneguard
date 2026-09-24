@@ -4,6 +4,10 @@ Choices made where the spec, the data, or the platform disagreed. Newest first.
 
 | Date | Decision | Why | Where |
 |---|---|---|---|
+| 2026-09-24 | `Decision.explanation_source` ('template' \| 'model'); C6 may return the template message first and the model rewrite on a later poll | Viseca Q&A | api-contract.md §2, §3.4, §6 |
+| 2026-09-24 | C8 no longer bound to a hash of the step-up rendering; the step-up still renders the complete purchase | Viseca Q&A | api-contract.md §3.5 |
+| 2026-09-24 | Expired step-up: backend posts `/resolve` `decline` with the timeout message; `Decision.resolved_by: 'customer' \| 'timeout'` (NEW) | Viseca Q&A | api-contract.md §3.5 |
+| 2026-09-24 | Tier 2 extraction and Tier 3 explanation use the compiler's provider interface (OpenAI first, model-agnostic); soft signals unchanged | Viseca Q&A | api-contract.md §3.7 |
 | 2026-09-24 | P8: with every model off, each decision is identical or more cautious; models never change a decision the deterministic rules have made | Viseca Q&A | rules.md P8 |
 | 2026-09-24 | Three tiers: 1 deterministic rules; 2 constrained LLM fact extraction only when a rule is `unknown` (schema-validated, 1.5 s, `source: model`); 3 LLM explanation rewrite after posting, template first | Viseca Q&A | rules.md §4a |
 | 2026-09-24 | M5: a purchase that fails C2 only because of reservations is Ask, and the message names the waiting order | Viseca Q&A | rules.md M5 |
