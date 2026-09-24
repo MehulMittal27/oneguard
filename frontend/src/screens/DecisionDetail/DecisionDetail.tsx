@@ -38,14 +38,13 @@ const UNCERTAIN_BANNER: Record<UncertainOutcome, { headline: string; bg: string;
 
 /**
  * Contract §6 item 10's provenance tag, rendered beside the message it
- * describes — which is what makes the short form unambiguous: "Refined"
- * qualifies that sentence, never the decision. No model sits in the decision
+ * describes — which is what makes the source explicit. No model sits in the decision
  * path (`../../../CLAUDE.md` non-negotiable 1). Unknown values fall back to the
  * label that is true either way.
  */
 const EXPLANATION_SOURCE: Record<string, string> = {
   template: 'Explained by OneGuard',
-  model: 'Refined',
+  model: 'Wording refined by AI · decision made by your rules',
 }
 
 const EXPLANATION_SOURCE_FALLBACK = 'Explained by OneGuard'
@@ -224,7 +223,7 @@ export function DecisionDetail({
           decision with no visible reason is a bug. D-040 had removed the
           restated reason text, which left the message unrendered on the one
           screen whose whole job is explaining. The provenance tag sits beside it
-          rather than floating alone, so "Refined" plainly qualifies this
+          rather than floating alone, so the source plainly qualifies this
           sentence and not the decision.
         */}
         <div className="mt-4 border-t border-hairline pt-4">
@@ -328,9 +327,8 @@ export function DecisionDetail({
           <button
             type="button"
             onClick={() => onViewPolicy(decision.card_id)}
-            className={`flex w-full flex-col items-start gap-2 rounded-card border p-4 text-left ${
-              mandate.status === 'revoked' ? 'border-stopped-border bg-surface' : 'border-hairline bg-surface'
-            }`}
+            className={`flex w-full flex-col items-start gap-2 rounded-card border p-4 text-left ${mandate.status === 'revoked' ? 'border-stopped-border bg-surface' : 'border-hairline bg-surface'
+              }`}
           >
             <span className="flex items-center gap-2">
               {mandate.status === 'revoked' && (
