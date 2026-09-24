@@ -80,8 +80,10 @@ running (unless the platform's `GET /v1/scenario-runs/{id}` says it is over), or
 the platform (`GET /v1/authorizations` status `awaiting_decision` or `pending_step_up`), whoever started it; the
 message and detail name that run. `force: true` skips both checks and starts the run anyway. D1/D2 use the same engine and ledger as D3; only the event source differs (CSV vs Viseca long-poll).
 D3 accepts any scenario in the store's `scenario_catalogue`, which the worker syncs from Viseca's
-`/v1/reference-data` at start (docs/judging-pack.md): 404 for an unknown scenario or card, 422 when the scenario's card
-is known and is another. D2 replays only scenarios the local pack has purchases for (404 otherwise).
+`/v1/reference-data` at start and again when the served pack changes (docs/judging-pack.md, architecture.md Runtime):
+404 for an unknown scenario or card, 422 when the scenario's card is known and is another. D3 and D8 first have the
+worker re-read `/v1/bootstrap` (human window, decision deadline, long-poll wait); a new `pack_version` syncs the
+reference data before D8 lists the catalogue, so `make demo-live` compiles the instruction the platform serves now. D2 replays only scenarios the local pack has purchases for (404 otherwise).
 
 **Scenario bindings.** The served catalogue names no card. The platform names one in the `/v1/bootstrap` `profile`
 (one scenario), in every run's `fixture_profiles` and in every authorization; the worker stores each sighting
@@ -355,6 +357,10 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 - `DELETE /v1/mandates/{TM}` at Viseca; our mandate flips to `status: 'revoked'`, never
   deleted. Pending step-ups are shown as cancelled **only** after Viseca confirms their
   state. A revoked card can receive a new policy (new draft → new mandate).
+- Viseca keeps one active mandate per team, so a policy confirmed on any card supersedes
+  the others there. A DELETE answered 404 or 409 (already revoked or superseded) is done:
+  C5 still answers `204` and logs the platform's status. Only another platform failure is
+  a `503 upstream_unavailable` (our policy stays revoked; the customer may try again).
 - Session freeze (`session.trust = 'frozen'`) is engine state, not a mandate change: after a
   burst the engine step-ups the next otherwise-clean purchase once (`session_watch`;
   `session_recovered` on approval), then relaxes; a no or a timeout keeps the watch on. The

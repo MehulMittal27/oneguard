@@ -53,8 +53,8 @@ from oneguard.viseca.client import (
     API_KEY_ENV,
     RUNS_DISABLED_MESSAGE,
     VisecaClient,
+    call_sink,
     runs_allowed,
-    store_sink,
 )
 from oneguard.viseca.worker import (
     POLL_WAIT_S,
@@ -528,7 +528,7 @@ async def _run_local_main(
     if not seeded:
         log.info("store is empty; seeding the reference tables first")
         await asyncio.to_thread(seed_module.run, engine=db)
-    async with VisecaClient(sink=store_sink(db)) as client:
+    async with VisecaClient(sink=call_sink(db)) as client:
         return await run_local(client, scenario_id, db=db, card_id=card_id, max_seconds=max_seconds, out=out)
 
 

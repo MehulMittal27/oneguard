@@ -65,7 +65,7 @@ from oneguard.llm.provider import (
 from oneguard.store import seed as seed_module
 from oneguard.store.db import get_engine, init_db, make_engine, session
 from oneguard.store.history import StoreHistoryIndex
-from oneguard.viseca.client import API_KEY_ENV, VisecaClient, runs_allowed, store_sink
+from oneguard.viseca.client import API_KEY_ENV, VisecaClient, call_sink, runs_allowed
 from oneguard.viseca.worker import VisecaWorker
 
 log = logging.getLogger(__name__)
@@ -110,7 +110,7 @@ def _default_client(db: Engine) -> VisecaClient | None:
     if not os.environ.get(API_KEY_ENV, "").strip():
         log.info("%s is not set: no Viseca worker (offline replay only)", API_KEY_ENV)
         return None
-    return VisecaClient(sink=store_sink(db))
+    return VisecaClient(sink=call_sink(db))
 
 
 def _seed_if_empty(db: Engine) -> bool:
@@ -181,7 +181,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     config: AppConfig = app.state.config
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    # Every Viseca call is already summarised in viseca_calls; one INFO line per long-poll is noise.
+    # One INFO line per long-poll is noise; the client logs each call at DEBUG (viseca_calls only when switched on).
     logging.getLogger("httpx").setLevel(logging.WARNING)
     own_engine = config.database_url is not None
     db = make_engine(config.database_url) if own_engine else get_engine()
@@ -285,6 +285,8 @@ async def healthz(request: Request) -> JSONResponse:
             decision_deadline_s=status.decision_deadline_s,
             pending_step_ups=status.pending_step_ups,
             history_reseeded=status.history_reseeded,
+            fx_rates_match=status.fx_rates_match,
+            fx_rates_mismatch=status.fx_rates_mismatch,
             runs=len(status.runs),
             last_error=sanitise(s.worker_error or status.last_error),
         )

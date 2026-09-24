@@ -47,7 +47,7 @@ oneguard/
       engine/     facts.py policy.py protections.py warnings.py ledger.py decide.py explain.py signals.py
       compiler/   llm.py parser.py lint.py dryrun.py
       llm/        provider.py openai.py anthropic.py   provider interface: openai first, anthropic stub
-      replay/     events.py runner.py            CSV → live-shaped events; offline replay
+      replay/     events.py runner.py oracle.py matrix.py   CSV → live-shaped events; offline replay; replay matrix
       viseca/     client.py worker.py schema.py  sandbox client + long-poll worker
       api/        app.py models.py routes_customer.py routes_dev.py static.py
       store/      db.py schema.py seed.py history.py   SQLAlchemy; SQLite for tests/local, Supabase Postgres in the cloud
@@ -69,21 +69,41 @@ oneguard/
   it takes over when the holder stops. The sandbox serves each request to whoever polls
   first, so two workers would decide the same team's requests twice (docs/decisions.md).
 - Worker (`oneguard/viseca/worker.py`, `VisecaWorker`): on start reads `/v1/bootstrap`
-  (`limits`: human window, decision deadline, long-poll cap) and `/v1/reference-data`. Every
+  (`limits`: human window, decision deadline, long-poll cap; `pack_version`) and, in the
+  lease holder, runs the reference sync: `/v1/reference-data`. Every
   reference table served under `tables` (a superset of `data/` during judging) is upserted
   into the store in one transaction when its rows differ from the stored ones (count plus
   content hash), never deleting a row, with per-table counts logged (`seed.sync_served`);
-  the history index is reloaded if anything changed. No
+  the history index is reloaded in place if anything changed (`ReloadableHistory`: the
+  ledger, every run and the API hold the same object). No
   history-file hash is served, so it downloads
   `/v1/reference-data/authorization-history.csv`, and if its SHA-256 differs from
-  `data/metadata.json` it re-seeds `authorization_history` and logs it loudly. Every request is
-  schema-checked, stored in `events_raw`, decided by `pipeline.decide_event` within
+  `data/metadata.json` it re-seeds `authorization_history` and logs it loudly. The served
+  `tables.fx_rates` must equal the engine's `facts.FX_TO_CHF` exactly (decimal compare, at
+  every sync); a mismatch or a missing table is logged loudly and keeps the worker `ok: false`
+  (`/healthz` `degraded`) while it keeps polling; decisions still use `FX_TO_CHF`. The sync runs
+  again while polling (lease holder only; concurrent triggers join the one in flight; a
+  failure is logged and never blocks a decision): when a bootstrap re-read shows a new
+  `pack_version`, when `/v1/reference-data` (read every 5 min) shows another pack version,
+  row counts or history file than the last sync, and when an event names a merchant, item,
+  customer or card the store does not know. That event waits at most 1 s for the sync (less
+  near its deadline), then is decided with what the store has: no catalogue price range,
+  merchant category and country from the event, no history (never familiar), plus an
+  `info` evidence row `reference_data` naming the ids; an id a finished sync did not bring
+  starts no further sync. Every run start (D3 before it creates the run, D8 before it lists
+  the catalogue `make demo-live` compiles from, and the first sight of any other run)
+  re-reads `/v1/bootstrap` unless it was read in the last 30 s; a changed human window,
+  decision deadline or long-poll wait is logged and used from then on. Every request is
+  schema-checked (properties the schema does not list are logged and passed on unread; a
+  missing required field, a wrong type or an unknown enum value declines with an
+  `event_schema` row naming it), stored in `events_raw`, decided by `pipeline.decide_event` within
   `ONEGUARD_ENGINE_BUDGET_MS` and posted before `deadline_at`. A step-up's deadline is the
   reply's `step_up_expires_at` (accepted time + the human window). Until then the platform
   serves the step-up again on every poll (`status: "pending_step_up"`); the worker posts
   nothing for it and pauses briefly. At the deadline the expiry reads the platform's state
   first and posts the timeout `/resolve` (rules Q2) only if it is still pending; at most one
-  `/resolve` per live id. Ledger calls run in short `ScopedStoreLedger` sessions.
+  `/resolve` per live id. After a restart the expiry is re-armed only for pending step-ups
+  of live runs (`runs.kind = live`); a replay step-up was never posted to Viseca. Ledger calls run in short `ScopedStoreLedger` sessions.
   All ledger and pipeline calls run on one dedicated thread. The event feed cursor is
   stored in `worker_state` once a page is processed and resumed on start (0 only on first
   boot), so a restart does not re-scan the team-wide feed. The feed is read after each
@@ -93,9 +113,18 @@ oneguard/
   `error` when the platform no longer knows the run). `VisecaWorker.status()` is the
   `/healthz` worker block: `state` (`starting`, `standby`, `polling`, `degraded`,
   `stopped`), `ok` (polling without failures), `last_poll_at`, `events_cursor`,
-  `human_window_s`, `pending_step_ups`, `history_reseeded`, `last_error`, `runs`.
-- Every Viseca call is summarised in `viseca_calls` (no key, bodies ≤ 4 KB) by
-  `oneguard/viseca/client.py`. `make demo-live SCEN=…` (`oneguard/viseca/demo.py`) starts
+  `human_window_s`, `pending_step_ups`, `history_reseeded`, `fx_rates_match`,
+  `fx_rates_mismatch`, `last_error`, `runs`; every field, `last_error` included, comes from
+  the worker's own state. A run's `state` changes in memory before its `runs` row is
+  written; `recorded_state` is the committed one, and
+  `await VisecaWorker.wait_run_recorded(viseca_run_id)` returns once the final (done/error)
+  row has committed. `add_handled_listener` is called with the live id once a delivered
+  request is fully handled (decision posted and recorded, `events_raw` and `runs` rows
+  committed).
+- Viseca call logging is off by default. With `ONEGUARD_LOG_VISECA_CALLS=true` (debugging
+  only; unset in `fly.toml`) every call is summarised in `viseca_calls` (no key, bodies
+  ≤ 4 KB) by `oneguard/viseca/client.py` (`call_sink`); nothing reads the table to decide or
+  to report health, and each call is still logged at DEBUG. `make demo-live SCEN=…` (`oneguard/viseca/demo.py`) starts
   one scenario through the server at `ONEGUARD_API` (default `https://oneguard.fly.dev`; C1,
   C2, D3), prints whom to sign in as and follows the run read-only: the server's worker
   decides. Only with no OneGuard server answering there does it run a worker itself (it then
@@ -131,14 +160,16 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
   it back.
 - Makefile: `make deploy` (`fly deploy -a oneguard --ha=false`), `make logs`, `make image`
   (the same image locally), `make demo-live SCEN=…`, `make demo-offline`, `make seed`,
-  `make reset-db` (refused when `ONEGUARD_ENV=prod`); `make matrix` arrives with P5-4.
+  `make reset-db` (refused when `ONEGUARD_ENV=prod`), `make matrix` (regenerates
+  `docs/replay-matrix.md`; `tests/test_replay_matrix.py` fails when it is stale).
 - App start (`oneguard/api/app.py` lifespan): `init_db` (creates missing tables, never drops),
   seeds only an empty store, loads `HistoryIndex`, warms the pool (5 connections), warms
   soft signals if enabled, then starts the worker in the background only when
   `VISECA_API_KEY` is set, after binding every stored mandate's policy to it.
 - `/healthz` (never names a secret or URL): `status` (`ok` when the database answers and the
-  worker, if configured, is polling), `worker` (`VisecaWorker.status()`: state, polling,
-  last poll, events cursor, human window, pending step-ups, last error), `events_cursor`,
+  worker, if configured, is `ok`: polling without errors and the served fx rates equal
+  `FX_TO_CHF`), `worker` (`VisecaWorker.status()`: state, polling, last poll, events
+  cursor, human window, pending step-ups, fx rates match and mismatch lines, last error), `events_cursor`,
   `provider` (name, configured), `signals` (backend, enabled, model loaded), `database`
   (engine name `sqlite`/`postgresql`, `SELECT 1` round trip in ms), `engine.stubbed`.
   503 only when the database does not answer.
