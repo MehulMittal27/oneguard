@@ -25,9 +25,7 @@ const UNKNOWN_EXAMPLE_OUTCOME = { label: 'Checked', className: 'text-ink-muted' 
  * dry-run counters above remain card-scoped, while this line covers every card.
  */
 function agentHistoryLine({ attempts, approved }: { attempts: number; approved: number }): string {
-  if (attempts === 0) return 'You\'ve let an agent buy 0 times before across your cards, 0 approved.'
-  const times = attempts === 1 ? 'once' : `${attempts} times`
-  return `You've let an agent buy ${times} before across your cards, ${approved} approved.`
+  return `You've let an agent buy ${attempts} times before across your cards, ${approved} approved.`
 }
 
 /** DESIGN.md #7: step-2 review — checks, uncertainty choice, dry run, confirm. */
@@ -65,7 +63,8 @@ export function NewPolicyCheck({
         <>
           {error && (
             <p className="text-[13px] text-destructive">
-              Couldn&apos;t confirm this policy — nothing was saved. Try again.
+              Couldn&apos;t confirm this policy. Nothing was approved while we were offline. Nothing
+              was saved. Try again.
             </p>
           )}
           <button
@@ -132,11 +131,10 @@ export function NewPolicyCheck({
               )}
             </div>
             <span
-              className={`shrink-0 rounded-pill px-2.5 py-1 text-[11px] font-semibold ${
-                check.source === 'exact'
+              className={`shrink-0 rounded-pill px-2.5 py-1 text-[11px] font-semibold ${check.source === 'exact'
                   ? 'bg-approved-tint text-approved'
                   : 'bg-asked-tint text-asked'
-              }`}
+                }`}
             >
               {check.source === 'exact' ? 'Exact' : 'My reading'}
             </span>
@@ -168,11 +166,10 @@ export function NewPolicyCheck({
               type="button"
               aria-pressed={uncertaintyPolicy === option.value}
               onClick={() => onChangeUncertaintyPolicy(option.value)}
-              className={`min-h-11 rounded-row border-2 px-4 py-3 text-[15px] font-semibold ${
-                uncertaintyPolicy === option.value
+              className={`min-h-11 rounded-row border-2 px-4 py-3 text-[15px] font-semibold ${uncertaintyPolicy === option.value
                   ? 'border-ink bg-surface-sunken text-ink'
                   : 'border-border-quiet text-ink-soft'
-              }`}
+                }`}
             >
               {option.label}
             </button>

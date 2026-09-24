@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { getAccounts } from '../../api/accounts'
 import type { Account } from '../../api/types'
 import { BackChevronIcon, PlusIcon } from '../../components/icons/lucide'
+import { NetworkState } from '../../components/NetworkState'
 import { limitsFromMandate } from '../../lib/spend'
 import { useCustomer } from '../../state/CustomerContext'
 import { usePolicy } from '../../state/PolicyContext'
@@ -82,29 +83,24 @@ export function Accounts({
       </div>
 
       {status === 'loading' && (
-        <div className="flex flex-col gap-3" aria-live="polite" aria-busy="true">
-          <div className="h-40 animate-pulse rounded-card bg-surface-sunken" />
-          <span className="sr-only">Loading accounts</span>
-        </div>
+        <NetworkState kind="loading" label="accounts" />
       )}
 
       {status === 'error' && (
-        <div className="flex flex-col items-start gap-4 rounded-row border border-hairline bg-surface p-5">
-          <p className="text-[15px] text-ink-soft">
-            Couldn&apos;t load your accounts. Nothing shown here reflects what your agent can
-            actually spend right now.
-          </p>
-          <button
-            type="button"
-            onClick={() => {
-              setStatus('loading')
-              setAttempt((n) => n + 1)
-            }}
-            className="h-11.5 rounded-button border-2 border-ink px-5 text-[15px] font-semibold text-ink"
-          >
-            Try again
-          </button>
-        </div>
+        <NetworkState
+          kind="error"
+          label="accounts"
+          onRetry={() => {
+            setStatus('loading')
+            setAttempt((n) => n + 1)
+          }}
+        />
+      )}
+
+      {status === 'ready' && accounts.length === 0 && (
+        <NetworkState kind="empty" label="accounts">
+          No accounts are available for this customer yet.
+        </NetworkState>
       )}
 
       {status === 'ready' &&
