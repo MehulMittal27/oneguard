@@ -10,24 +10,26 @@ const AMOUNT_STYLE: Record<
   'approved' | 'stopped' | 'uncertain',
   { label: string; shape: string; color: string }
 > = {
-  approved: { label: 'Approved', shape: 'size-[12px] rounded-full', color: 'bg-approved-on-ink' },
-  stopped: { label: 'Stopped', shape: 'size-[12px] rounded-[2px]', color: 'bg-stopped-on-ink' },
+  approved: { label: 'Approved', shape: 'size-[12px] rounded-full', color: 'bg-approved' },
+  stopped: { label: 'Stopped', shape: 'size-[12px] rounded-[2px]', color: 'bg-stopped' },
   uncertain: {
     label: 'Uncertain',
     shape: 'size-[9px] rounded-[1px] rotate-45',
-    color: 'bg-asked-on-ink',
+    color: 'bg-asked',
   },
 }
 
 /**
- * DESIGN.md `OverviewHero` — first card on Home. Leads with the
- * "protection" story, not a neutral tally (D-055): the hero number is how
- * many purchases needed a closer look (stopped or uncertain), not a CHF
- * total — Activity's own filter tiles already cover counts and this
- * card's own tiles below already cover amounts, so the headline's job is
- * to answer "is my agent behaving" in one glance. An expired request still
- * counts as Uncertain (D-041), never its own bucket. No limits or meters
- * here — those live per-card on `LeashMeter`.
+ * DESIGN.md `OverviewHero` — first card on Home: the total amount processed, and
+ * three counts under it.
+ *
+ * That total is not spend — it includes stopped and uncertain purchases, hence
+ * "processed" and "proposed". The counts add up to the caption's number, and an
+ * expired request counts as Uncertain (D-041), never its own bucket. Supersedes
+ * D-055, which made the headline a count of risky purchases instead.
+ *
+ * Don't reintroduce `-on-ink` tokens here: this is a white card now, and they
+ * are tuned for a dark ground.
  */
 export function OverviewHero({
   decisions,
@@ -37,44 +39,28 @@ export function OverviewHero({
   onOpenActivity: (filter: FilterId) => void
 }) {
   const recent = recentDecisions(decisions, 7)
-  const approvedRecent = recent.filter((d) => d.decision === 'approved')
-  const stoppedRecent = recent.filter((d) => d.decision === 'stopped')
-  const uncertainRecent = recent.filter((d) => d.decision === 'uncertain')
-  const riskyCount = stoppedRecent.length + uncertainRecent.length
-  const approvedCount = approvedRecent.length
-
-  const totals = {
-    approved: approvedRecent.reduce((sum, d) => sum + d.billing_amount_chf, 0),
-    stopped: stoppedRecent.reduce((sum, d) => sum + d.billing_amount_chf, 0),
-    uncertain: uncertainRecent.reduce((sum, d) => sum + d.billing_amount_chf, 0),
+  const counts = {
+    approved: recent.filter((d) => d.decision === 'approved').length,
+    stopped: recent.filter((d) => d.decision === 'stopped').length,
+    uncertain: recent.filter((d) => d.decision === 'uncertain').length,
   }
-
-  let narrative: string
-  if (riskyCount === 0) {
-    narrative =
-      recent.length === 0
-        ? 'No purchases yet this week.'
-        : `Nothing needed your attention — all ${recent.length === 1 ? '1 purchase' : `${recent.length} purchases`} went through your rules cleanly.`
-  } else if (approvedCount > 0) {
-    narrative = `${approvedCount === 1 ? '1 other purchase' : `${approvedCount} other purchases`} went through automatically — nothing needed you.`
-  } else {
-    narrative = 'No other purchases went through this week.'
-  }
+  const processedChf = recent.reduce((sum, d) => sum + d.billing_amount_chf, 0)
 
   return (
-    <div className="rounded-hero bg-ink p-6">
-      <p className="text-[13px] font-medium text-on-ink-muted">
+    <div className="rounded-hero border border-hairline bg-surface p-6">
+      <p className="text-[11px] font-semibold tracking-[0.09em] text-cord-accent uppercase">
         Processed by your rules · last 7 days
       </p>
-      <p className="mt-2 font-display text-[46px] leading-none font-bold text-on-ink tabular-nums">
-        {riskyCount}
+      <p className="mt-4 font-display text-[40px] leading-none font-bold tracking-[-0.02em] text-ink tabular-nums">
+        {formatChf(processedChf)}
       </p>
-      <p className="mt-1 text-[15px] font-semibold text-on-ink">
-        {riskyCount === 1 ? 'risky purchase caught' : 'risky purchases caught'}
+      <p className="mt-2 text-[15px] text-ink-muted">
+        {recent.length === 1
+          ? '1 purchase proposed by your agent'
+          : `${recent.length} purchases proposed by your agent`}
       </p>
-      <p className="mt-2 text-[13px] text-on-ink-soft">{narrative}</p>
 
-      <div className="mt-5 grid grid-cols-3 gap-2 border-t border-on-ink-rule pt-4">
+      <div className="mt-5 grid grid-cols-3 gap-2 border-t border-hairline pt-4">
         {(['approved', 'stopped', 'uncertain'] as const).map((key) => {
           const { label, shape, color } = AMOUNT_STYLE[key]
           return (
@@ -82,13 +68,15 @@ export function OverviewHero({
               key={key}
               type="button"
               onClick={() => onOpenActivity(key)}
-              className="flex min-h-11 flex-col items-center gap-1.5 rounded-tile px-1 py-2"
+              className="flex min-h-11 flex-col items-start gap-1 rounded-tile py-1 text-left"
             >
-              <span className={`${shape} ${color}`} />
-              <span className="w-full truncate text-center font-display text-[17px] font-bold text-on-ink tabular-nums">
-                {formatChf(totals[key])}
+              <span className="flex items-center gap-1.5 text-[13px] text-ink-muted">
+                <span className={`shrink-0 ${shape} ${color}`} />
+                {label}
               </span>
-              <span className="text-[11px] font-medium text-on-ink-muted">{label}</span>
+              <span className="font-display text-[30px] leading-[1.1] font-bold text-ink tabular-nums">
+                {counts[key]}
+              </span>
             </button>
           )
         })}

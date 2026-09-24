@@ -1,11 +1,11 @@
 {
-  "name": "Agent on a Leash",
-  "short_name": "Agent Leash",
+  "name": "OneGuard",
+  "short_name": "OneGuard",
   "description": "Wallet control layer for an AI shopping agent; set, review and control what it may spend.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#F4F1EA",
-  "theme_color": "#14213D",
+  "background_color": "#F2F5F6",
+  "theme_color": "#F2F5F6",
   "icons": [
     {
       "src": "/icon.svg",

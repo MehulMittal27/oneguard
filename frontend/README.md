@@ -114,7 +114,7 @@ src/
 
   state/                    React context only — no Redux / Zustand / React Query
     CustomerContext/Provider  who is signed in (session-only)
-    PolicyContext/Provider    mandates keyed by card_id (session-only)
+    PolicyContext/Provider    mandates keyed by card_id, loaded from C3 (see §4)
     DecisionsContext/Provider polls C6, expires lapsed step-ups locally, resolves step-ups
     mergeDecisions.ts         the ONLY place incoming decisions become state (see §4)
 
@@ -187,8 +187,16 @@ the app open, so a screen that only loaded on sign-in would quietly go stale.
 decision's "Policy applied" link reaches it from another tab. Adding a router is fine — it just has
 not been needed.
 
-**No state library, and no persistence.** React context has been enough. Customer and policy state
-are session-only; sign-out is client-side and stores nothing. A reload signs the customer out.
+**No state library, and no persistence.** React context has been enough. Who is signed in is
+session-only; sign-out is client-side and stores nothing. A reload signs the customer out.
+
+**Policies come from C3, never from the session.** `PolicyProvider.refreshPolicies` reads every
+card's policy (`getPolicy`) and replaces what is held: on sign-in, after every decisions poll, after
+a step-up answer (C8), and after confirm (C2) or revoke (C5). So a reload and a new sign-in show the
+same policies, and the spend meter reads the ledger's current `usage`. Until the first round is back
+no card says "No policy yet"; "+ Add policy" appears only for a card C3 answered `null` for (a
+revoked card still has its revoked mandate). In mock mode `getPolicy` reads what the mock C2/C4/C5
+wrote.
 
 **A revoked policy is never deleted, only flipped to `status: 'revoked'`.** Otherwise "never had a
 policy" and "had one, revoked it" become indistinguishable when reviewing older activity, and a
@@ -244,14 +252,14 @@ whose window already closed**.
 
 - **C6 also serves the step-up inbox** — filter to `status: 'pending_human'`. There is no separate
   endpoint and no `Approval` type.
-- **Running spend needs no endpoint.** `lib/spend.ts` computes it client-side from C6 plus the
-  policy's own checks.
+- **Running spend comes from C3.** The meter reads `Mandate.usage` (the engine ledger). `lib/spend.ts`
+  computes it client-side from C6 plus the policy's own checks only when `usage` is absent (mock
+  mode's form and fallback drafts).
 - **C2 deliberately carries a body**, unlike the payment platform's own bodyless mandate confirm.
   The customer can change `uncertainty_policy` on the review screen before confirming, so the
   frontend sends back what they actually approved. Our `/api` is a wrapper, not a 1:1 proxy.
-- **C3 and C4 are dormant** — implemented in `src/api/policy.ts` and called from nowhere. Wiring C3
-  is what would let a policy survive a page reload. C4 has no UI because the tighten screen was
-  built and then pulled.
+- **C4 is dormant** — implemented in `src/api/policy.ts` and called from nowhere. It has no UI
+  because the tighten screen was built and then pulled.
 - **A lapsed step-up should be closed server-side too**, so the expiry survives a reload rather
   than living only in the open tab.
 - **Operator endpoints for starting or restarting a scenario run are outside this contract.** The
@@ -529,8 +537,6 @@ all five scenario instructions compile and confirm in mock mode.
 - **`reason_codes` is carried in the types and fixtures but no screen renders it.** The UI explains
   decisions through `message` + `evidence` instead. If codes are ever shown, they need one shared
   code→label map with a neutral fallback for unknown codes — not per-screen strings.
-- **C3 (`getPolicy`) is never called**, so policy state does not survive a reload; confirming a
-  policy updates the in-memory store directly. Wiring C3 is the fix.
 - **C4 (tighten) has no UI.** Endpoint and client function exist and are dormant.
 - **No live event stream yet** — polling every 5 s. The seam for it is `mergeDecisions`.
 - **No tests.** No runner is installed; `npm run build` and `npm run lint` are the gate.

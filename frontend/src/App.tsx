@@ -14,7 +14,17 @@ import { CardDetail } from './screens/CardDetail/CardDetail'
 import { NewPolicyFlow } from './screens/NewPolicy/NewPolicyFlow'
 import { TabBar, type TabId } from './components/TabBar'
 import { DeviceFrame } from './components/DeviceFrame'
+import { OperatorStrip } from './components/OperatorStrip'
 import { StatusBar } from './components/StatusBar'
+
+/**
+ * P3-2: the operator strip is opt-in by `?demo=1` and read once, at module
+ * scope. Nothing in the app can turn it on, so a customer never reaches it by
+ * tapping — only by being handed a URL that asks for it.
+ */
+const SHOW_OPERATOR_STRIP =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('demo') === '1'
+
 
 function SignedInShell() {
   const [tab, setTab] = useState<TabId>('home')
@@ -73,6 +83,7 @@ function SignedInShell() {
     return (
       <DeviceFrame>
         <div className="flex min-h-0 flex-1 flex-col bg-ground">
+          {SHOW_OPERATOR_STRIP && <OperatorStrip />}
           <StatusBar tone="ink" />
           <NewPolicyFlow
             cardId={flowCardId}
@@ -93,6 +104,7 @@ function SignedInShell() {
   return (
     <DeviceFrame>
       <div className="flex min-h-0 flex-1 flex-col bg-ground">
+        {SHOW_OPERATOR_STRIP && <OperatorStrip />}
         <StatusBar tone="ink" />
         <div ref={scrollRef} className="scrollbar-none flex-1 overflow-y-auto">
           {cardDetailId ? (
@@ -110,6 +122,7 @@ function SignedInShell() {
                   onOpenActivity={openActivity}
                   onGoToApprovals={goToApprovals}
                   onViewPolicy={setCardDetailId}
+                  onAddPolicy={setFlowCardId}
                 />
               )}
               {tab === 'accounts' && (
