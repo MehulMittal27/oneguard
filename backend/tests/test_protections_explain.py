@@ -194,3 +194,54 @@ def test_registered_explain_is_this_function():
     from oneguard.engine.interfaces import load_implementations
 
     assert load_implementations()["explain"] is explain
+
+
+# --- shop_terms_contradictory (D3) ------------------------------------------------------
+
+
+def _contradicting(details: str):
+    import copy
+    import json
+
+    from oneguard.engine.facts import build_facts
+    from oneguard.engine.policy import evaluate_rules
+    from oneguard.engine.types import Rule
+
+    example = Path(__file__).resolve().parents[2] / "data" / "scenario_fixtures" / "example_authorization_request.json"
+    event = copy.deepcopy(json.loads(example.read_text(encoding="utf-8")))
+    event["authorization"]["items"][0]["item_details"] = details
+    event["authorization"]["order_returnable"] = "true"
+    f = build_facts(event, None)
+    p = policy([
+        Rule(id="C7", field="order.return_window_days", operator=">=", value=14,
+             text="Returns accepted for 14 days or more", source="exact", kind="terms"),
+        Rule(id="C6", field="items[].size_eu", operator="=", value=43, text="Size 43", source="exact", kind="item"),
+    ])  # fmt: skip
+    return f, p, evaluate_rules(f, p)
+
+
+def test_contradictory_returns_are_named_with_both_terms():
+    f, p, rules = _contradicting("Road-running shoe, size 43; returns accepted within 30 days. Final sale.")
+    assert next(r for r in rules if r.rule_id == "C7").outcome == "unknown"
+    e = explain(decision("step_up", ["C7"], ["shop_terms_contradictory"]), f, p, rules, [])
+    assert e.message == ("Waiting for you CHF 20.00: The shop's description contradicts itself "
+                         "about returns (30 days and final sale).")  # fmt: skip
+    c7 = next(r for r in e.evidence if r.rule == "Returns accepted for 14 days or more")
+    assert c7.outcome == "uncertain" and "[0, 30]" not in c7.detail and "30 days and final sale" in c7.detail
+
+
+def test_contradiction_is_found_from_the_rule_detail_without_the_reason_code():
+    f, p, rules = _contradicting("Returns within 30 days; no returns on this item")
+    e = explain(decision("step_up", ["C7"]), f, p, rules, [])
+    assert "contradicts itself about returns (30 days and final sale)" in e.message
+
+
+def test_contradictory_sizes_are_named():
+    f, p, rules = _contradicting("Road-running shoe, size 42 and size 43; returns accepted within 30 days")
+    e = explain(decision("step_up", ["C6"], ["shop_terms_contradictory"]), f, p, rules, [])
+    assert "contradicts itself about size (42 and 43)" in e.message
+
+
+def test_contradiction_template_without_a_marked_fact():
+    e = explain(decision("step_up", codes=["shop_terms_contradictory"]), facts(), policy(), [rule()], [])
+    assert e.message == "Waiting for you CHF 100.00: The shop's description contradicts itself."

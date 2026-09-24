@@ -312,3 +312,67 @@ def test_registered_protections_runs_a7_on_the_ledgers_known_merchant_names():
     assert signal(P.protections(f, policy(), view(names={"ME1": "PixelHarbor"})), "A7").triggered
     a7 = signal(P.protections(f, policy(), view()), "A7")
     assert not a7.triggered and "not run" not in a7.detail, "no known names: checked, nothing close"
+
+
+# --- A6 end to end: the gym renewal (acceptance-oracle.yaml unseen_instructions) -----
+
+GYM = "Renew my gym membership, same price as last time, ask me if anything changed"
+
+
+def _gym_policy(last_price: float = 59.0) -> Policy:
+    oracle = __import__("yaml").safe_load((DATA.parent / "docs" / "acceptance-oracle.yaml").read_text())
+    [unseen] = [u for u in oracle["unseen_instructions"] if u["instruction"] == GYM]
+    assert unseen["uncertainty_policy"] == "ask"
+    return Policy(
+        mandate_id="TM", status="active", instruction=GYM, uncertainty_policy="ask",
+        requested_item="gym membership", allowed_item_categories=["membership"],
+        rules=[
+            Rule(id="C3", field="items[].item_category", operator="in", value=["membership"],
+                 text="Only gym membership", source="inferred", kind="item"),
+            # value_from: the last approved price at that merchant (resolved at compile time)
+            Rule(id="C1", field="authorization.billing_amount_chf", operator="=", value=last_price,
+                 currency="CHF", scope="purchase", text=f"Same price as last time (CHF {last_price:.2f})",
+                 source="exact", kind="amount", on_fail="ask"),
+        ],
+    )  # fmt: skip
+
+
+def _gym_event(lines: list[dict]) -> dict:
+    import copy
+    import json
+
+    event = copy.deepcopy(json.loads((DATA / "scenario_fixtures" / "example_authorization_request.json").read_text()))
+    a = event["authorization"]
+    a["merchant"].update(merchant_category="health", recurring_capable="true")
+    a["items"] = lines
+    total = round(sum(ln["unit_price"] * ln["quantity"] for ln in lines), 2)
+    a.update(amount=total, billing_amount_chf=total, items_subtotal=total, delivery_fee=0.0)
+    return event
+
+
+GYM_LINE = {"line_no": 1, "item_id": "IT_GYM", "item_name": "Gym membership renewal", "item_category": "membership",
+            "quantity": 1, "unit_price": 59.0, "currency": "CHF",
+            "item_details": "Monthly gym membership; renews automatically every month"}  # fmt: skip
+
+
+def test_gym_renewal_the_asked_for_recurring_line_is_not_hidden():
+    from oneguard.engine.facts import build_facts
+    from oneguard.engine.policy import evaluate_rules
+
+    f = build_facts(_gym_event([GYM_LINE]), None)
+    assert f.items[0].recurring.known and f.items[0].recurring.value, "the line really is recurring"
+    p = _gym_policy()
+    signals = P.evaluate(f, p, view(), {})
+    assert not signal(signals, "A6").triggered
+    assert [s.id for s in signals if s.triggered] == [], "no protection stands in the way"
+    assert {r.outcome for r in evaluate_rules(f, p)} == {"pass"}, "every rule passes: decide approves"
+
+
+def test_gym_renewal_an_unrequested_add_on_still_fires_a6():
+    from oneguard.engine.facts import build_facts
+
+    addon = {**GYM_LINE, "line_no": 2, "item_id": "IT_TOWEL", "item_name": "Towel service",
+             "item_category": "subscriptions", "unit_price": 9.0, "item_details": "Billed monthly"}  # fmt: skip
+    f = build_facts(_gym_event([GYM_LINE, addon]), None)
+    a6 = signal(P.evaluate(f, _gym_policy(), view(), {}), "A6")
+    assert a6.triggered and "line 2" in a6.detail and "line 1" not in a6.detail

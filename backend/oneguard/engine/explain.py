@@ -18,8 +18,10 @@ so an injected sentence is never repeated (E5). Templates keyed by reason code
 
 from __future__ import annotations
 
+import ast
 import re
 
+from oneguard.engine.facts import CONTRADICTORY
 from oneguard.engine.interfaces import register
 from oneguard.engine.policy import RESERVATION_ONLY
 from oneguard.engine.protections import (
@@ -71,7 +73,7 @@ REASON_TEMPLATES: dict[str, str] = {
     "foreign_currency_converted": "it was converted to CHF at the fixed rate",
     "ledger_mismatch": "the platform's spending total differs from ours",
     "period_reserved_pending": "an order still waiting for your answer would take you over your period limit",
-    "shop_terms_contradictory": "the shop's terms contradict each other",
+    "shop_terms_contradictory": "the shop's description contradicts itself",
     "stub": "the decision engine is not connected yet",
 }
 
@@ -103,11 +105,51 @@ _FACT_SOURCE: dict[str, EvidenceSource] = {
 _SETTING = {"ask": "ask you", "decline": "decline", "approve": "approve"}
 
 
+# facts.py marks a self-contradicting shop text as "contradictory <topic> in shop text: [values]".
+_CONTRADICTION = re.compile(rf"{CONTRADICTORY} (?P<topic>[a-z ]+?) in shop text: (?P<values>\[[^\]]*\])")
+_TOPICS = {"return terms": "returns", "sizes": "size"}
+
+
+def _term(topic: str, value: object) -> str:
+    if topic == "returns" and isinstance(value, int):
+        return "final sale" if value == 0 else f"{value} days"
+    return f"{value:g}" if isinstance(value, float) else str(value)
+
+
+def _and(parts: list[str]) -> str:
+    return parts[0] if len(parts) == 1 else f"{', '.join(parts[:-1])} and {parts[-1]}"
+
+
+def _contradiction_phrase(match: re.Match[str]) -> str:
+    """"the shop's description contradicts itself about returns (30 days and final sale)"."""
+    topic = _TOPICS.get(match["topic"], match["topic"])
+    try:
+        values = ast.literal_eval(match["values"])
+    except (ValueError, SyntaxError):
+        return f"the shop's description contradicts itself about {topic}"
+    ordered = sorted(values, key=lambda v: (v == 0, str(v) == "exchange only", v if isinstance(v, int | float) else 0))
+    return f"the shop's description contradicts itself about {topic} ({_and([_term(topic, v) for v in ordered])})"
+
+
+def contradiction(facts: Facts) -> str | None:
+    """The shop's self-contradiction, in the customer's words, from the first fact marked
+    contradictory (order return window, then each line's return window and sizes)."""
+    candidates = [facts.return_window_days]
+    for line in facts.items:
+        candidates += [line.return_window_days, line.size_eu, line.size_letter]
+    for fact in candidates:
+        if fact.detail.startswith(CONTRADICTORY) and (m := _CONTRADICTION.search(fact.detail)):
+            return _contradiction_phrase(m)
+    return None
+
+
 def clean(text: str | None, facts: Facts) -> str:
-    """Shop-derived text with every instruction to the agent removed (E5)."""
+    """Shop-derived text with every instruction to the agent removed (E5), and internal
+    markers (M5 reservation, raw contradiction lists) turned into plain words."""
     if not text:
         return ""
     text = text.replace(f"; {RESERVATION_ONLY}", "").replace(RESERVATION_ONLY, "")
+    text = _CONTRADICTION.sub(_contradiction_phrase, text)
     for span in facts.agent_directed_text:
         text = re.sub(re.escape(span), REMOVED, text, flags=re.IGNORECASE)
     for pattern in AGENT_DIRECTED_PATTERNS:
@@ -215,6 +257,11 @@ def _message(
         requote = next((s for s in signals if s.triggered and s.id == "A5"), None)
         if requote and requote.related:
             body = f"{body}; it is a new quote after the declined {requote.related[0]}"
+    elif "shop_terms_contradictory" in decision.reason_codes or (
+        deciding and isinstance(deciding[0], RuleResult) and CONTRADICTORY in deciding[0].detail
+    ):
+        phrase = contradiction(facts) or REASON_TEMPLATES["shop_terms_contradictory"]
+        body = phrase[0].upper() + phrase[1:]  # "The shop's description contradicts itself about …"
     elif deciding:
         first = deciding[0]
         if isinstance(first, Signal) and first.id in ("A1", "S_agent_directed"):

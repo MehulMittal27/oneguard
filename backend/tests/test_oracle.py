@@ -15,19 +15,24 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 import yaml
+from sqlalchemy.orm import Session
 
-from oneguard.engine.ledger_base import InMemoryLedger
+from oneguard.engine.ledger import StoreLedger
+from oneguard.engine.ledger_base import InMemoryLedger, Ledger
 from oneguard.engine.types import Policy
 from oneguard.pipeline import PipelineContext, decide_event
 from oneguard.replay.events import Pack, build_events
 from oneguard.store import seed as seed_module
-from oneguard.store.db import make_engine, session
+from oneguard.store.db import init_db, make_engine, session
 from oneguard.store.history import StoreHistoryIndex
 
 REPO = Path(__file__).resolve().parents[2]
@@ -212,17 +217,36 @@ def to_policy(scenario_id: str) -> Policy:
     return Policy.model_validate({"mandate_id": f"TM_ORACLE_{scenario_id}", **fixture})
 
 
+LEDGERS = ["store", "memory"]
+
+
+@contextmanager
+def fresh_ledger(kind: str, history: StoreHistoryIndex, folder: Path) -> Iterator[Ledger]:
+    """An empty ledger: P2's StoreLedger on its own temp SQLite file (the one the worker
+    uses, with the session watch), or the in-memory reference."""
+    if kind == "memory":
+        yield InMemoryLedger(history=history)
+        return
+    engine = make_engine(f"sqlite:///{folder / f'ledger-{uuid4().hex}.sqlite'}")
+    init_db(engine)
+    try:
+        with Session(engine, expire_on_commit=False) as s:
+            yield StoreLedger(s, history=history)
+    finally:
+        engine.dispose()
+
+
 def _run_scenario(
-    pack: Pack, history: StoreHistoryIndex, scenario_id: str, branch: Branch | None, signals: bool
+    pack: Pack, history: StoreHistoryIndex, scenario_id: str, branch: Branch | None, signals: bool,
+    ledger: Ledger,
 ) -> dict[str, str]:
-    """Replay a scenario through the pipeline with a fresh ledger: {source id: outcome}.
+    """Replay a scenario through the pipeline on an empty ledger: {source id: outcome}.
 
     The step-up a `branch` names is answered (approve / decline) before the next event,
     or left pending (reserved, M5). Every other step-up stays pending: no answer is
     invented (CLAUDE.md rule 6).
     """
     policy = to_policy(scenario_id)
-    ledger = InMemoryLedger(history=history)
     ctx = PipelineContext(
         policy=policy, ledger=ledger, history=history,
         run_id=f"oracle-{scenario_id}", signals_enabled=signals,
@@ -245,15 +269,17 @@ def test_policy_fixture_loads_as_the_engine_policy(scenario_id):
 
 
 @pytest.mark.xfail(strict=False, reason="engine lanes (P2, P5) merge at Gate 1; stubs step_up everything")
+@pytest.mark.parametrize("kind", LEDGERS)
 @pytest.mark.parametrize("signals", [False, True], ids=["signals-off", "signals-on"])
 @pytest.mark.parametrize(
     ("scenario_id", "branch"),
     [(s, b) for s in sorted(ORACLE["scenarios"]) for b in branches(s)],
     ids=lambda v: v if isinstance(v, str) else (v.label if v else "no-depends"),
 )
-def test_oracle_outcomes(pack, history, monkeypatch, scenario_id, branch, signals):
+def test_oracle_outcomes(pack, history, monkeypatch, tmp_path, scenario_id, branch, signals, kind):
     monkeypatch.setenv("ONEGUARD_SOFT_SIGNALS", "keywords" if signals else "off")
-    actual = _run_scenario(pack, history, scenario_id, branch, signals)
+    with fresh_ledger(kind, history, tmp_path) as ledger:
+        actual = _run_scenario(pack, history, scenario_id, branch, signals, ledger)
     expected = {
         row["id"]: expected_outcome(row, branch, ORACLE["defaults"])
         for row in ORACLE["scenarios"][scenario_id]["purchases"]
@@ -261,11 +287,22 @@ def test_oracle_outcomes(pack, history, monkeypatch, scenario_id, branch, signal
     assert actual == expected
 
 
-def test_outcomes_identical_with_signals_on_and_off(pack, history, monkeypatch):
+@pytest.mark.parametrize("kind", LEDGERS)
+def test_outcomes_identical_with_signals_on_and_off(pack, history, monkeypatch, tmp_path, kind):
     """P8: models only add evidence; the public outcomes do not move. Holds on stubs too."""
     for scenario_id in sorted(ORACLE["scenarios"]):
         for branch in branches(scenario_id):
-            monkeypatch.setenv("ONEGUARD_SOFT_SIGNALS", "off")
-            off = _run_scenario(pack, history, scenario_id, branch, False)
-            monkeypatch.setenv("ONEGUARD_SOFT_SIGNALS", "keywords")
-            assert _run_scenario(pack, history, scenario_id, branch, True) == off, scenario_id
+            outcomes = []
+            for signals in (False, True):
+                monkeypatch.setenv("ONEGUARD_SOFT_SIGNALS", "keywords" if signals else "off")
+                with fresh_ledger(kind, history, tmp_path) as ledger:
+                    outcomes.append(_run_scenario(pack, history, scenario_id, branch, signals, ledger))
+            assert outcomes[0] == outcomes[1], scenario_id
+
+
+def test_the_store_ledger_run_is_durable(pack, history, tmp_path):
+    """The store parametrisation really writes the decisions table (not a silent no-op)."""
+    with fresh_ledger("store", history, tmp_path) as ledger:
+        outcomes = _run_scenario(pack, history, "SCEN0001", None, False, ledger)
+        stored = [ledger.get(source_id) for source_id in outcomes]
+    assert all(entry is not None for entry in stored) and len(stored) == 10
