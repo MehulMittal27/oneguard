@@ -963,3 +963,33 @@ def test_a_tier3_provider_failure_leaves_the_template(db: Engine, history: Store
             assert len(seen) == 10  # no rewritten decision was announced
 
     asyncio.run(scenario())
+
+
+def test_stop_stores_what_each_run_last_reported(
+    db: Engine, history: StoreHistoryIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``stop`` can cut the loop between a decision and its ``runs`` write (here the event
+    feed is slow); the row a restarted process reads (D4, D7) still counts the decision."""
+    sync_events = VisecaWorker._sync_events
+
+    async def slow_feed(self: VisecaWorker) -> None:
+        await asyncio.sleep(0.5)
+        await sync_events(self)
+
+    monkeypatch.setattr(VisecaWorker, "_sync_events", slow_feed)
+
+    async def scenario() -> str:
+        seen: list[api.Decision] = []
+        async with harness(db, fast(), history=history) as (_, client, worker):
+            worker.add_listener(seen.append)
+            await worker.start()
+            _, run_id = await start_run(client, worker, "SCEN0000")
+            await wait_until(lambda: len(seen) == 1)
+            status = worker.run_status(run_id)
+            assert status is not None and status.decided == 1
+        return run_id
+
+    run_id = asyncio.run(scenario())
+    with session(db) as s:
+        row = s.scalars(select(Run).where(Run.viseca_run_id == run_id)).one()
+        assert (row.delivered, row.decided) == (1, 1)

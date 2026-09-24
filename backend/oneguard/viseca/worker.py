@@ -744,7 +744,8 @@ class VisecaWorker:
 
     async def stop(self) -> None:
         """Stop polling, cancel expiry timers (pending step-ups are recovered on start) and
-        tier-3 rewrites (their decisions keep the template message).
+        tier-3 rewrites (their decisions keep the template message), and store every run's
+        counters.
 
         Waits up to ``STOP_DRAIN_S`` for the engine thread's current work and for store
         calls still running (cancelling their caller does not stop the thread or free its
@@ -774,10 +775,23 @@ class VisecaWorker:
             _, late = await asyncio.wait(running, timeout=STOP_DRAIN_S)
             if late:
                 log.warning("%d store calls still running after %s s", len(late), STOP_DRAIN_S)
+        await self._save_runs_at_stop()
         close = getattr(self._ledger, "close", None)
         if callable(close):
             close()
         await self.client.drain()
+
+    async def _save_runs_at_stop(self) -> None:
+        """Store every run's counters as ``stop`` leaves them, so the ``runs`` row a
+        restarted process reads (D4, D7) says what the worker last reported."""
+        if not self._runs:
+            return
+        try:
+            await asyncio.wait_for(
+                self._store(lambda: [self._save_run(run) for run in list(self._runs.values())]), STOP_DRAIN_S
+            )
+        except Exception:
+            log.exception("could not store the runs at stop")
 
     async def revoke(self, viseca_mandate_id: str) -> None:
         """Revoke a mandate: locally at once (nothing more is approved), then at Viseca."""
@@ -1165,12 +1179,16 @@ class VisecaWorker:
     # Deciding ----------------------------------------------------------------------------
 
     async def _store(self, fn: Callable[..., T], *args: Any) -> T:
-        """Run a store read or write (not the ledger) on a store thread, tracked for ``stop``."""
+        """Run a store read or write (not the ledger) on a store thread, tracked for ``stop``.
+
+        Once asked for, the call runs even if its caller is cancelled (``stop`` cancels the
+        loop between a decision and its ``runs`` write); ``stop`` waits for it.
+        """
         future = self._store_pool.submit(fn, *args)
         with self._store_calls_lock:
             self._store_calls.add(future)
         future.add_done_callback(self._store_call_done)
-        return await asyncio.wrap_future(future)
+        return await asyncio.shield(asyncio.wrap_future(future))
 
     def _store_call_done(self, future: Future[Any]) -> None:
         with self._store_calls_lock:
