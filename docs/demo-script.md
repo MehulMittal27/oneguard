@@ -24,8 +24,8 @@ were checked with the same pipeline and the scenario's policy fixture.
 ## Roles and screens
 
 - **Operator**: laptop terminal with `API=https://oneguard.fly.dev` exported, runs the curl
-  commands below. Nothing on stage needs `make`; `make demo-offline` only targets
-  `localhost:8000`.
+  commands below. Nothing on stage needs `make`; `make demo-offline` calls the same D2 on
+  `ONEGUARD_API_URL` (default the cloud app) and starts nothing when it does not answer.
 - **Customer / presenter**: one browser on `https://oneguard.fly.dev/?demo=1`, projected.
   `?demo=1` adds the dark **Operator** strip above the phone frame: the current replay's
   `scenario · card`, `n/total delivered`, `running`/`idle`, and the **Soft signals: on**
@@ -53,7 +53,8 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
 
 2. **Health**: `curl -s $API/healthz | jq '{worker: .worker.state, polling: .worker.polling, ok: .worker.ok, signals, model_loaded, database: .database.ok}'`.
    Expect `worker: "polling"`, `polling: true`, `ok: true`, `signals.backend: "keywords"`,
-   `signals.enabled: true`, `model_loaded: false` and `database: true`. The cloud runs
+   `signals.configured: "keywords"`, `signals.enabled: true`, `model_loaded: false` and
+   `database: true`. The cloud runs
    keyword soft signals (Fly secret `ONEGUARD_SOFT_SIGNALS=keywords`, docs/decisions.md), so
    `model_loaded: false` is expected. `worker: "standby"` means a second process holds the
    store's worker lease (for example a laptop `make serve` with the Supabase `.env`
@@ -285,7 +286,7 @@ curl -s -X POST $API/api/dev/replay/restart -H 'Content-Type: application/json' 
 
 About 3 s later the newest run shows the same eleven outcomes; open **Earlier runs (n)** and
 the step-2 run (the latest "Started ...") to compare row by row. Switch to the `/healthz`
-tab and reload: `"signals": {"backend": "keywords", "enabled": false, "model_loaded": false}`
+tab and reload: `"signals": {"backend": "keywords", "configured": "keywords", "enabled": false, "model_loading": false, "model_loaded": false}`
 and top-level `"model_loaded": false`: the cloud's soft signal is the keyword detector, and
 it is switched off for this replay.
 

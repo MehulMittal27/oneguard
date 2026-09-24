@@ -97,12 +97,13 @@ its holder (`customer_id`, `customer_name`); when that card is not the one D3 wa
 before), the policy moves there: a copy of the mandate (same Viseca mandate) becomes that card's active policy and the
 original is marked revoked (docs/decisions.md). D4 and D7 name the holder too.
 
-**`make demo-live SCEN=<id>`** never decides: it drives the server at `ONEGUARD_API` (default
+**`make demo-live SCEN=<id>`** never decides: it drives the server at `ONEGUARD_API_URL` (default
 `https://oneguard.fly.dev`): D8 → D7 (an unfinished newest run, or the scenario's `active_run_id`: that run is named,
 exit 1, nothing changed; `--force` / `make demo-live FORCE=1` skips this and sends D3 `force: true`) → C1 on the scenario's card (unknown:
 `--card`, else the bootstrap profile's) → C2 → D3, prints `Sign in as <name> (<customer_id>, card <card_id>)` from
-D3's reply, then follows D4 and the customer's C6 read-only. Only when no OneGuard server answers `/healthz` there does
-it fall back to a worker in its own process, and says so.
+D3's reply, then follows D4 and the customer's C6 read-only. **`make demo-offline SCEN=<id>`** calls D2 on the same
+server. Both probe `/healthz` first: when no OneGuard server answers there they say so and exit 1, and start nothing
+(no run, no replay, no worker of their own).
 
 ---
 

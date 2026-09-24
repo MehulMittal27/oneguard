@@ -6,12 +6,20 @@
 # Keyword soft signals only: the Fly secret ONEGUARD_SOFT_SIGNALS=keywords overrides the
 # image's laya default, because on Fly's CPUs Laya does not answer a purchase inside its
 # budget (docs/benchmark.md §3), so 1 GB is enough. Turning Laya on needs 4 GB first
-# (the model alone is ~2 GB resident) and then `fly secrets unset ONEGUARD_SOFT_SIGNALS`.
+# (the model alone is ~2 GB resident) and then `fly secrets unset ONEGUARD_SOFT_SIGNALS`;
+# it then loads in the background at startup while the worker polls with keywords.
 app = "oneguard"
 primary_region = "lhr"
 
 [build]
   dockerfile = "Dockerfile"
+
+# One machine: a rolling deploy has nothing to roll over to, and Fly's health-check wait
+# only delays the new machine. It polls Viseca as soon as the app is up (the model loads
+# in the background, api/app.py), so the gap between the old worker and the new is the
+# container start.
+[deploy]
+  strategy = "immediate"
 
 [env]
   PORT = "8080"

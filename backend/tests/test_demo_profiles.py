@@ -220,7 +220,6 @@ def no_local_worker(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         real_init(self, *args, **kwargs)
 
     monkeypatch.setattr(worker_module.VisecaWorker, "__init__", counting_init)
-    monkeypatch.setattr(demo, "run_local", lambda *a, **k: pytest.fail("demo-live ran a local worker"))
     return built
 
 
@@ -313,14 +312,78 @@ def test_demo_live_changes_nothing_while_a_run_is_active(
     asyncio.run(scenario())
 
 
-def test_demo_live_without_a_server_says_it_falls_back(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+NO_SERVER = "http://127.0.0.1:9"
+"""Nothing listens there."""
+
+
+@pytest.mark.parametrize("offline", [False, True], ids=["demo-live", "demo-offline"])
+def test_without_a_server_nothing_starts(
+    offline: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    no_local_worker: list[str],
 ) -> None:
-    monkeypatch.delenv("VISECA_API_KEY", raising=False)
-    assert demo.main(["--scenario", "SCEN0101", "--api", "http://127.0.0.1:9"]) == 2
-    out, err = capsys.readouterr()
-    assert "No OneGuard server answers at http://127.0.0.1:9. Falling back to a local worker" in out
-    assert "VISECA_API_KEY is not set" in err
+    """No OneGuard answers at ONEGUARD_API_URL: exit 1, say so, start no run and no worker."""
+    monkeypatch.setenv("VISECA_API_KEY", "some-key")  # a key does not bring a local decider back
+    monkeypatch.setenv(demo.API_ENV, NO_SERVER)
+    sent: list[str] = []
+    real_call = demo._call
+
+    async def spy(http: httpx.AsyncClient, method: str, path: str, body: Any = None) -> Any:
+        sent.append(f"{method} {path}")
+        return await real_call(http, method, path, body)
+
+    monkeypatch.setattr(demo, "_call", spy)
+    assert demo.main(["--scenario", "SCEN0101", *(["--offline"] if offline else [])]) == 1
+    out = capsys.readouterr().out
+    assert f"No OneGuard server answers at {NO_SERVER}/healthz, so nothing was started" in out
+    assert f"export {demo.API_ENV}=<server url>" in out
+    assert sent == [] and no_local_worker == []
+
+
+def test_a_non_oneguard_answer_counts_as_no_server(no_local_worker: list[str]) -> None:
+    def elsewhere(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "ok"}) if request.url.path == "/healthz" else pytest.fail(
+            f"{request.method} {request.url.path} sent to a server that is not OneGuard"
+        )
+
+    lines: list[str] = []
+    code = asyncio.run(
+        demo.live("SCEN0101", api_base=API, transport=httpx.MockTransport(elsewhere), out=lines.append)
+    )
+    assert code == 1 and lines[0].startswith(f"No OneGuard server answers at {API}/healthz")
+
+
+def test_the_server_defaults_to_the_cloud_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    async def live(scenario_id: str, *, api_base: str, **_: Any) -> int:
+        seen.append(api_base)
+        return 0
+
+    monkeypatch.setattr(demo, "live", live)
+    monkeypatch.delenv(demo.API_ENV, raising=False)
+    assert demo.main(["--scenario", "SCEN0101"]) == 0
+    monkeypatch.setenv(demo.API_ENV, "http://localhost:8000/")
+    assert demo.main(["--scenario", "SCEN0101"]) == 0
+    assert seen == ["https://oneguard.fly.dev", "http://localhost:8000"]
+
+
+def test_demo_offline_restarts_the_servers_replay(db_url: str, no_local_worker: list[str]) -> None:  # noqa: F811
+    async def scenario() -> None:
+        lines: list[str] = []
+        async with running(db_url) as run:
+            await confirm_form(run, "CA0001")
+            code = await demo.offline(
+                "SCEN0000", api_base=API, card_id="CA0001", speed_ms=0,
+                transport=httpx.ASGITransport(app=run.app), out=lines.append,
+            )  # fmt: skip
+            assert code == 0, lines
+            assert lines == [f"Replay of SCEN0000 on card CA0001 started at {API}: 1 purchase, 0 ms apart."]
+            assert (await run.get("/api/dev/replay")).json()["scenario_id"] == "SCEN0000"
+        assert no_local_worker == []
+
+    asyncio.run(scenario())
 
 
 def test_demo_live_needs_a_server_connected_to_the_platform(db_url: str) -> None:  # noqa: F811
