@@ -22,6 +22,7 @@ from oneguard.compiler.draft import (
     ITEM_CATEGORIES,
     KNOWN_SHOP_FIELD,
     MERCHANT_CATEGORIES,
+    PURCHASE_COUNT_FIELD,
     SIZE_LETTERS,
     WEEKDAYS,
     ParsedDraft,
@@ -81,7 +82,9 @@ def _example_rule(field: str, operator: str, words: str, **values: Any) -> dict[
     return rule
 
 
-# Two worked examples: one of the public instructions, one invented (not in the oracle).
+# Worked examples: one public instruction, the rest invented (not served, not in the oracle),
+# one per restriction type the judging pack showed missing. Each output is what the fallback
+# parser reads from the same sentence (tests/test_compiler_judging.py holds them to it).
 EXAMPLES: list[tuple[str, dict[str, Any]]] = [
     (
         (
@@ -124,6 +127,142 @@ EXAMPLES: list[tuple[str, dict[str, Any]]] = [
             "open_questions": [],
         },
     ),
+    (
+        # per-order vs period amounts, "never spend more than", item types, known shop, shop type
+        (
+            "Buy groceries and household basics at supermarkets I already use. Never spend more than "
+            "CHF 80 per order or CHF 200 in any 14-day window."
+        ),
+        {
+            "uncertainty_policy": "ask",
+            "requested_item": None,
+            "nothing_extra": False,
+            "rules": [
+                _example_rule("items[].item_category", "in", "groceries and household basics",
+                              value_list=["groceries", "household"]),
+                _example_rule("merchant.merchant_category", "=", "at supermarkets", value_text="groceries",
+                              source="inferred"),
+                _example_rule(KNOWN_SHOP_FIELD, "=", "supermarkets I already use", value_text="true"),
+                _example_rule("authorization.billing_amount_chf", "<=", "Never spend more than CHF 80 per order",
+                              value_number=80, currency="CHF", scope="purchase"),
+                _example_rule("authorization.billing_amount_chf", "<=", "CHF 200 in any 14-day window",
+                              value_number=200, currency="CHF", scope="period", period_days=14),
+            ],
+            "open_questions": [],
+        },
+    ),
+    (
+        # weekday wording, a purchase count per period, usual services
+        (
+            "Lunch on weekdays only, at most one order a day, CHF 30 maximum, from my usual services. "
+            "Never at the weekend."
+        ),
+        {
+            "uncertainty_policy": "ask",
+            "requested_item": None,
+            "nothing_extra": False,
+            "rules": [
+                _example_rule("items[].item_category", "in", "Lunch", value_list=["dining", "food_delivery"],
+                              source="inferred"),
+                _example_rule("authorization.weekday", "in", "on weekdays only",
+                              value_list=["mon", "tue", "wed", "thu", "fri"]),
+                _example_rule(PURCHASE_COUNT_FIELD, "<=", "one order a day", value_number=1, scope="period",
+                              period_days=1),
+                _example_rule("authorization.billing_amount_chf", "<=", "CHF 30 maximum", value_number=30,
+                              currency="CHF", scope="purchase"),
+                _example_rule(KNOWN_SHOP_FIELD, "=", "my usual services", value_text="true"),
+            ],
+            "open_questions": [],
+        },
+    ),
+    (
+        # exclusions: a category, a thing no category holds, no new services; a price-change clause
+        (
+            "Keep my current subscriptions running. Total per month must stay under CHF 50. No new "
+            "services, no premium tiers, no gift cards. If a price changes, ask me."
+        ),
+        {
+            "uncertainty_policy": "ask",
+            "requested_item": None,
+            "nothing_extra": False,
+            "rules": [
+                _example_rule("items[].item_category", "in", "subscriptions", value_list=["subscriptions"]),
+                _example_rule("authorization.billing_amount_chf", "<", "Total per month must stay under CHF 50",
+                              value_number=50, currency="CHF", scope="period", period_days=30),
+                _example_rule(KNOWN_SHOP_FIELD, "=", "No new services", value_text="true"),
+                _example_rule("unverifiable", "=", "no premium tiers", value_text="no premium tiers"),
+                _example_rule("items[].item_category", "not_in", "no gift cards", value_list=["gift_card"]),
+                _example_rule("unverifiable", "=", "If a price changes, ask me",
+                              value_text="the price has not changed since last time", on_fail="ask"),
+            ],
+            "open_questions": ["No amount stated: what is the most one purchase may cost?"],
+        },
+    ),
+    (
+        # a booking: per-night price, refundable rate, place and dates, an excluded travel extra
+        (
+            "Book me a hotel in Lyon for 2 nights from 3 May to 5 May, at most CHF 150 per night, "
+            "refundable rate only. No flights."
+        ),
+        {
+            "uncertainty_policy": "ask",
+            "requested_item": None,
+            "nothing_extra": False,
+            "rules": [
+                _example_rule("items[].item_category", "in", "a hotel", value_list=["hotel"]),
+                _example_rule("unverifiable", "=", "in Lyon", value_text="in Lyon"),
+                _example_rule("unverifiable", "=", "for 2 nights from 3 May to 5 May",
+                              value_text="for 2 nights from 3 May to 5 May"),
+                _example_rule("items[].unit_price_chf", "<=", "at most CHF 150 per night", value_number=150,
+                              currency="CHF", scope="purchase"),
+                _example_rule("order.order_cancellable", "=", "refundable rate only", value_text="true"),
+                _example_rule("items[].item_category", "not_in", "No flights", value_list=["travel"]),
+            ],
+            "open_questions": ["No per-order limit stated: is the order limit CHF 300 (2 nights at CHF 150 each)?"],
+        },
+    ),
+    (
+        # country and shop type from one phrase, a foreign-currency cap, "can be returned"
+        (
+            "Order trail shoes, size 44, from the German outdoor retailer I already know. Pay no more than "
+            "EUR 150 and only if they can be returned."
+        ),
+        {
+            "uncertainty_policy": "ask",
+            "requested_item": "trail shoes",
+            "nothing_extra": False,
+            "rules": [
+                _example_rule("items[].size_eu", "=", "size 44", value_number=44),
+                _example_rule("merchant.merchant_country", "=", "German", value_text="DE"),
+                _example_rule("merchant.merchant_category", "=", "outdoor retailer", value_text="sporting_goods",
+                              source="inferred"),
+                _example_rule(KNOWN_SHOP_FIELD, "=", "retailer I already know", value_text="true"),
+                _example_rule("authorization.billing_amount_chf", "<=", "Pay no more than EUR 150",
+                              value_number=150, currency="EUR", scope="purchase"),
+                _example_rule("order.order_returnable", "=", "only if they can be returned", value_text="true"),
+            ],
+            "open_questions": [],
+        },
+    ),
+    (
+        # "purchases up to X each" is per purchase; a session clause is not a rule
+        (
+            "Allow small electronics purchases up to CHF 200 each at retailers I already use. If the "
+            "session looks unusual, stop and ask me."
+        ),
+        {
+            "uncertainty_policy": "ask",
+            "requested_item": None,
+            "nothing_extra": False,
+            "rules": [
+                _example_rule("items[].item_category", "in", "electronics", value_list=["electronics"]),
+                _example_rule("authorization.billing_amount_chf", "<=", "purchases up to CHF 200 each",
+                              value_number=200, currency="CHF", scope="purchase"),
+                _example_rule(KNOWN_SHOP_FIELD, "=", "retailers I already use", value_text="true"),
+            ],
+            "open_questions": [],
+        },
+    ),
 ]
 
 SYSTEM = f"""You turn a cardholder's shopping instruction for an AI agent into typed rules.
@@ -152,6 +291,7 @@ Use ONLY these fields (docs/api-contract.md §3.3):
 | authorization.delivery_by | "<=" a date: value_text YYYY-MM-DD, or value_from "next_weekday" with value_text "fri" for "by Friday" |
 | authorization.weekday | purchase day in Swiss time, in / not_in of {", ".join(WEEKDAYS)} |
 | authorization.local_hour | purchase hour in Swiss time, 0-23 |
+| {PURCHASE_COUNT_FIELD} | "<=" N purchases in a rolling window, scope "period", period_days (1 = a day): "one delivery a day" |
 | unverifiable | a stated restriction no field can check ("from the official ticket seller", "the present I picked"); value_text = the customer's words |
 
 Rules:
@@ -175,6 +315,27 @@ Rules:
   value_number null; the price is looked up from the customer's history, never guessed.
 - "Renew …" together with "ask me if anything changed" also means the same shop as before:
   merchant.familiar_on_card "true", source "inferred", on_fail "ask".
+- Amount scope: "per order" / "each order" / "purchases up to X each" = per purchase
+  (authorization.billing_amount_chf, scope "purchase"); "per night" / "each item" / "X each" after
+  an item = items[].unit_price_chf; "in any 7-day window" / "per month" = scope "period".
+  "Never spend more than X" is "<=". Two amounts in one sentence are two rules.
+- Item types the customer allows ("groceries and household basics only", "weeknight dinners")
+  are one items[].item_category "in" rule; types after "no" are excluded, never allowed.
+  Excluded types ("no gift cards, no cosmetics"; flights and travel insurance are "travel") are
+  one "not_in" rule. A thing no category holds ("no alcohol": wine is groceries; "no premium
+  tiers"; "no annual prepayments") is one unverifiable rule each.
+- Known shop: "shops I use", "supermarkets I already use", "my usual services", "my current
+  subscriptions", "no new services" all mean {KNOWN_SHOP_FIELD} "true".
+- Shop type words: "outdoor" / "sports" -> sporting_goods, "supermarket" -> groceries. A country
+  adjective ("the Austrian outdoor retailer") gives merchant.merchant_country as well.
+- Days: "weekdays" / "weeknights" -> weekday in mon..fri; "never at the weekend" alone ->
+  weekday not_in [sat, sun]; both together are one rule (in mon..fri).
+- A count per period ("one delivery a day", "two orders a week") -> {PURCHASE_COUNT_FIELD} "<=".
+- A booking: the category (hotel), the place and the dates (unverifiable, one rule each), the
+  price per night (items[].unit_price_chf), "refundable rate" -> order.order_cancellable "true".
+- "If a price changes, ask me" with no single price stated -> an unverifiable rule, value_text
+  "the price has not changed since last time", on_fail "ask".
+- "If the session looks unusual ... stop and ask me" is not a rule: those checks always run.
 - words: the customer's phrase for this rule, copied verbatim from the instruction.
 - source "exact" when the customer said it directly, "inferred" when you mapped it (lunch -> dining).
 - open_questions: short questions only for what is missing, above all when no per-order amount
