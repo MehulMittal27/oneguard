@@ -31,11 +31,13 @@ Run: python3 frontend/scripts/build_policy_fixture.py
 import csv
 import json
 from collections import Counter
+from datetime import datetime, timedelta
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "data"
 OUT_PATH = REPO_ROOT / "frontend" / "src" / "mocks" / "fixtures" / "policy-drafts.json"
+DECISIONS_PATH = REPO_ROOT / "frontend" / "src" / "mocks" / "fixtures" / "decisions.json"
 
 
 def load_csv(name):
@@ -211,20 +213,68 @@ def compute_dry_run(card_id, limit, category, history_by_card):
     return dry_run
 
 
-def mandate_usage(scenario_id, limit, run_start):
-    """The `usage` a freshly confirmed mandate carries (docs/api-contract.md
-    §2, MandateUsage): its limits, and nothing spent or pending yet as of the
-    run's first purchase. Spend in mock mode is still computed client-side
-    from the decisions feed; this carries the limits."""
+def load_decisions_for(card_id):
+    """This card's rows out of the generated decisions fixture.
+
+    `usage` has to agree with what the decision feed shows, or mock mode
+    contradicts itself: the meter would read the ledger's figure while the
+    activity list below it adds up to a different one. So the numbers are read
+    back from decisions.json rather than assumed, which makes this script depend
+    on build_decisions_fixture.py having run first.
+    """
+    if not DECISIONS_PATH.exists():
+        raise SystemExit(
+            f"{DECISIONS_PATH.relative_to(REPO_ROOT)} not found — "
+            "run build_decisions_fixture.py first, usage is derived from it"
+        )
+    with open(DECISIONS_PATH, encoding="utf-8") as f:
+        rows = json.load(f)["decisions"]
+    return [r for r in rows if r["card_id"] == card_id]
+
+
+def is_spend(row):
+    """docs/rules.md M4: final approvals only, a customer-approved step-up included."""
+    return row["decision"] == "approved" or (
+        row["decision"] == "uncertain" and row.get("uncertain_outcome") == "approved"
+    )
+
+
+def mandate_usage(scenario_id, card_id, limit, run_start):
+    """The `usage` the engine ledger would carry (docs/api-contract.md §2).
+
+    Windowed exactly as `lib/spend.ts`'s computePeriodSpend does — ending at the
+    most recent spend on the card's own simulated clock, not the real one — so
+    the ledger figure and the mock fallback agree to the rappen.
+    """
     period_limit, period_days = PERIOD_SPEC.get(scenario_id, (None, None))
+    rows = load_decisions_for(card_id)
+    spend_rows = [r for r in rows if is_spend(r)]
+
+    if spend_rows and period_days is not None:
+        window_end = max(r["occurred_at"] for r in spend_rows)
+        start = datetime.fromisoformat(window_end.replace("Z", "+00:00")) - timedelta(
+            days=period_days
+        )
+        window_start = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+        in_window = [r for r in spend_rows if r["occurred_at"] > window_start]
+    else:
+        # No period limit: nothing to window against, so the figure is the card's
+        # whole run. It is carried for completeness — MandateUsage requires it —
+        # but no meter reads it, since a per-order-only policy draws the dot ruler.
+        window_start = run_start
+        in_window = spend_rows
+
     return {
         "per_order_limit_chf": limit,
         "period_limit_chf": period_limit,
         "period_days": period_days,
-        "period_spent_chf": 0,
-        "period_window_start": run_start,
-        "pending_chf": 0,
-        "as_of": run_start,
+        "period_spent_chf": round(sum(r["billing_amount_chf"] for r in in_window), 2),
+        "period_window_start": window_start,
+        # Stepped up and waiting: a reservation, never spend.
+        "pending_chf": round(
+            sum(r["billing_amount_chf"] for r in rows if r["status"] == "pending_human"), 2
+        ),
+        "as_of": max((r["occurred_at"] for r in rows), default=run_start),
     }
 
 
@@ -260,7 +310,7 @@ def build():
                 "compiler": "llm",
                 # Not a PolicyDraft field: mock confirmPolicy copies it onto the
                 # Mandate it returns, as the real backend's C2 would.
-                "usage": mandate_usage(scenario_id, limit, run_start[scenario_id]),
+                "usage": mandate_usage(scenario_id, card_id, limit, run_start[scenario_id]),
             }
         )
 

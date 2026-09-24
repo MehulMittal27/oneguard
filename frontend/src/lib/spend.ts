@@ -67,6 +67,44 @@ export function computePeriodSpend(decisions: Decision[], cardId: string, days: 
     .reduce((sum, d) => sum + d.billing_amount_chf, 0)
 }
 
+export interface PolicySpend {
+  spentChf: number
+  pendingChf: number
+  /** 'ledger' when the engine sent `usage`; 'client' is the mock-mode fallback. */
+  source: 'ledger' | 'client'
+}
+
+/**
+ * What the meter reads. The engine ledger's `usage` is authoritative whenever the
+ * backend sends it (docs/api-contract.md §2): `period_spent_chf` is final
+ * approvals only, including step-ups the customer approved, and `pending_chf` is
+ * what is stepped up and waiting — a reservation, never spend.
+ *
+ * The client-side computation below is the mock-mode fallback only. It cannot
+ * see redelivery, re-quotes or a frozen session, so where the two ever disagree
+ * the ledger is right.
+ */
+export function spendFromMandate(
+  mandate: Mandate | undefined,
+  decisions: Decision[],
+  cardId: string,
+  days: number,
+): PolicySpend {
+  const usage = mandate?.usage
+  if (usage) {
+    return {
+      spentChf: usage.period_spent_chf,
+      pendingChf: usage.pending_chf,
+      source: 'ledger',
+    }
+  }
+  return {
+    spentChf: computePeriodSpend(decisions, cardId, days),
+    pendingChf: computePendingChf(decisions, cardId),
+    source: 'client',
+  }
+}
+
 /** The dashed "ghost" preview: what the meter would read if pending purchases on this card were approved. */
 export function computePendingChf(decisions: Decision[], cardId: string): number {
   return decisions

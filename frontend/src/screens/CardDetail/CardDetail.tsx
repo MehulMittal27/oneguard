@@ -5,7 +5,7 @@ import { BackChevronIcon, CheckIcon, HelpCircleIcon } from '../../components/ico
 import { OrderCapLeashMeter, PeriodLeashMeter } from '../../components/LeashMeter'
 import { RevokeSheet } from '../../components/RevokeSheet'
 import { formatShortDate } from '../../lib/datetime'
-import { computePendingChf, computePeriodSpend, limitsFromMandate } from '../../lib/spend'
+import { limitsFromMandate, spendFromMandate } from '../../lib/spend'
 import { usePolicy } from '../../state/PolicyContext'
 import { useDecisions } from '../../state/DecisionsContext'
 import { DecisionDetail } from '../DecisionDetail/DecisionDetail'
@@ -59,6 +59,8 @@ export function CardDetail({
     .filter((d) => d.card_id === cardId)
     .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))
   const { perOrder, period } = limitsFromMandate(mandate)
+  // Ledger-first: `usage` when the engine sent it, the client sum only in mock mode.
+  const spend = period ? spendFromMandate(mandate, decisions, cardId, period.days) : null
 
   // A still-pending uncertain purchase is actionable, not just viewable —
   // route straight to where it can actually be answered.
@@ -156,8 +158,8 @@ export function CardDetail({
             {period ? (
               <PeriodLeashMeter
                 limitChf={period.limitChf}
-                spentChf={computePeriodSpend(decisions, cardId, period.days)}
-                pendingChf={computePendingChf(decisions, cardId)}
+                spentChf={spend?.spentChf ?? 0}
+                pendingChf={spend?.pendingChf ?? 0}
                 days={period.days}
               />
             ) : perOrder ? (
