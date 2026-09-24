@@ -325,7 +325,7 @@ async def confirm_form(run: Running, card_id: str = "CA0001", **form: Any) -> di
 
 async def live_run(run: Running, scenario_id: str = "SCEN0001", card_id: str = "CA0001", n: int = 10) -> list[dict[str, Any]]:
     """A confirmed policy, a Viseca run started through D3, all ``n`` decisions in C6, every
-    step-up's deadline the platform's."""
+    step-up's deadline the platform's and its expiry timer running."""
     await confirm_form(run, card_id)
     r = await run.post("/api/dev/runs", json={"scenario_id": scenario_id, "card_id": card_id})
     assert r.status_code == 200, r.text
@@ -333,17 +333,21 @@ async def live_run(run: Running, scenario_id: str = "SCEN0001", card_id: str = "
 
     async def settled() -> list[dict[str, Any]] | None:
         # A step-up is listed before the reply to its POST moves deadline_at to the
-        # platform's expiry; on a loaded machine that gap can pass a second.
+        # platform's expiry, and its expiry timer starts after that; on a loaded machine
+        # either gap can pass a second, and a test that moves the clock inside it expires
+        # the step-up at once.
         listed = await run.decisions(customer)
         if len(listed) != n:
             return None
         expiry = {a.live_id: a.expires_at for a in run.fake.all_auths()}
+        timers = run.services.worker._expiry if run.services.worker is not None else {}
         for d in listed:
             expires = expiry.get(d["authorization_id"])
             if d["status"] == "pending_human" and (
                 expires is None
                 or not d["deadline_at"]
                 or abs((datetime.fromisoformat(d["deadline_at"]) - expires).total_seconds()) > 1.0
+                or d["authorization_id"] not in timers
             ):
                 return None
         return listed
@@ -950,7 +954,7 @@ def test_a_hanging_platform_answers_fast(db_url: str) -> None:
 
 @covers("bounded")
 def test_a_slow_compiler_or_database_answers_fast(db_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    def slow_compile(*_: Any) -> CompiledDraft:
+    def slow_compile(*_: Any, **__: Any) -> CompiledDraft:
         time.sleep(2)
         raise AssertionError("not reached in time")
 
@@ -1172,12 +1176,12 @@ def test_c2_relints_through_the_lint_accepted_interface(db_url: str) -> None:
         calls.append(accepted_ids)
         return lint_accepted(rules, accepted_ids)
 
-    def amount_compiler(text: str, *_: Any) -> CompiledDraft:
+    def amount_compiler(text: str, *_: Any, **__: Any) -> CompiledDraft:
         operator = text.split()[1]
         rule = Rule(id="C1", field="authorization.billing_amount_chf", operator=operator, value=59, currency="CHF",
                     scope="purchase", text=f"Total {operator} CHF 59", source="inferred", kind="amount")
         return CompiledDraft(instruction=text, rules=[rule], uncertainty_policy="ask", open_questions=[],
-                             dry_run=stubs.STUBS["dry_run"](None, None, ""), compiler="llm")
+                             dry_run=stubs.STUBS["dry_run"](None, None, "", ""), compiler="llm")
 
     async def scenario() -> None:
         engine = {**TEST_ENGINE, "compile_instruction": amount_compiler, "lint_accepted": recording_lint}

@@ -90,7 +90,10 @@ def decide(rules: list[RuleResult], protections_: list[Signal], warnings_: list[
 def explain(decision: EngineDecision, facts: Facts, policy: Policy,
             rules: list[RuleResult], signals: list[Signal]) -> Explanation: ...     # P5 explain.py
 def rewrite_explanation(explanation: Explanation, facts: Facts, provider, timeout_s: float) -> str: ...  # P4 tier3.py
-def compile_instruction(text: str, history: "HistoryIndex", card_id: str, provider) -> CompiledDraft: ...  # P4 compiler/
+def compile_instruction(text: str, history: "HistoryIndex", card_id: str, provider,
+                        customer_id: str | None = None) -> CompiledDraft: ...  # P4 compiler/
+def lint_accepted(rules: list[Rule], accepted_ids: list[str]) -> tuple[list[str], list[str]]: ...  # P4 compiler/
+def dry_run(policy: Policy, history: "HistoryIndex", card_id: str, customer_id: str) -> DryRunResult: ...  # P4 compiler/
 ```
 
 ```python

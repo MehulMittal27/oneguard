@@ -101,6 +101,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import wait as wait_futures
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -948,6 +949,9 @@ class VisecaWorker:
         costs no store round trip."""
 
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="oneguard-engine")
+        self._store_pool = ThreadPoolExecutor(thread_name_prefix="oneguard-store")
+        self._store_work: set[Future[Any]] = set()
+        """Store reads and writes off the event loop, still running (``stop`` waits for them)."""
         self._task: asyncio.Task[None] | None = None
         self._state: Literal["stopped", "starting", "polling", "degraded"] = "stopped"
         self._failures = 0
@@ -1121,7 +1125,7 @@ class VisecaWorker:
         if held:
             await self._sync_reference("start")
         if self._history is None:
-            self._history = ReloadableHistory(await asyncio.to_thread(self._load_history))
+            self._history = ReloadableHistory(await self._store(self._load_history))
         if self._ledger is None:
             self._ledger = default_ledger(self._db_engine, self._history)
         if held:
@@ -1133,9 +1137,10 @@ class VisecaWorker:
     async def stop(self) -> None:
         """Stop polling and cancel expiry timers (pending step-ups are recovered on start).
 
-        Waits up to ``STOP_DRAIN_S`` for the engine thread's current work, writes the rows
-        of the runs it drove, then closes any ledger session still open, so no pooled
-        connection outlives the worker, and gives the worker lease up.
+        Waits up to ``STOP_DRAIN_S`` for the engine thread's current work and for store work
+        a cancelled task left running on its thread, writes the rows of the runs it drove,
+        then closes any ledger session still open, so no pooled connection outlives the
+        worker, and gives the worker lease up.
         """
         leading = self._state in ("polling", "degraded")
         tasks = [
@@ -1157,22 +1162,26 @@ class VisecaWorker:
             )
         except TimeoutError:
             log.warning("the engine thread is still busy after %s s; closing its ledger session", STOP_DRAIN_S)
+        if self._store_work:
+            _, busy = await asyncio.to_thread(wait_futures, list(self._store_work), STOP_DRAIN_S)
+            if busy:
+                log.warning("%d store call(s) still running after %s s", len(busy), STOP_DRAIN_S)
         if leading:
-            await asyncio.to_thread(self._save_runs_while_held)
+            await self._store(self._save_runs_while_held)
             for run in self._runs.values():
                 if run.recorded_state in ("done", "error"):
                     run.recorded_final.set()
         close = getattr(self._ledger, "close", None)
         if callable(close):
             close()
-        await asyncio.to_thread(self._lease.release)
+        await self._store(self._lease.release)
         await self.client.drain()
 
     # The worker lease --------------------------------------------------------------------
 
     async def _try_lease(self) -> bool:
         try:
-            held = await asyncio.to_thread(self._lease.acquire)
+            held = await self._store(self._lease.acquire)
         except (SQLAlchemyError, OSError) as exc:
             self._note_error(f"worker lease unavailable: {type(exc).__name__}: {exc}")
             return False
@@ -1200,7 +1209,7 @@ class VisecaWorker:
         """What only the lease holder does before its first poll (it may ``/resolve``)."""
         await self._recover_pending()
         await self._reconcile_platform()
-        self._cursor = await asyncio.to_thread(self._load_cursor)
+        self._cursor = await self._store(self._load_cursor)
         await self._track_unfinished_runs()
 
     async def _step_down(self) -> None:
@@ -1223,7 +1232,7 @@ class VisecaWorker:
             return False
         self._lease_checked_at = time.monotonic()
         try:
-            return not await asyncio.to_thread(self._lease.held)
+            return not await self._store(self._lease.held)
         except (SQLAlchemyError, OSError) as exc:
             self._note_error(f"worker lease check failed: {type(exc).__name__}: {exc}")
             return True
@@ -1238,7 +1247,7 @@ class VisecaWorker:
         for run in self._runs.values():
             if run.viseca_mandate_id == viseca_mandate_id and run.ctx is not None:
                 run.ctx.policy = run.ctx.policy.model_copy(update={"status": "revoked"})
-        await asyncio.to_thread(self._mark_mandate_revoked, viseca_mandate_id)
+        await self._store(self._mark_mandate_revoked, viseca_mandate_id)
         log.info("mandate %s revoked; later requests under it are declined", viseca_mandate_id)
         await self.client.delete_mandate(viseca_mandate_id)
 
@@ -1253,7 +1262,7 @@ class VisecaWorker:
         if not sightings:
             return []
         try:
-            return await asyncio.to_thread(self._save_profiles, sightings, source)
+            return await self._store(self._save_profiles, sightings, source)
         except Exception as exc:
             log.exception("storing scenario profiles failed")
             self._note_error(f"scenario profiles not stored: {type(exc).__name__}: {exc}")
@@ -1475,7 +1484,7 @@ class VisecaWorker:
         try:
             changed = await self._check_reference_data(reference)
             if changed or self._history is None:
-                index = await asyncio.to_thread(self._load_history)
+                index = await self._store(self._load_history)
                 if self._history is None:
                     self._history = ReloadableHistory(index)
                 else:
@@ -1486,7 +1495,7 @@ class VisecaWorker:
             log.exception("reference sync failed")
             self._note_error(f"reference sync ({reason}) failed, keeping the stored reference data: {exc}")
         try:
-            self._known_ids = await asyncio.to_thread(self._load_known_ids)
+            self._known_ids = await self._store(self._load_known_ids)
         except Exception as exc:
             log.exception("reading the known reference ids failed")
             self._note_error(f"known reference ids not read: {type(exc).__name__}: {exc}")
@@ -1644,7 +1653,7 @@ class VisecaWorker:
             banner,
         )
         try:
-            rows = await asyncio.to_thread(self._reseed_history, text)
+            rows = await self._store(self._reseed_history, text)
         except Exception as exc:
             log.exception("re-seeding history failed")
             self._note_error(f"re-seeding history failed, keeping the stored history: {exc}")
@@ -1684,7 +1693,7 @@ class VisecaWorker:
             self._note_error("reference data serves no tables; keeping the stored reference tables")
             return None
         try:
-            self.served_tables = await asyncio.to_thread(self._sync_served, tables)
+            self.served_tables = await self._store(self._sync_served, tables)
         except Exception as exc:
             log.exception("syncing the served reference tables failed")
             self._note_error(f"served reference tables not synced, keeping the stored ones: {exc}")
@@ -1726,7 +1735,7 @@ class VisecaWorker:
         if served is not None:
             self.served_scenarios = served
             try:
-                await asyncio.to_thread(self._save_state, SERVED_SCENARIOS_KEY, served)
+                await self._store(self._save_state, SERVED_SCENARIOS_KEY, served)
             except Exception as exc:
                 log.exception("storing the served scenarios failed")
                 self._note_error(f"served scenarios not stored: {type(exc).__name__}: {exc}")
@@ -1790,7 +1799,7 @@ class VisecaWorker:
         ``/resolve`` for it would only be refused (404); a run with no row is a replay, as
         in the ledger.
         """
-        rows = await asyncio.to_thread(self._load_events)
+        rows = await self._store(self._load_events)
         for live_id, source_id, event, kind in rows:
             self._events[live_id] = event
             self.source_ids[live_id] = source_id
@@ -1883,7 +1892,7 @@ class VisecaWorker:
         """Follow the live runs the store still shows as unfinished, so their state is read
         from the platform again: a run that completed while no worker polled (or while
         another process decided it) is closed instead of staying ``running``."""
-        rows = await asyncio.to_thread(self._unfinished_run_rows)
+        rows = await self._store(self._unfinished_run_rows)
         runs = [self._track_row(row) for row in rows if row.viseca_run_id]
         if runs:
             log.info("following %d unfinished live run(s) from the store", len(runs))
@@ -1975,7 +1984,7 @@ class VisecaWorker:
         if live_id not in run.live_ids:
             run.live_ids.append(live_id)
         save = asyncio.create_task(
-            asyncio.to_thread(self._save_event, run.run_id, data, received_at, deadline_at)
+            self._store(self._save_event, run.run_id, data, received_at, deadline_at)
         )
         extra = await self._reconcile_context(run, data)
         extra.extend(reference_rows)
@@ -2048,6 +2057,14 @@ class VisecaWorker:
         return run
 
     # Deciding ----------------------------------------------------------------------------
+
+    async def _store(self, fn: Callable[..., T], *args: Any) -> T:
+        """Run blocking store work on a store thread. Tracked: cancelling the awaiting task
+        does not stop the thread, so ``stop`` waits for it before returning."""
+        work = self._store_pool.submit(fn, *args)
+        self._store_work.add(work)
+        work.add_done_callback(self._store_work.discard)
+        return await asyncio.wrap_future(work)
 
     async def _engine(self, fn: Callable[..., T], *args: Any) -> T:
         """Run ``fn`` on the engine thread inside one short ledger session."""
@@ -2515,7 +2532,7 @@ class VisecaWorker:
                     await self._check_feed_item(item)
         await self._close_completed(completed)
         if next_cursor is not None and next_cursor != self._cursor:
-            await asyncio.to_thread(self._save_cursor, next_cursor)
+            await self._store(self._save_cursor, next_cursor)
             self._cursor = next_cursor
 
     async def _close_completed(self, viseca_run_ids: list[str]) -> None:
@@ -2525,7 +2542,7 @@ class VisecaWorker:
         for viseca_run_id in dict.fromkeys(viseca_run_ids):
             run = self._runs.get(viseca_run_id)
             if run is None:
-                row = await asyncio.to_thread(self._live_run_row, viseca_run_id)
+                row = await self._store(self._live_run_row, viseca_run_id)
                 run = self._track_row(row) if row is not None else None
             if run is not None and run.state not in ("done", "error"):
                 runs.append(run)
@@ -2579,7 +2596,7 @@ class VisecaWorker:
             )
 
     async def _persist_run(self, run: RunState) -> None:
-        await asyncio.to_thread(self._save_run, run)
+        await self._store(self._save_run, run)
         if run.recorded_state in ("done", "error"):
             run.recorded_final.set()
 
