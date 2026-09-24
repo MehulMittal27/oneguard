@@ -19,12 +19,13 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import Session
 
-from oneguard.engine.explain import REASON_TEMPLATES
 from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import InMemoryLedger, Ledger
 from oneguard.engine.policy import (
     CONFIRMED,
+    KNOWN_SHOP_FIELDS,
     NO_HISTORY,
+    NO_HISTORY_COUNTERFACTUAL,
     add_ledger_results,
     evaluate_rules,
 )
@@ -120,6 +121,14 @@ def c9_row(explanation, pol: Policy):
 
 
 LEDGERS = ["store", "memory"]
+NO_HISTORY_CLAUSE = "You have no purchase history yet, so we can't tell if you know this shop"
+
+
+def event_facts():
+    """The first purchase's facts, not known at the shop (the pipeline sets merchant_known)."""
+    from oneguard.engine.facts import build_facts
+
+    return build_facts(event(), None).model_copy(update={"merchant_known": False})
 
 
 # --- first purchase: unknown, the uncertainty setting decides --------------------------
@@ -138,8 +147,8 @@ def test_first_purchase_follows_the_uncertainty_setting(tmp_path, kind, typed, s
     assert (engine.outcome, engine.step) == (outcome, 4)
     assert engine.deciding_ids == ["C9"] and engine.reason_codes == ["no_purchase_history"]
     # No baseline yet: W1, W3, W4 are info only, so the message names C9 alone.
-    reason = NO_HISTORY if setting == "ask" else REASON_TEMPLATES["no_purchase_history"]
-    assert explanation.message == f"{lead} CHF 30.00: {reason}."
+    assert explanation.message == f"{lead} CHF 30.00: {NO_HISTORY_CLAUSE}."
+    assert explanation.counterfactual == (f"{NO_HISTORY_COUNTERFACTUAL}." if setting == "ask" else None)
     row = c9_row(explanation, pol)
     assert (row.outcome, row.detail, row.source) == ("uncertain", NO_HISTORY, "history")
     assert "no purchase history yet" in NO_HISTORY
@@ -153,7 +162,23 @@ def test_asking_rule_reads_no_history_too(tmp_path, kind):
     with make_ledger(kind, tmp_path) as ledger:
         engine, explanation, _ = decide_event(event(), ctx(ledger, pol))
     assert engine.outcome == "step_up"
-    assert explanation.message == f"Waiting for you CHF 30.00: {NO_HISTORY}."
+    assert explanation.message == f"Waiting for you CHF 30.00: {NO_HISTORY_CLAUSE}."
+
+
+@pytest.mark.parametrize("kind", LEDGERS)
+@pytest.mark.parametrize("field", KNOWN_SHOP_FIELDS)
+def test_a_typed_known_shop_rule_with_no_history_is_unknown_not_a_fail(tmp_path, kind, field):
+    """Any typed rule on a known-shop field, whatever its id, is C9: no history is unknown."""
+    known_shop = Rule(id="R7", field=field, operator="=", value="true", text="Only shops I know",
+                      source="exact", kind="merchant")  # fmt: skip
+    pol = policy(rules=[C1, known_shop]).model_copy(update={"requires_known_shop": False})
+    assert evaluate_rules(event_facts(), pol)[-1].detail == "You haven't bought from Shop ME_SHOP before"
+    with make_ledger(kind, tmp_path) as ledger:
+        engine, explanation, _ = decide_event(event(), ctx(ledger, pol))
+    assert (engine.outcome, engine.deciding_ids, engine.reason_codes) == ("step_up", ["R7"], ["no_purchase_history"])
+    row = next(r for r in explanation.evidence if r.rule == "Only shops I know")
+    assert (row.outcome, row.detail) == ("uncertain", NO_HISTORY)
+    assert explanation.message == f"Waiting for you CHF 30.00: {NO_HISTORY_CLAUSE}."
 
 
 # --- after one approval: the shop is known ----------------------------------------------

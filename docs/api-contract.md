@@ -166,7 +166,7 @@ Decision {
   uncertain_outcome: 'pending'|'expired'|'approved'|'declined' | null,
   status: 'final' | 'pending_human',
   reason_codes: string[],
-  message: string,                            // one sentence, names the number once; a decline adds "Would approve …" (= counterfactual)
+  message: string,                            // "{Outcome} CHF {amount}: {clause}." one clause (rules.md §9); never the counterfactual
   uncertainty: { note: string } | null,
   occurred_at: string,                        // SIMULATED time
   merchant: { merchant_id, name },            // name untrusted
@@ -178,7 +178,7 @@ Decision {
   delivery_by: string | null,
   deadline_at?: string,                       // pending_human only — REAL clock
 
-  counterfactual?: string | null,             // NEW: "Would approve at CHF 400 or less."
+  counterfactual?: string | null,             // NEW: "Would approve at CHF 400.00 or less." on its own, not in `message`
   related?: { authorization_id: string,       // NEW: link to an earlier decision in this run
               relation: 'requote_of' | 'duplicate_of' | 'retry_of' | 'split_of' } | null,
   session?: { trust: 'normal' | 'elevated' | 'frozen', note: string } | null,   // NEW
@@ -287,7 +287,7 @@ expire — that is a broken state, not a degraded one.
 |---|---|
 | `authorization.billing_amount_chf` | total in CHF, delivery included (never add delivery again) |
 | `authorization.billing_amount_chf` + `scope: period`, `period_days: 7` | rolling window; sum of **final approvals** whose simulated timestamp ≥ current − 7×24h |
-| `cart.purchases_in_period` + `scope: period`, `period_days: N` | integer; purchases on this card in the rolling window of N×24h before the current simulated timestamp: **final approvals + pending step-ups** (declines and expired step-ups never count; a redelivered live id counts once). This purchase is compared as count + 1: `<= 1`, `period_days: 1` is "one a day", so a second purchase fails. Operators `<=` / `<` only. Fail: `period_count_exceeded`; evidence "You allowed one order per day; one was already approved today at 12:10" (time of the latest approval, Europe/Zurich), message "Declined CHF 32.00: you allowed one order per day; one was already approved today at 12:10. Would approve from tomorrow at 12:10."; a breach caused only by pending step-ups asks (`period_reserved_pending`, M5) |
+| `cart.purchases_in_period` + `scope: period`, `period_days: N` | integer; purchases on this card in the rolling window of N×24h before the current simulated timestamp: **final approvals + pending step-ups** (declines and expired step-ups never count; a redelivered live id counts once). This purchase is compared as count + 1: `<= 1`, `period_days: 1` is "one a day", so a second purchase fails. Operators `<=` / `<` only. Fail: `period_count_exceeded`; evidence "You allowed one order per day; one was already approved today at 12:10" (time of the latest approval, Europe/Zurich), message "Declined CHF 32.00: You allowed one order per day; one was already approved today at 12:10.", counterfactual "Would approve from tomorrow at 12:10."; a breach caused only by pending step-ups asks (`period_reserved_pending`, M5) |
 | `merchant.merchant_category` | trusted catalogue category |
 | `merchant.known_shop` | `"true"` if ≥1 approved purchase by this customer at this `merchant_id` on any of their cards (history + this run's finals); customer-level per rules.md Q7. `merchant.familiar_on_card` is accepted as an alias for the same check |
 | `items[].item_category` | every cart line must satisfy `in` / `not_in` |
