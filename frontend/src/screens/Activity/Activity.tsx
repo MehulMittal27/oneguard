@@ -17,14 +17,29 @@ const FILTERS: { id: FilterId; label: string }[] = [
   { id: 'uncertain', label: 'Uncertain' },
 ]
 
-// "All" is neutral (ink); the other three carry their decision color both at
-// rest and active — never color-only, since each tab still shows its own
-// count + label text regardless of state.
-const FILTER_STYLE: Record<FilterId, string> = {
-  all: 'text-ink',
-  approved: 'text-approved',
-  stopped: 'text-stopped',
-  uncertain: 'text-asked',
+/**
+ * The selected filter fills with its own decision tint; "All" is neutral ink,
+ * since it is not a decision. Never colour-only — outline vs filled, medium vs
+ * semibold, label and count always in text. Each pair clears 4.5:1 (approved
+ * 4.65, stopped 5.61, uncertain 5.61 on their own tints).
+ */
+const FILTER_STYLE: Record<FilterId, { rest: string; active: string }> = {
+  all: {
+    rest: 'border-hairline bg-surface text-ink-muted',
+    active: 'border-ink bg-ink text-on-ink',
+  },
+  approved: {
+    rest: 'border-hairline bg-surface text-ink-muted',
+    active: 'border-approved bg-approved-tint text-approved',
+  },
+  stopped: {
+    rest: 'border-hairline bg-surface text-ink-muted',
+    active: 'border-stopped bg-stopped-tint text-stopped',
+  },
+  uncertain: {
+    rest: 'border-hairline bg-surface text-ink-muted',
+    active: 'border-asked bg-asked-tint text-asked',
+  },
 }
 
 export function Activity({
@@ -99,10 +114,21 @@ export function Activity({
         <p className="text-[15px] text-ink-muted">Every purchase your agent has proposed.</p>
       </div>
 
-      <div className="flex gap-6 border-b border-hairline" role="tablist" aria-label="Filter by decision">
+      {/*
+        Full-bleed scroller: the negative margin lets a chip run to the screen
+        edge while `px-8` keeps the first and last one aligned with the rest of
+        the page. `min-w-0` is what actually makes it scroll — without it the row
+        is a flex item at its automatic minimum size, so it grows to fit its
+        chips and pushes them off-screen instead of overflowing inside itself.
+      */}
+      <div
+        className="scrollbar-none -mx-8 flex min-w-0 max-w-full gap-2 overflow-x-auto px-8"
+        role="tablist"
+        aria-label="Filter by decision"
+      >
         {FILTERS.map(({ id, label }) => {
           const isActive = id === filter
-          const color = FILTER_STYLE[id]
+          const style = FILTER_STYLE[id]
           return (
             <button
               key={id}
@@ -110,8 +136,8 @@ export function Activity({
               role="tab"
               aria-selected={isActive}
               onClick={() => setFilter(id)}
-              className={`flex min-h-11 items-center gap-1.5 border-b-[2.5px] pb-2.5 text-[13px] ${color} ${
-                isActive ? 'border-current font-bold' : 'border-transparent font-medium'
+              className={`flex min-h-11 shrink-0 items-center gap-1.5 rounded-pill border-2 px-4 text-[13px] transition-colors ${
+                isActive ? `${style.active} font-semibold` : `${style.rest} font-medium`
               }`}
             >
               {label}

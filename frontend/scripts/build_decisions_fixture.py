@@ -155,6 +155,25 @@ CURATION = {
             {"rule": "Item matches request", "outcome": "uncertain", "detail": "An extended protection plan wasn't part of “replace my worn shoes”."},
         ],
     },
+    # A restriction no data can check: nothing in the event says whether GreenLoop
+    # is "a specialist sports retailer", and no field can (engine/policy.py
+    # is_unverifiable). CHF 189 is inside the CHF 200 cap, so the amount is not
+    # the question — the shop is. This is the one case where approving can also
+    # be remembered, which is what `confirmable` tells the UI.
+    "AU0022": {
+        "decision": "uncertain",
+        "uncertain_outcome": "pending",
+        "status": "pending_human",
+        "reason_codes": ["rule_not_met", "unfamiliar_merchant"],
+        "message": "CHF 189.00, inside your CHF 200 limit — but nothing says whether this shop counts as a specialist sports retailer.",
+        "uncertainty": {"note": "Your rule asks for a specialist sports retailer. Nothing in this order says whether GreenLoop is one, and no record can settle it."},
+        "injection_flag": None,
+        "evidence": [
+            {"rule": "Per-order limit", "outcome": "pass", "detail": "CHF 189.00 is within your CHF 200 limit."},
+            {"rule": "Retailer", "outcome": "uncertain", "detail": "No record says whether GreenLoop is a specialist sports retailer.", "source": "policy"},
+        ],
+        "confirmable": {"rule_id": "retailer", "phrase": "a specialist sports retailer"},
+    },
     "AU0024": {
         "decision": "approved",
         "status": "final",
@@ -175,6 +194,58 @@ CURATION = {
         "injection_flag": None,
         "evidence": [
             {"rule": "Per-order limit", "outcome": "pass", "detail": "CHF 248.00 is CHF 2.00 under your CHF 250 per-order limit."},
+        ],
+    },
+    # SCEN0003 is the session-integrity scenario, and AU0027-AU0030 is its burst:
+    # four orders on this card between 02:14 and 02:24. This one is the step-up
+    # the freeze produces, so a frozen session is reachable in mock mode.
+    "AU0029": {
+        "decision": "uncertain",
+        "uncertain_outcome": "pending",
+        "status": "pending_human",
+        "reason_codes": ["session_risk", "night_purchase", "velocity_burst"],
+        "message": "Third order on this card in seven minutes, at 02:21. Within your limit, but the pace and hour don't look like you.",
+        "uncertainty": {"note": "Whether you are the one driving this session, or something else is using your agent."},
+        "injection_flag": None,
+        "evidence": [
+            {"rule": "Per-order limit", "outcome": "pass", "detail": "CHF 219.00 is within your CHF 250 per-order limit."},
+            {"rule": "Session", "outcome": "fail", "detail": "Three orders in seven minutes, between 02:14 and 02:21.", "source": "ledger"},
+            {"rule": "Time of day", "outcome": "uncertain", "detail": "02:21 Europe/Zurich, outside this card's usual hours.", "source": "history"},
+        ],
+        "session": {
+            "trust": "frozen",
+            "note": "We're double-checking after unusual activity on your card",
+        },
+    },
+    # The day after the 02:14-02:24 burst. CHF 95.00 is far inside the CHF 250
+    # cap, so this step-up is purely the session watch — the amount is not what
+    # is being asked about.
+    "AU0031": {
+        "decision": "uncertain",
+        "uncertain_outcome": "pending",
+        "status": "pending_human",
+        "reason_codes": ["session_watch"],
+        "message": "CHF 95.00, well inside your CHF 250 limit. We're checking with you because this card is still under watch after Tuesday's burst.",
+        "uncertainty": {"note": "Whether the burst in the early hours of 18 August was you. Until you say, this card's orders come to you first."},
+        "injection_flag": None,
+        "evidence": [
+            {"rule": "Per-order limit", "outcome": "pass", "detail": "CHF 95.00 is well within your CHF 250 limit."},
+            {"rule": "Session", "outcome": "uncertain", "detail": "This card is under watch after four orders between 02:14 and 02:24 on 18 August.", "source": "ledger"},
+        ],
+        "session": {"trust": "elevated", "note": "On watch since the burst on 18 August. Your answer lifts it."},
+    },
+    # After the customer answers: the watch lifts and the next order goes through
+    # on the rules alone. EUR 260.00 converts to CHF 247.00, inside the cap.
+    "AU0032": {
+        "decision": "approved",
+        "status": "final",
+        "reason_codes": ["session_recovered", "within_limits", "foreign_currency_converted"],
+        "message": "CHF 247.00, within your CHF 250 limit — the watch on this card lifted after you answered.",
+        "uncertainty": None,
+        "injection_flag": None,
+        "evidence": [
+            {"rule": "Per-order limit", "outcome": "pass", "detail": "EUR 260.00 converts to CHF 247.00, within your CHF 250 limit."},
+            {"rule": "Session", "outcome": "pass", "detail": "Normal activity resumed after you confirmed the earlier order.", "source": "ledger"},
         ],
     },
     "AU0034": {
@@ -213,6 +284,8 @@ CURATION = {
             {"rule": "Earlier shop text", "outcome": "info", "detail": "This shop's text on the earlier order tried to instruct the agent. Noted; this order's own text is clean.", "source": "history"},
         ],
         "related": {"authorization_id": "AU0037", "relation": "requote_of"},
+        # Reads as rewritten prose, not a filled slot — the tier-3 case.
+        "explanation_source": "model",
     },
     "AU0036": {
         "decision": "uncertain",
@@ -245,6 +318,8 @@ CURATION = {
             {"rule": "Seller", "outcome": "pass", "detail": "PixelHarbor is a seller you've bought from before."},
         ],
         "counterfactual": "Would approve at CHF 400 or less.",
+        # Slot-filled from the numbers alone — nothing to rewrite.
+        "explanation_source": "template",
     },
     "AU0039": {
         "decision": "stopped",
@@ -257,6 +332,7 @@ CURATION = {
             {"rule": "Per-order limit", "outcome": "pass", "detail": "CHF 340.00 is within your CHF 400 limit."},
             {"rule": "Seller", "outcome": "fail", "detail": "“PixelHarbour” is a different seller from “PixelHarbor,” which you've used before."},
         ],
+        "explanation_source": "model",
     },
     "AU0040": {
         "decision": "uncertain",
@@ -281,7 +357,18 @@ CURATION = {
 
 # Optional contract additions (docs/api-contract.md §2): copied only when a
 # row curates them, so every other row keeps the older payload shape.
-OPTIONAL_KEYS = ("counterfactual", "related", "session", "explanation_source", "resolved_by")
+#
+# `explanation_source` is curated: no tier-3 rewrite exists to observe, so the
+# three rows carrying it were chosen by how their `message` reads. The rest omit
+# it, which exercises the absent case in the UI.
+OPTIONAL_KEYS = (
+    "counterfactual",
+    "related",
+    "session",
+    "explanation_source",
+    "resolved_by",
+    "confirmable",
+)
 
 
 def build():

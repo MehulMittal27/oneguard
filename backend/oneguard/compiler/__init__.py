@@ -11,20 +11,23 @@ are put to the customer as open questions; nothing is guessed (T2).
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import date, datetime
+from typing import TypeVar
 
 from oneguard.api.models import DryRunResult
 from oneguard.compiler.draft import ParsedDraft
 from oneguard.compiler.dryrun import dry_run
-from oneguard.compiler.lint import LintResult, lint, lint_against_floor
+from oneguard.compiler.lint import LintResult, lint, lint_accepted, lint_against_floor
 from oneguard.compiler.llm import read_with_llm
 from oneguard.compiler.parser import parse
 from oneguard.compiler.resolve import confirmation_date, simulated_today
-from oneguard.engine.interfaces import register
-from oneguard.engine.types import CompiledDraft, HistoryIndex
+from oneguard.engine.interfaces import INTERFACES, register
+from oneguard.engine.types import CompiledDraft, HistoryIndex, Policy, Rule
 from oneguard.llm.provider import Provider, ProviderUnavailable, provider_available
 
 log = logging.getLogger(__name__)
+F = TypeVar("F", bound=Callable[..., object])
 
 _QUESTION_FOR = {
     "no_amount_cap": "No amount stated: what is the most one purchase may cost?",
@@ -87,4 +90,39 @@ def compile_instruction(
     )
 
 
-__all__ = ["compile_instruction"]
+# --- lint and dry-run through engine/interfaces.py (issue #17) ---------------------------
+def _register_when_in_contract(name: str) -> Callable[[F], F]:
+    """Register ``name`` once the contract lists it; until the ``contract:`` PR lands the
+    function is still importable directly, and nothing fails at import."""
+    return register(name) if name in INTERFACES else (lambda fn: fn)
+
+
+@_register_when_in_contract("lint_accepted")
+def lint_accepted_ids(rules: list[Rule], accepted_ids: list[str]) -> tuple[list[str], list[str]]:
+    """C2 re-lint (api-contract §3.2): ``(missing, reasons)``, both empty when it passes.
+    ``missing`` is ``per_order_limit`` first when no per-purchase cap is left, then each
+    dropped ``exact`` check id; ``reasons`` are the customer sentences in the same order."""
+    kept = [i for i in lint_accepted(rules, accepted_ids).issues
+            if i.code in ("no_amount_cap", "exact_check_dropped")]
+    return [i.rule_id or i.code for i in kept], [i.message for i in kept]
+
+
+@_register_when_in_contract("dry_run")
+def dry_run_policy(policy: Policy, history: HistoryIndex, card_id: str) -> DryRunResult:
+    """A confirmed or draft policy (instruction or form) over the card's recent history."""
+    draft = ParsedDraft(
+        instruction=policy.instruction,
+        rules=policy.rules,
+        uncertainty_policy="decline" if policy.uncertainty_policy == "decline" else "ask",
+        open_questions=[],
+        requested_item=policy.requested_item,
+        allowed_item_categories=policy.allowed_item_categories,
+        blocked_item_categories=policy.blocked_item_categories,
+        requires_known_shop=policy.requires_known_shop,
+        nothing_extra=policy.nothing_extra,
+        shop_type=policy.shop_type,
+    )
+    return dry_run(draft, history, card_id)
+
+
+__all__ = ["compile_instruction", "dry_run_policy", "lint_accepted_ids"]

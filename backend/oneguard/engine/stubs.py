@@ -37,6 +37,7 @@ from oneguard.engine.types import (
     ItemFacts,
     LedgerView,
     Policy,
+    Rule,
     RuleResult,
     Signal,
 )
@@ -190,6 +191,31 @@ def compile_instruction(
     )
 
 
+def lint_accepted(rules: list[Rule], accepted_ids: list[str]) -> tuple[list[str], list[str]]:
+    # Never a pass-everything stub: C2 still needs a per-order cap and every exact check.
+    kept = set(accepted_ids)
+    missing: list[str] = []
+    reasons: list[str] = []
+    if not any(
+        r.id in kept
+        and r.field == "authorization.billing_amount_chf"
+        and r.operator in ("<", "<=", "=")
+        and r.scope != "period"
+        for r in rules
+    ):
+        missing.append("per_order_limit")
+        reasons.append("the policy needs a limit on what one purchase may cost")
+    for r in rules:
+        if r.source == "exact" and r.id not in kept:
+            missing.append(r.id)
+            reasons.append(f'you stated "{r.text}" and it was left out')
+    return missing, reasons
+
+
+def dry_run(policy: Policy, history: HistoryIndex, card_id: str) -> DryRunResult:
+    return DryRunResult(sample_size=0, would_violate=0, would_fit=0, would_ask=0, insight="stub")
+
+
 STUBS: dict[str, Callable[..., Any]] = {
     "build_facts": build_facts,
     "evaluate_rules": evaluate_rules,
@@ -201,6 +227,8 @@ STUBS: dict[str, Callable[..., Any]] = {
     "explain": explain,
     "rewrite_explanation": rewrite_explanation,
     "compile_instruction": compile_instruction,
+    "lint_accepted": lint_accepted,
+    "dry_run": dry_run,
 }
 
 

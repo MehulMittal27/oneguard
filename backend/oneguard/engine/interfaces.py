@@ -20,6 +20,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any, TypeVar
 
+from oneguard.api.models import DryRunResult
 from oneguard.engine.types import (
     CompiledDraft,
     EngineDecision,
@@ -28,6 +29,7 @@ from oneguard.engine.types import (
     HistoryIndex,
     LedgerView,
     Policy,
+    Rule,
     RuleResult,
     Signal,
 )
@@ -115,6 +117,27 @@ def compile_instruction(
     raise NotImplementedError
 
 
+def lint_accepted(rules: list[Rule], accepted_ids: list[str]) -> tuple[list[str], list[str]]:
+    """P4 compiler/lint.py. C2 re-lint of the accepted subset (api-contract §3.2, §10 T5).
+
+    ``rules`` are the draft's typed rules, ``accepted_ids`` the check ids the customer
+    kept. Returns ``(missing, reasons)``, both empty when it passes: ``missing`` names
+    ``per_order_limit`` when no per-purchase amount cap is left, then the id of every
+    dropped ``exact`` check (the 409 ``detail.missing``); ``reasons`` are one plain
+    sentence each for the customer, in the same order.
+    """
+    raise NotImplementedError
+
+
+def dry_run(policy: Policy, history: HistoryIndex, card_id: str) -> DryRunResult:
+    """P4 compiler/dryrun.py. The policy's rules over the card's recent history (T5).
+
+    Used for C1 drafts from an instruction or a form. Reads ``HistoryIndex`` only;
+    a preview, never a decision.
+    """
+    raise NotImplementedError
+
+
 INTERFACES: dict[str, Callable[..., Any]] = {
     "build_facts": build_facts,
     "evaluate_rules": evaluate_rules,
@@ -126,6 +149,8 @@ INTERFACES: dict[str, Callable[..., Any]] = {
     "explain": explain,
     "rewrite_explanation": rewrite_explanation,
     "compile_instruction": compile_instruction,
+    "lint_accepted": lint_accepted,
+    "dry_run": dry_run,
 }
 """Every interface by name: the contract documentation above."""
 
@@ -140,6 +165,8 @@ IMPLEMENTATION_MODULES: dict[str, str] = {
     "explain": "oneguard.engine.explain",
     "rewrite_explanation": "oneguard.engine.tier3",
     "compile_instruction": "oneguard.compiler",
+    "lint_accepted": "oneguard.compiler",
+    "dry_run": "oneguard.compiler",
 }
 """Where each lane's real implementation lives (docs/team-contract.md §1)."""
 
