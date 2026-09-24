@@ -423,7 +423,9 @@ Development only: `stub`, emitted only while `ONEGUARD_STUBS` stubs `decide`
 (`backend/oneguard/engine/stubs.py`); never in a live run.
 
 Any new code is added here before it is emitted. The UI maps codes to labels with a
-neutral fallback for unknown codes.
+neutral fallback for unknown codes; `frontend/src/lib/reasonCodes.ts` labels exactly this
+list (no more, no less), and `frontend/tests/reasonCodes.test.ts` holds it and the mock
+fixtures to it.
 
 ---
 
