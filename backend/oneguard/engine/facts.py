@@ -320,7 +320,9 @@ def build_facts(event: dict, history: HistoryIndex | None = None) -> Facts:
 # seller statement that the policy is not stated, and exchange/store-credit-only terms
 # (a PM decision that they stay unknown). Amounts never come from text (A2).
 
-TIER2_FIELDS: tuple[str, ...] = ("size_eu", "size_letter", "return_window_days", "recurring")
+# Recurring billing is not here: it stays tier-1 regex only (CLAUDE.md rule 2), so a model
+# can never add or remove a recurring charge.
+TIER2_FIELDS: tuple[str, ...] = ("size_eu", "size_letter", "return_window_days")
 SELLER_STATED_UNKNOWN: tuple[str, ...] = (
     "return policy not stated by seller",
     "exchange or store credit only",
