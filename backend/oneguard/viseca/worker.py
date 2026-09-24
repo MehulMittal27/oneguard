@@ -567,6 +567,9 @@ class RunStatus(BaseModel):
     total: int
     redeliveries: int
     last_error: str | None
+    recorded_state: Literal["starting", "running", "done", "error"] | None = None
+    """``state`` of the committed ``runs`` row (None before the first write); lags ``state``
+    until the write that follows a change has committed."""
 
 
 class WorkerStatus(BaseModel):
@@ -608,6 +611,10 @@ class RunState:
     platform_done: bool = False
     finished_at: datetime | None = None
     last_error: str | None = None
+    recorded_state: Literal["starting", "running", "done", "error"] | None = None
+    """``state`` as last committed to the ``runs`` row."""
+    recorded_final: asyncio.Event = field(default_factory=asyncio.Event)
+    """Set once a ``runs`` row with state done or error has committed."""
 
     def status(self) -> RunStatus:
         return RunStatus(
@@ -623,10 +630,12 @@ class RunState:
             total=max(self.total, len(self.live_ids)),
             redeliveries=self.redeliveries,
             last_error=self.last_error,
+            recorded_state=self.recorded_state,
         )
 
 
 DecisionListener = Callable[[api.Decision], Any]
+HandledListener = Callable[[str], Any]
 
 
 # The worker --------------------------------------------------------------------------------
@@ -700,6 +709,7 @@ class VisecaWorker:
         self._feed_mismatches: list[EvidenceRow] = []
         self._feed_seen: set[tuple[str, str]] = set()
         self._listeners: list[DecisionListener] = []
+        self._handled_listeners: list[HandledListener] = []
         self._warned_no_set_deadline = False
         self.source_ids: dict[str, str] = {}
         """live authorization id → source ``AU…`` id (offline parity)."""
@@ -727,6 +737,16 @@ class VisecaWorker:
     def add_listener(self, listener: DecisionListener) -> None:
         """Called with the API ``Decision`` after every posted decision and resolution."""
         self._listeners.append(listener)
+
+    def add_handled_listener(self, listener: HandledListener) -> None:
+        """Called with the live authorization id once a delivered request is fully handled.
+
+        At that point its decision is posted and in the ledger (the ledger's unit of work
+        closed), and its ``events_raw`` and ``runs`` rows have committed; only call summaries
+        (``viseca_calls``) may still be on their way (``client.drain``). Not called for a
+        request that failed to be handled.
+        """
+        self._handled_listeners.append(listener)
 
     def bind_policy(self, viseca_mandate_id: str, policy: Policy) -> None:
         """The confirmed policy (typed rules) behind a Viseca ``TM…`` mandate."""
@@ -759,6 +779,16 @@ class VisecaWorker:
         run.scenario_id = scenario_id or run.scenario_id
         run.viseca_mandate_id = viseca_mandate_id or run.viseca_mandate_id
         run.total = max(run.total, total or 0)
+        return run.status()
+
+    async def wait_run_recorded(self, viseca_run_id: str) -> RunStatus:
+        """Wait until the run's final ``runs`` row (done or error) has committed.
+
+        ``status().runs[].state`` flips in memory before that write; readers of the
+        ``runs`` table wait here instead. Raises KeyError for an untracked run.
+        """
+        run = self._runs[viseca_run_id]
+        await run.recorded_final.wait()
         return run.status()
 
     def run_status(self, viseca_run_id: str) -> RunStatus | None:
@@ -1150,6 +1180,7 @@ class VisecaWorker:
                     raise VisecaError(200, "invalid_response", "decision request is not an object")
                 else:
                     await self._handle(envelope)
+                    self._after_handled(envelope)
                 self._failures = 0
                 self._state = "polling"
             except asyncio.CancelledError:
@@ -1174,7 +1205,7 @@ class VisecaWorker:
                 log.warning("progress of run %s unavailable: %s", run.viseca_run_id, exc)
                 continue
             self._apply_progress(run, progress)
-            await asyncio.to_thread(self._save_run, run)
+            await self._persist_run(run)
         await self._sync_events()
 
     def _apply_progress(self, run: RunState, progress: Any) -> None:
@@ -1216,7 +1247,7 @@ class VisecaWorker:
             # The ledger reads runs.kind (live) to carry the session watch and remembered
             # answers over from earlier live runs, so the row is written before the first
             # decision; a run with no row is treated as a replay.
-            await asyncio.to_thread(self._save_run, run)
+            await self._persist_run(run)
         self._run_of[live_id] = run
         self._events[live_id] = data
         self.source_ids[live_id] = auth["source_authorization_id"]
@@ -1251,7 +1282,7 @@ class VisecaWorker:
             log.exception("events_raw write failed")
             self._note_error(f"events_raw write for {live_id} failed: {exc}")
         await self._sync_events()
-        await asyncio.to_thread(self._save_run, run)
+        await self._persist_run(run)
 
     def _run(self, viseca_run_id: str) -> RunState:
         run = self._runs.get(viseca_run_id)
@@ -1722,7 +1753,7 @@ class VisecaWorker:
         if run is not None:
             run.pending.discard(live_id)
             self._maybe_done(run)
-            await asyncio.to_thread(self._save_run, run)
+            await self._persist_run(run)
         event = self._events.get(live_id)
         if event is None or run is None or run.ctx is None:
             return
@@ -1802,28 +1833,35 @@ class VisecaWorker:
                 )
             )
 
+    async def _persist_run(self, run: RunState) -> None:
+        await asyncio.to_thread(self._save_run, run)
+        if run.recorded_state in ("done", "error"):
+            run.recorded_final.set()
+
     def _save_run(self, run: RunState) -> None:
-        with self._run_write_lock, session(self._db_engine) as s:
+        with self._run_write_lock:
             status = run.status()
-            s.merge(
-                Run(
-                    run_id=run.run_id,
-                    viseca_run_id=run.viseca_run_id,
-                    kind="live",
-                    scenario_id=run.scenario_id,
-                    mandate_id=run.mandate_id or run.viseca_mandate_id or "",
-                    card_id=run.card_id or "",
-                    state=run.state,
-                    delivered=status.delivered,
-                    decided=status.decided,
-                    pending_human=status.pending_human,
-                    total=status.total,
-                    started_at=run.started_at,
-                    finished_at=run.finished_at,
-                    worker_last_poll_at=self._last_poll_at,
-                    last_error=run.last_error,
+            with session(self._db_engine) as s:
+                s.merge(
+                    Run(
+                        run_id=run.run_id,
+                        viseca_run_id=run.viseca_run_id,
+                        kind="live",
+                        scenario_id=run.scenario_id,
+                        mandate_id=run.mandate_id or run.viseca_mandate_id or "",
+                        card_id=run.card_id or "",
+                        state=status.state,
+                        delivered=status.delivered,
+                        decided=status.decided,
+                        pending_human=status.pending_human,
+                        total=status.total,
+                        started_at=run.started_at,
+                        finished_at=run.finished_at,
+                        worker_last_poll_at=self._last_poll_at,
+                        last_error=run.last_error,
+                    )
                 )
-            )
+            run.recorded_state = status.state  # committed: the session block has exited
 
     def _load_cursor(self) -> int | str:
         with session(self._db_engine) as s:
@@ -1846,6 +1884,14 @@ class VisecaWorker:
                     mandate.revoked_at = self._now()
 
     # Helpers -----------------------------------------------------------------------------
+
+    def _after_handled(self, envelope: dict[str, Any]) -> None:
+        live_id = str(envelope.get("authorization_id") or "")
+        for listener in self._handled_listeners:
+            try:
+                listener(live_id)
+            except Exception:
+                log.exception("handled listener failed")
 
     def _notify(self, decision: api.Decision) -> None:
         for listener in self._listeners:

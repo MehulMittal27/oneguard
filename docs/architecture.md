@@ -88,7 +88,12 @@ oneguard/
   boot), so a restart does not re-scan the team-wide feed. `VisecaWorker.status()` is the
   `/healthz` worker block: `state`, `ok`, `last_poll_at`, `events_cursor`,
   `human_window_s`, `pending_step_ups`, `history_reseeded`, `fx_rates_match`,
-  `fx_rates_mismatch`, `last_error`, `runs`.
+  `fx_rates_mismatch`, `last_error`, `runs`. A run's `state` changes in memory before its
+  `runs` row is written; `recorded_state` is the committed one, and
+  `await VisecaWorker.wait_run_recorded(viseca_run_id)` returns once the final (done/error)
+  row has committed. `add_handled_listener` is called with the live id once a delivered
+  request is fully handled (decision posted and recorded, `events_raw` and `runs` rows
+  committed).
 - Every Viseca call is summarised in `viseca_calls` (no key, bodies ≤ 4 KB) by
   `oneguard/viseca/client.py`. `make demo-live SCEN=…` runs one scenario end to end
   (`oneguard/viseca/demo.py`); it needs `VISECA_API_KEY`.

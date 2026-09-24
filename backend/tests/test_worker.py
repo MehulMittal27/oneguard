@@ -221,7 +221,9 @@ def test_all_45_events_are_decided_and_expire_unanswered(
                 return len(auths) == 45 and all(a.status in ("approved", "declined") for a in auths)
 
             await wait_until(all_closed, timeout=40)
-            await wait_until(lambda: all(r.state == "done" for r in worker.status().runs))
+            # the runs rows read below are committed (in-memory state flips before the write)
+            recorded = [worker.wait_run_recorded(r) for r in runs.values()]
+            await asyncio.wait_for(asyncio.gather(*recorded), timeout=20)
 
             auths = fake.all_auths()
             assert not any(a.auto_declined for a in auths)
@@ -399,6 +401,47 @@ def test_a_restart_resumes_the_event_feed_from_the_stored_cursor(
     asyncio.run(scenario())
 
 
+def test_wait_run_recorded_returns_only_after_the_final_runs_row_commits(
+    db: Engine, history: StoreHistoryIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run is done in memory before its row is written; the signal waits for the commit."""
+
+    async def scenario() -> None:
+        async with harness(db, fast(), history=history) as (_, _, worker):
+            run = worker._run("vr-signal")
+            worker._runs["vr-signal"] = run
+            gate = threading.Event()
+            save = worker._save_run
+
+            def gated_save(state: Any) -> None:
+                gate.wait(10)
+                save(state)
+
+            monkeypatch.setattr(worker, "_save_run", gated_save)
+
+            def stored_state() -> str | None:
+                with session(db) as s:
+                    row = s.get(Run, run.run_id)
+                    return row and row.state
+
+            run.platform_done = True
+            worker._maybe_done(run)
+            assert worker.run_status("vr-signal").state == "done"
+            persist = asyncio.create_task(worker._persist_run(run))
+            waiter = asyncio.create_task(worker.wait_run_recorded("vr-signal"))
+            await asyncio.sleep(0.2)
+            assert not waiter.done() and stored_state() is None
+            assert worker.run_status("vr-signal").recorded_state is None
+            gate.set()
+            status = await asyncio.wait_for(waiter, timeout=5)
+            await persist
+            assert status.recorded_state == "done" and stored_state() == "done"
+            with pytest.raises(KeyError):
+                await worker.wait_run_recorded("vr-unknown")
+
+    asyncio.run(scenario())
+
+
 def test_an_unanswered_step_up_is_declined_at_the_window(db: Engine, history: StoreHistoryIndex) -> None:
     async def scenario() -> None:
         seen: list[api.Decision] = []
@@ -547,15 +590,41 @@ def test_the_ledger_holds_no_connection_between_decisions_or_after_stop(
     async def scenario() -> None:
         async with harness(db, fast(), history=history) as (fake, client, worker):
             await worker.start()
-            _, run_id = await start_run(client, worker, "SCEN0001")
-            auths = fake.runs[run_id].auths
-            await wait_until(lambda: all(a.decisions for a in auths), timeout=15)
-            # between decisions (the poll loop keeps reading the ledger) no session stays open
-            await wait_until(lambda: db.pool.checkedout() == 0, timeout=5)
-            if ledger_kind == "store":
-                ledger = worker.ledger
-                assert isinstance(ledger, ScopedStoreLedger)
-                await wait_until(lambda: ledger.open_sessions == 0, timeout=5)
+            ledger = worker.ledger
+            assert isinstance(ledger, ScopedStoreLedger) == (ledger_kind == "store")
+            # per handled request: (ledger sessions open, pooled connections out, call
+            # summaries still being written, its events_raw row there, runs row counts it)
+            at_rest: list[tuple[int, int, int, bool, bool]] = []
+            seen: set[str] = set()
+            all_handled = asyncio.Event()
+            run_ids: list[str] = []
+
+            def handled(live_id: str) -> None:
+                sessions = ledger.open_sessions if isinstance(ledger, ScopedStoreLedger) else 0
+                checked_out, summaries = db.pool.checkedout(), len(client._pending_logs)
+                seen.add(live_id)
+                with session(db) as s:
+                    event_row = s.get(EventRaw, live_id) is not None
+                    run_row = s.scalars(select(Run).where(Run.viseca_run_id == run_ids[0])).one()
+                at_rest.append((sessions, checked_out, summaries, event_row, run_row.decided >= len(seen)))
+                if len(seen) == 10:
+                    all_handled.set()
+
+            worker.add_handled_listener(handled)
+            draft = await client.create_mandate("Test instruction.", [], "ask")
+            mandate = await client.confirm_mandate(draft["draft_id"])
+            run_id = (await client.create_run("SCEN0001", mandate["mandate_id"]))["run_id"]
+            run_ids.append(run_id)
+            worker.track_run(run_id, scenario_id="SCEN0001", viseca_mandate_id=mandate["mandate_id"])
+            await asyncio.wait_for(all_handled.wait(), timeout=120)  # a hang guard, not a wait
+            assert all(a.decisions for a in fake.runs[run_id].auths)
+            # between decisions the ledger holds no session and the only connections out are
+            # call summaries still being written (each holds at most one); the signal comes
+            # after the request's events_raw and runs rows committed
+            assert len(at_rest) == 10
+            for sessions, checked_out, summaries, event_row, run_counted in at_rest:
+                assert sessions == 0 and checked_out <= summaries, at_rest
+                assert event_row and run_counted, at_rest
             await worker.stop()
             assert db.pool.checkedout() == 0
             if ledger_kind == "store":
