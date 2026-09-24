@@ -37,6 +37,7 @@ from typing import Any
 
 from oneguard import __version__
 from oneguard.api import models as api
+from oneguard.api import policies
 from oneguard.engine import stubs
 from oneguard.engine.ledger_base import Ledger, LedgerEntry
 from oneguard.engine.policy import COUNT_FIELD, add_ledger_results
@@ -355,7 +356,8 @@ def confirmable(entry: LedgerEntry, policy: Policy) -> api.Confirmable | None:
 
 
 def policy_applied(event: dict, entry: LedgerEntry, policy: Policy) -> api.PolicyApplied | None:
-    """The rules this decision was checked against, as the customer reads them. ``platform``
+    """The checks this decision was made under, as the customer reads them (the flag checks
+    C5 / C10 included, policies.flag_checks). ``platform``
     when the policy is the platform mandate's snapshot (no confirmed policy was bound to it:
     its id is the event's mandate id). None for a policy with no rules (an unknown replay)."""
     if not policy.rules:
@@ -364,10 +366,7 @@ def policy_applied(event: dict, entry: LedgerEntry, policy: Policy) -> api.Polic
     return api.PolicyApplied(
         mandate_id=entry.mandate_id,
         source="platform" if platform else "confirmed",
-        checks=[
-            api.RuleCheck(id=r.id, text=r.text, source=r.source, uncertainty=r.uncertainty, kind=r.kind)
-            for r in policy.rules
-        ],
+        checks=policies.policy_checks(policy.rules, policies.flags_of(policy)),
     )
 
 

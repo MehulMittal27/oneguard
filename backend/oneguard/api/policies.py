@@ -4,7 +4,9 @@ What the UI sees of a policy is ``RuleCheck`` text; what the engine applies is t
 ``Rule`` behind each check id. Both live in the store: ``checks`` (ordered RuleChecks)
 and ``rules`` (``{check id: typed rule}``). The Policy flags that restate a rule or have
 no field of their own (``requested_item``, ``nothing_extra``, …) are kept in ``rules``
-under ``POLICY_KEY``, which is never a check id.
+under ``POLICY_KEY``, which is never a check id. The two flags with no rule of their own
+still show as checks (``flag_checks``): the customer sees them before confirming, C2 holds
+them like any ``exact`` check, and no typed rule stands behind their ids.
 """
 
 from __future__ import annotations
@@ -72,8 +74,43 @@ def to_chf(value: float, currency: str | None) -> float:
     return float((Decimal(str(value)) * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN))
 
 
+REQUESTED_ITEM_CHECK = "requested_item"
+NOTHING_EXTRA_CHECK = "nothing_extra"
+FLAG_CHECK_IDS = (REQUESTED_ITEM_CHECK, NOTHING_EXTRA_CHECK)
+"""Ids of the checks that show a flag (C5, C10); never a rule id."""
+
+
 def rule_check(rule: Rule) -> api.RuleCheck:
     return api.RuleCheck(id=rule.id, text=rule.text, source=rule.source, uncertainty=rule.uncertainty, kind=rule.kind)
+
+
+def flag_checks(flags: dict[str, Any]) -> list[api.RuleCheck]:
+    """The checks that show ``requested_item`` (C5) and ``nothing_extra`` (C10).
+
+    Display only: the engine reads the flags, never these checks, so showing them changes
+    no decision. ``exact`` because the customer named the item or said nothing else.
+    """
+    checks: list[api.RuleCheck] = []
+    if flags.get("requested_item"):
+        checks.append(
+            api.RuleCheck(
+                id=REQUESTED_ITEM_CHECK, text=f"Only the item you asked for: {flags['requested_item']}",
+                source="exact", uncertainty=None, kind="item",
+            )
+        )  # fmt: skip
+    if flags.get("nothing_extra"):
+        checks.append(
+            api.RuleCheck(
+                id=NOTHING_EXTRA_CHECK, text="Nothing added that you didn't ask for",
+                source="exact", uncertainty=None, kind="item",
+            )
+        )  # fmt: skip
+    return checks
+
+
+def policy_checks(rules: Sequence[Rule], flags: dict[str, Any]) -> list[api.RuleCheck]:
+    """What a draft or mandate shows: one check per typed rule, then the flag checks."""
+    return [*(rule_check(r) for r in rules), *flag_checks(flags)]
 
 
 def flags_of(draft: CompiledDraft | Policy) -> dict[str, Any]:
