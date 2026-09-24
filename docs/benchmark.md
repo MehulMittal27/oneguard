@@ -110,5 +110,30 @@ CPU only:
   multi-line carts fall back to keywords for time (never less cautious, signals.py).
 - A second process with its own model copy takes another ~2.5 GB, so on the 4 GB machine the
   bench does not run beside the app: it runs on a throwaway machine of the same size and
-  image (`fly machine run <image> python scripts/bench_engine.py --laya -a oneguard
-  --vm-size shared-cpu-4x --vm-memory 4096 -r lhr --restart no --rm`).
+  image, flags before the image and the command after `--`:
+
+```bash
+fly machine run -a oneguard --vm-size shared-cpu-4x --vm-memory 4096 -r lhr --restart no --rm \
+  --detach registry.fly.io/oneguard:<tag> -- python scripts/bench_engine.py --laya --lines-only --reps 3
+fly logs -a oneguard -i <machine id> --no-tail
+```
+
+Fly, `shared-cpu-4x` with 4 GB in lhr (x86_64), image `oneguard:9aeb5d2`, 24 Sep 2026: one
+warm-up call, then the 56 item lines three times (168 calls):
+
+| pass | n | P50 ms | P95 ms | max ms | CPU steal |
+|---|---:|---:|---:|---:|---:|
+| 1 | 56 | 267.1 | 361.2 | 391.7 | 1% |
+| 2 | 56 | 268.8 | 367.1 | 654.9 | 1% |
+| 3 | 56 | 260.1 | 308.0 | 353.0 | 1% |
+| **all** | 168 | **263.8** | **343.8** | 654.9 | |
+
+- Load (`signals.warm()`) 35.3 s; the live app took about as long (checkpoint loaded 41 s after the machine update) before it answered,
+  inside the 120 s health grace. Live app RSS with the model: 2.2 GB of 4 GB.
+- P95 344 ms ≤ 450 ms: the soft-signal budget stays at 500 ms and the machine stays shared
+  (docs/decisions.md).
+- **Shared CPU throttles under sustained load.** The full `--laya` run (1,120 back-to-back
+  model calls) on the same machine size drained the burst balance: CPU steal reached 57% and
+  it had not finished after 30 minutes (stopped). A live scenario asks a few times a minute,
+  so it runs on the burst balance; a load test would not, and past the budget the keyword
+  answer stands (never less cautious). Measure with `--lines-only` on a fresh machine.
