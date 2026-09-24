@@ -73,8 +73,8 @@ oneguard/
   `/v1/reference-data/authorization-history.csv`, and if its SHA-256 differs from
   `data/metadata.json` it re-seeds `authorization_history` and logs it loudly. The served
   `tables.fx_rates` must equal the engine's `facts.FX_TO_CHF` exactly (decimal compare); a
-  mismatch or a missing table is logged loudly and keeps the worker `degraded` (`ok: false`)
-  for as long as it runs; decisions still use `FX_TO_CHF`. Every request is
+  mismatch or a missing table is logged loudly and keeps the worker `ok: false` (`/healthz`
+  `degraded`) for as long as it runs, while it keeps polling; decisions still use `FX_TO_CHF`. Every request is
   schema-checked, stored in `events_raw`, decided by `pipeline.decide_event` within
   `ONEGUARD_ENGINE_BUDGET_MS` and posted before `deadline_at`. A step-up's deadline is the
   reply's `step_up_expires_at` (accepted time + the human window). Until then the platform
@@ -123,8 +123,9 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
   soft signals if enabled, then starts the worker in the background only when
   `VISECA_API_KEY` is set, after binding every stored mandate's policy to it.
 - `/healthz` (never names a secret or URL): `status` (`ok` when the database answers and the
-  worker, if configured, is polling), `worker` (`VisecaWorker.status()`: state, polling,
-  last poll, events cursor, human window, pending step-ups, last error), `events_cursor`,
+  worker, if configured, is `ok`: polling without errors and the served fx rates equal
+  `FX_TO_CHF`), `worker` (`VisecaWorker.status()`: state, polling, last poll, events
+  cursor, human window, pending step-ups, fx rates match and mismatch lines, last error), `events_cursor`,
   `provider` (name, configured), `signals` (backend, enabled, model loaded), `database`
   (engine name `sqlite`/`postgresql`, `SELECT 1` round trip in ms), `engine.stubbed`.
   503 only when the database does not answer.

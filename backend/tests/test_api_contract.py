@@ -1171,9 +1171,30 @@ def test_operator_endpoints(db_url: str) -> None:
 
             health = (await run.get("/healthz")).json()
             assert health["status"] == "ok" and health["worker"]["polling"] is True
+            assert (health["worker"]["fx_rates_match"], health["worker"]["fx_rates_mismatch"]) == (True, [])
             assert health["events_cursor"] == health["worker"]["events_cursor"] > 0
             assert health["database"]["ok"] and health["database"]["round_trip_ms"] is not None
             assert TIMESTAMP.match(health["worker"]["last_poll_at"])
+
+    asyncio.run(scenario())
+
+
+def test_healthz_is_degraded_while_viseca_serves_other_fx_rates(db_url: str) -> None:
+    """The worker's fx check reaches /healthz: it keeps polling but is not ok."""
+    rates = [
+        {"from_currency": c, "to_currency": "CHF", "rate": r}
+        for c, r in (("CHF", 1.0), ("EUR", 0.96), ("GBP", 1.12), ("USD", 0.87))
+    ]
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast(fx_rates=rates))) as run:
+            health = (await run.get("/healthz")).json()
+            assert health["status"] == "degraded"
+            worker = health["worker"]
+            assert worker["polling"] is True and worker["ok"] is False
+            assert worker["fx_rates_match"] is False
+            assert worker["fx_rates_mismatch"] == ["EUR: served 0.96, the engine uses 0.950000"]
+            assert "fx rates differ" in worker["last_error"]
 
     asyncio.run(scenario())
 

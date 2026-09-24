@@ -13,7 +13,7 @@ loop, never blocked by a human:
   it differs from the one the seed checked (``data/metadata.json``),
   ``authorization_history`` is re-seeded from it and that is logged loudly. The served
   ``tables.fx_rates`` must equal ``facts.FX_TO_CHF`` (the rates every CHF amount is
-  converted with); a mismatch is logged loudly and keeps ``/healthz`` degraded.
+  converted with); a mismatch is logged loudly and keeps ``ok`` false (``/healthz`` degraded).
 - loop: long-poll ``/v1/decision-requests/next?wait=25``. 204 → read the progress of
   every tracked run and the event feed, poll again. 200 → validate ``data`` against the
   event schema, remember the live → source id map (and the live related id), store the
@@ -586,7 +586,8 @@ class WorkerStatus(BaseModel):
     pending_step_ups: int
     history_reseeded: bool
     fx_rates_match: bool | None
-    """Served ``tables.fx_rates`` equal ``facts.FX_TO_CHF``; None until checked."""
+    """Served ``tables.fx_rates`` equal ``facts.FX_TO_CHF``; None until checked. False keeps
+    ``ok`` false (``state`` stays the loop's own)."""
     fx_rates_mismatch: list[str]
     last_error: str | None
     runs: list[RunStatus]
@@ -817,10 +818,9 @@ class VisecaWorker:
 
     def status(self) -> WorkerStatus:
         running = self._task is not None and not self._task.done()
-        fx_ok = not self.fx_rates_mismatch
-        state = self._state if running or self._state == "stopped" else "degraded"
+        fx_ok = not self.fx_rates_mismatch  # the loop still polls; ok says it is not healthy
         return WorkerStatus(
-            state="degraded" if state == "polling" and not fx_ok else state,
+            state=self._state if running or self._state == "stopped" else "degraded",
             ok=running and self._state == "polling" and self._failures == 0 and fx_ok,
             last_poll_at=self._last_poll_at,
             events_cursor=self._cursor,

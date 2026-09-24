@@ -1045,13 +1045,13 @@ def test_served_fx_rates_that_differ_are_logged_loudly_and_keep_healthz_degraded
             status = worker.status()
             assert status.fx_rates_match is False
             assert status.fx_rates_mismatch == ["EUR: served 0.96, the engine uses 0.950000"]
-            assert not status.ok and status.state == "degraded"
+            assert not status.ok and status.state == "polling"  # it polls, but is not healthy
             assert "fx rates differ" in (status.last_error or "")
             # the worker still decides (the engine's rates stand); it just is not healthy
             _, run_id = await start_run(client, worker, "SCEN0000")
             await wait_until(lambda: worker.run_status(run_id) is not None
                              and worker.run_status(run_id).decided == 1)  # fmt: skip
-            assert worker.status().state == "degraded"
+            assert not worker.status().ok
             assert worker.live_run(run_id).worker_ok is False
 
     asyncio.run(scenario())
