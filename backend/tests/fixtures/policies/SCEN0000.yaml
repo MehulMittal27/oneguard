@@ -1,0 +1,14 @@
+scenario_id: SCEN0000
+instruction: "Buy one ordinary grocery item for CHF 20 or less from a shop I use regularly. Ask me when uncertain."
+status: active
+uncertainty_policy: ask
+requested_item: null
+allowed_item_categories: [groceries]
+blocked_item_categories: null
+requires_known_shop: true
+nothing_extra: false
+shop_type: null
+rules:
+  - {id: C1, field: authorization.billing_amount_chf, operator: "<=", value: 20, currency: CHF, scope: purchase, period_days: null, text: "Total at or below CHF 20 per order", source: exact, kind: amount}
+  - {id: C3, field: "items[].item_category", operator: in, value: [groceries], currency: null, scope: null, period_days: null, text: "Only grocery items", source: inferred, kind: item}
+  - {id: C9, field: merchant.familiar_on_card, operator: "=", value: "true", currency: null, scope: null, period_days: null, text: "Only shops you have bought from before", source: inferred, kind: merchant}

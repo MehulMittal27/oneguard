@@ -1,0 +1,14 @@
+scenario_id: SCEN0003
+instruction: "The agent may buy clothing for me, up to CHF 250 per order, from shops I have used before. Pause anything that looks like someone other than me is driving the session. Ask me when uncertain."
+status: active
+uncertainty_policy: ask
+requested_item: null
+allowed_item_categories: [clothing]
+blocked_item_categories: null
+requires_known_shop: true
+nothing_extra: false
+shop_type: null
+rules:
+  - {id: C3, field: "items[].item_category", operator: in, value: [clothing], currency: null, scope: null, period_days: null, text: "Only clothing", source: exact, kind: item}
+  - {id: C1, field: authorization.billing_amount_chf, operator: "<=", value: 250, currency: CHF, scope: purchase, period_days: null, text: "Total at or below CHF 250 per order", source: exact, kind: amount}
+  - {id: C9, field: merchant.familiar_on_card, operator: "=", value: "true", currency: null, scope: null, period_days: null, text: "Only shops you have bought from before", source: exact, kind: merchant}
