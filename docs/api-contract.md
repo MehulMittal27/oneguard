@@ -103,7 +103,8 @@ FormInput { per_order_limit_chf: number|null, period_limit_chf: number|null,
 
 DryRunResult { sample_size, would_violate, would_fit, would_ask, insight,
                examples?: [{ occurred_at, merchant_name, billing_amount_chf,
-                             outcome: 'fit'|'violate'|'ask', reason }] }   // NEW, ≤3 rows
+                             outcome: 'fit'|'violate'|'ask', reason }],    // NEW, ≤3 rows
+               agent_history?: { attempts: number, approved: number } }   // NEW: history rows with initiator_type 'agent'
 
 PolicyDraft  { draft_id, card_id, instruction, checks: RuleCheck[],
                uncertainty_policy: 'ask'|'decline', open_questions: string[],
@@ -258,7 +259,11 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 - C6 may return the template message first (`explanation_source: 'template'`) and the
   model rewrite on a later poll (`explanation_source: 'model'`).
 - The engine reconciles `context.approved_spend_in_period_chf` from Viseca against its own
-  ledger on every event and logs a mismatch as an `info` evidence row.
+  ledger on every event, and each decision against the platform's event feed
+  (`GET /v1/events?since=<cursor>`, advancing with the returned `next_cursor`) as well as
+  against `context`; either mismatch is logged as an `info` evidence row.
+- `Decision.evidence` may carry a W6 row (rules.md §8): the cart line, its unit price in CHF
+  and the catalogue range `items.unit_price_min_chf`–`items.unit_price_max_chf`.
 
 ### 3.5 Step-up window and expiry
 

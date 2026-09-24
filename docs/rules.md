@@ -43,7 +43,7 @@ The first step that applies decides.
 
 | Step | Condition | Outcome |
 |---|---|---|
-| 1 | Policy revoked or expired | Decline |
+| 1 | Policy revoked or expired, `authority_status` ≠ `"active"` (`"revoked"` or `"expired"`), or `card_status_at_attempt` = `"blocked"` | Decline, with evidence naming the field and its value |
 | 2 | Any customer rule or money rule `fail` | Decline |
 | 3 | Any protection with a Decline outcome triggered | Decline |
 | 4 | Any customer rule `unknown` | Uncertainty setting (Ask by default) |
@@ -73,8 +73,8 @@ The first step that applies decides.
 | C4 | **Blocked item types.** No cart line in the blocked set. | Decline | — |
 | C5 | **Specific item.** The item bought is the item asked for; a similar item is not it (trail ≠ road shoe; gift voucher ≠ monitor). | Decline | — |
 | C6 | **Item details.** Named details (size, colour, model, dimensions) match. Often only in shop text: extract, trust nothing else in it. | Decline | Uncertainty setting (not stated or self-contradictory) |
-| C7 | **Order terms.** Returns/cancellation/warranty as named. "14 days or more" → 14 passes, 7 fails. "Final sale / no returns / non-returnable" = 0 days. When sources disagree, the stricter applies. | Decline | Uncertainty setting (not stated, `order_returnable = "unknown"`) |
-| C8 | **Shop type.** `merchant_category` is the named type (sustainable goods ≠ specialist sports retailer, even selling the right shoe). | Decline | — |
+| C7 | **Order terms.** Returns/cancellation/warranty as named. "14 days or more" → 14 passes, 7 fails. "Final sale / no returns / non-returnable" = 0 days. Cancellation reads `order_cancellable`: `"false"` fails a named cancellation term. When sources disagree, the stricter applies. | Decline | Uncertainty setting (not stated, `order_returnable = "unknown"`, or `order_cancellable = "unknown"` when cancellation is named) |
+| C8 | **Shop type.** `merchant_category` is the named type (sustainable goods ≠ specialist sports retailer, even selling the right shoe). `merchant_mcc` is secondary evidence; `merchant_category` decides. | Decline | — |
 | C9 | **Known shop.** As defined in §3. "Shop I use regularly" and "seller I have bought from before" both map here; see Q9 for a stricter reading of "regularly". | Decline | — |
 | C10 | **Nothing extra.** Cart contains only what was asked; add-ons (protection plans, subscriptions, accessories) fail. Explanation says what to remove. | Decline | — |
 | C11 | **Uncertainty setting.** Apply the customer's choice when any rule is `unknown`. Default `ask`. | — | — |
@@ -99,7 +99,7 @@ The first step that applies decides.
 | A3 | Duplicate order | Same shop, same items, amount within 5 %, within 24 h of a final approval or pending purchase. A new purchase id does not change this. | Ask |
 | A4 | Split order | Same shop within 10 min of a final approval or pending purchase, and the two together exceed the per-order limit. | Ask |
 | A5 | Re-quote | Linked (`related_authorization_id`) to an earlier **declined** purchase. Not a duplicate. | Judge on its own facts; explanation names the earlier decline. |
-| A6 | Hidden recurring cost | A cart line bills later or repeatedly (monthly, renewal, subscription) that the customer didn't ask for. | **Decline when C10 is stated; Ask otherwise** (explanation names the recurring amount). See Q10. |
+| A6 | Hidden recurring cost | A cart line bills later or repeatedly (monthly, renewal, subscription) that the customer didn't ask for. `merchants.recurring_capable` is recorded as evidence, not a trigger. | **Decline when C10 is stated; Ask otherwise** (explanation names the recurring amount). See Q10. |
 | A7 | Lookalike shop | Shop name closely resembles a known shop (edit distance ≤ 2 on normalised name) but is a different `merchant_id`. | Ask; Decline if C9 applies. Explanation names the lookalike. |
 
 ## 8. Warning signs
@@ -113,6 +113,7 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 | W3 | New country | Weak | `merchant_country` never in the customer's approved history. |
 | W4 | Amount far above normal | Weak | Total > the customer's largest approved purchase, **and** no per-order limit was stated or the total exceeds it. Within a stated limit it never triggers. |
 | W5 | Night-time | Weak | Purchase time between 00:00 and 05:00 **Europe/Zurich**. |
+| W6 | Price outside catalogue range | Weak | A cart line's unit price in CHF (M1, M2) is above `items.unit_price_max_chf` or below `items.unit_price_min_chf` for its `item_id`. |
 
 - **W-rule 1** One strong sign → Ask.
 - **W-rule 2** Two or more weak signs → Ask. One weak sign alone → no effect.

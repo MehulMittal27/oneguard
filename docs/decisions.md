@@ -4,6 +4,7 @@ Choices made where the spec, the data, or the platform disagreed. Newest first.
 
 | Date | Decision | Why | Where |
 |---|---|---|---|
+| 2026-09-24 | Use every provided field and endpoint: step 1 names `authority_status` and `card_status_at_attempt`; C7 covers `order_cancellable`; `merchant_mcc` secondary evidence for C8; `merchants.recurring_capable` evidence for A6; W6 price outside catalogue range (weak); `HistoryIndex.agent_history` / `item_price_range`; `DryRunResult.agent_history`; reconciliation via `GET /v1/events` as well as `context`; startup pack check against `/v1/reference-data` | coverage audit of the data pack and API | rules.md §4 step 1, C7, C8, A6, W6; api-contract.md §2, §3.4; database.md §3; team-plan.md P1-1, P3-1, P5-2 |
 | 2026-09-24 | Frontend contract merged into docs/api-contract.md; frontend/API-CONTRACT.md is a pointer | One canonical contract; the backend-facing requirements (envelopes, consistency matrix, check wording, checklist) now live in it | api-contract.md §1.0, §3.1a, §3.9, Appendix A; frontend/API-CONTRACT.md |
 | 2026-09-24 | Spend meter reads `Mandate.usage` first, check wording second | `usage` is the engine ledger's own view; parsing limits back out of prose fails silently (the fixture's "across any rolling 7 days" never matched) | frontend/src/lib/spend.ts `limitsFromMandate`; api-contract.md §3.9 |
 | 2026-09-24 | `Decision.explanation_source` ('template' \| 'model'); C6 may return the template message first and the model rewrite on a later poll | Viseca Q&A | api-contract.md §2, §3.4, §6 |
