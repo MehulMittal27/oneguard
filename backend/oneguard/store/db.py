@@ -45,9 +45,13 @@ def database_url() -> str:
     return normalise_url(os.environ.get(DATABASE_URL_ENV, "").strip() or DEFAULT_DATABASE_URL)
 
 
-def _enable_sqlite_foreign_keys(dbapi_connection: Any, _record: Any) -> None:
+def _configure_sqlite(dbapi_connection: Any, _record: Any) -> None:
+    # WAL: readers never wait for the writer and a commit is one append, so the worker's
+    # concurrent writes (call log, events_raw, run rows, cursor, ledger) do not stall its
+    # loop past a decision deadline, as the rollback journal did (docs/database.md §1).
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA journal_mode=WAL")
     cursor.close()
 
 
@@ -73,7 +77,7 @@ def make_engine(url: str | URL | None = None, *, pooled: bool = True) -> Engine:
         engine = create_engine(
             parsed, pool_pre_ping=True, connect_args={"check_same_thread": False}
         )
-        event.listen(engine, "connect", _enable_sqlite_foreign_keys)
+        event.listen(engine, "connect", _configure_sqlite)
         return engine
     if backend == "postgresql":
         pool: dict[str, Any] = (

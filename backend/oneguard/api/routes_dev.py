@@ -422,6 +422,13 @@ async def list_scenarios(request: Request) -> JSONResponse:
 # D5 -------------------------------------------------------------------------------------
 
 
+@router.get("/soft-signals", response_model=api.SoftSignalsState)
+async def soft_signals_state(request: Request) -> JSONResponse:
+    """D5 read: what the models are doing now, so the operator strip starts from the truth."""
+    s = services(request)
+    return reply(api.SoftSignalsState(live=s.live_models(), replay=s.replay_models()))
+
+
 @router.post("/soft-signals", response_model=api.SoftSignalsToggle)
 async def soft_signals(body: api.SoftSignalsToggle, request: Request) -> JSONResponse:
     """D5 chaos toggle: soft signals and the tier-2/3 provider, live and replay, at once."""

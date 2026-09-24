@@ -1,0 +1,91 @@
+# The served item catalogue: GET /v1/reference-data tables.items, pack_version saw26-hackaton-api,
+# fetched read-only on 2026-09-24 (87 items; data/items.csv holds 66 of them). Names and
+# categories only. TEST DATA ONLY: read by backend/tests/test_compiler_products.py, never by
+# oneguard/. It holds compiler/parser.PRODUCT_WORDS to what the catalogue files.
+- {item_name: "Children's book set", item_category: books}
+- {item_name: "E-book bundle", item_category: books}
+- {item_name: "Paperback book order", item_category: books}
+- {item_name: "Professional reference book", item_category: books}
+- {item_name: "Everyday jacket", item_category: clothing}
+- {item_name: "Everyday waterproof jacket", item_category: clothing}
+- {item_name: "Rain coat", item_category: clothing}
+- {item_name: "Seasonal clothing order", item_category: clothing}
+- {item_name: "Waterproof rain coat", item_category: clothing}
+- {item_name: "Waterproof work jacket", item_category: clothing}
+- {item_name: "Winter boots", item_category: clothing}
+- {item_name: "Work shoes", item_category: clothing}
+- {item_name: "Fragrance and beauty gift", item_category: cosmetics}
+- {item_name: "Personal care set", item_category: cosmetics}
+- {item_name: "Dinner reservation", item_category: dining}
+- {item_name: "Lunch order", item_category: dining}
+- {item_name: "Team meal", item_category: dining}
+- {item_name: "Weekend brunch", item_category: dining}
+- {item_name: "27-inch computer monitor", item_category: electronics}
+- {item_name: "Computer monitor", item_category: electronics}
+- {item_name: "Noise-cancelling headphones", item_category: electronics}
+- {item_name: "Phone charger", item_category: electronics}
+- {item_name: "Tablet accessory", item_category: electronics}
+- {item_name: "USB-C hub", item_category: electronics}
+- {item_name: "Dinner delivery", item_category: food_delivery}
+- {item_name: "Family meal delivery", item_category: food_delivery}
+- {item_name: "Late-shift meal", item_category: food_delivery}
+- {item_name: "Prepared lunch order", item_category: food_delivery}
+- {item_name: "Weekly meal kit", item_category: food_delivery}
+- {item_name: "Electric vehicle charging session", item_category: fuel}
+- {item_name: "Fuel and car wash", item_category: fuel}
+- {item_name: "Fuel purchase", item_category: fuel}
+- {item_name: "Motorway service stop", item_category: fuel}
+- {item_name: "Digital gift voucher", item_category: gift_card}
+- {item_name: "Prepaid gift card", item_category: gift_card}
+- {item_name: "Bakery and dairy order", item_category: groceries}
+- {item_name: "Breakfast supplies", item_category: groceries}
+- {item_name: "Drinks and snacks", item_category: groceries}
+- {item_name: "Family breakfast supplies", item_category: groceries}
+- {item_name: "Fresh produce order", item_category: groceries}
+- {item_name: "Fresh produce selection", item_category: groceries}
+- {item_name: "Frozen food order", item_category: groceries}
+- {item_name: "Pantry restock", item_category: groceries}
+- {item_name: "Pantry staples", item_category: groceries}
+- {item_name: "Weekly grocery basket", item_category: groceries}
+- {item_name: "Wine and spirits", item_category: groceries}
+- {item_name: "Kitchen repair parts", item_category: home_improvement}
+- {item_name: "Shelving materials", item_category: home_improvement}
+- {item_name: "Tool set", item_category: home_improvement}
+- {item_name: "Wall paint and brushes", item_category: home_improvement}
+- {item_name: "Hostel bed", item_category: hotel}
+- {item_name: "Hotel room", item_category: hotel}
+- {item_name: "Hotel room, non-refundable rate", item_category: hotel}
+- {item_name: "Hotel room, refundable rate", item_category: hotel}
+- {item_name: "Serviced apartment stay", item_category: hotel}
+- {item_name: "Cleaning supplies", item_category: household}
+- {item_name: "Household essentials", item_category: household}
+- {item_name: "Kitchen storage containers", item_category: household}
+- {item_name: "Light bulbs and batteries", item_category: household}
+- {item_name: "Vacuum cleaner", item_category: household}
+- {item_name: "Gym membership", item_category: membership}
+- {item_name: "Premium membership", item_category: membership}
+- {item_name: "Premium streaming tier", item_category: membership}
+- {item_name: "Store loyalty membership", item_category: membership}
+- {item_name: "Camera lens", item_category: photography}
+- {item_name: "Cycling accessories", item_category: sporting_goods}
+- {item_name: "Cycling helmet", item_category: sporting_goods}
+- {item_name: "Hiking backpack", item_category: sporting_goods}
+- {item_name: "Hiking boots", item_category: sporting_goods}
+- {item_name: "Road-running shoes", item_category: sporting_goods}
+- {item_name: "Running shoes", item_category: sporting_goods}
+- {item_name: "Running socks", item_category: sporting_goods}
+- {item_name: "Trail-running shoes", item_category: sporting_goods}
+- {item_name: "Training equipment", item_category: sporting_goods}
+- {item_name: "Annual media subscription", item_category: subscriptions}
+- {item_name: "Cloud storage plan", item_category: subscriptions}
+- {item_name: "Digital newspaper plan", item_category: subscriptions}
+- {item_name: "Extended protection plan", item_category: subscriptions}
+- {item_name: "Monthly learning subscription", item_category: subscriptions}
+- {item_name: "Monthly media subscription", item_category: subscriptions}
+- {item_name: "Music plan", item_category: subscriptions}
+- {item_name: "Airport transfer", item_category: transport}
+- {item_name: "City day pass", item_category: transport}
+- {item_name: "Monthly transit pass", item_category: transport}
+- {item_name: "Regional rail ticket", item_category: transport}
+- {item_name: "Economy flight ticket", item_category: travel}
+- {item_name: "Travel insurance add-on", item_category: travel}

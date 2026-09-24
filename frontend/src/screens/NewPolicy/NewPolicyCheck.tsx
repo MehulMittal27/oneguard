@@ -1,7 +1,7 @@
 import type { PolicyDraft } from '../../api/types'
 import { formatShortDate } from '../../lib/datetime'
 import { formatChf } from '../../lib/money'
-import { canConfirmDraft, reviewQuestions } from '../../lib/policyReview'
+import { agentHistoryLine, canConfirmDraft, reviewQuestions } from '../../lib/policyReview'
 import { NewPolicyShell } from './NewPolicyShell'
 
 /**
@@ -20,19 +20,6 @@ const EXAMPLE_OUTCOME: Record<string, { label: string; className: string }> = {
 }
 
 const UNKNOWN_EXAMPLE_OUTCOME = { label: 'Checked', className: 'text-ink-muted' }
-
-/**
- * Contract §6 item 9's agent-history line, which names its own scope: this screen
- * and its dry run are card-scoped, and the card and customer counts differ
- * materially in the pack (CA0001: 14 on the card, 29 across the customer, so
- * the scope is not cosmetic). Zero attempts is worth saying — it
- * means this would be the first agent purchase on the card.
- */
-function agentHistoryLine({ attempts, approved }: { attempts: number; approved: number }): string {
-  if (attempts === 0) return 'No agent has bought on this card before.'
-  const times = attempts === 1 ? 'once' : `${attempts} times`
-  return `An agent has bought on this card ${times} before — ${approved} approved.`
-}
 
 /** DESIGN.md #7: step-2 review — checks, uncertainty choice, dry run, confirm. */
 export function NewPolicyCheck({
@@ -194,7 +181,7 @@ export function NewPolicyCheck({
 
       <section className="rounded-hero border border-hairline bg-surface p-5">
         <p className="text-[11px] font-semibold tracking-[0.08em] text-cord-accent uppercase">
-          Dry run on your history
+          Dry run on this card&apos;s history
         </p>
         <div className="mt-3 grid grid-cols-3 gap-3 text-center">
           <div>
