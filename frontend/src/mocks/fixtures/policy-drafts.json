@@ -300,9 +300,9 @@
         "per_order_limit_chf": 250,
         "period_limit_chf": null,
         "period_days": null,
-        "period_spent_chf": 393.0,
+        "period_spent_chf": 640.0,
         "period_window_start": "2026-08-14T18:20:00Z",
-        "pending_chf": 245.28,
+        "pending_chf": 340.28,
         "as_of": "2026-08-22T15:20:00Z"
       }
     },

@@ -1017,6 +1017,108 @@
     },
     {
       "mock": true,
+      "authorization_id": "AU0031",
+      "customer_id": "CU0012",
+      "card_id": "CA0023",
+      "decision": "uncertain",
+      "uncertain_outcome": "pending",
+      "status": "pending_human",
+      "reason_codes": [
+        "session_watch"
+      ],
+      "message": "CHF 95.00, well inside your CHF 250 limit. We're checking with you because this card is still under watch after Tuesday's burst.",
+      "uncertainty": {
+        "note": "Whether the burst in the early hours of 18 August was you. Until you say, this card's orders come to you first."
+      },
+      "occurred_at": "2026-08-19T17:30:00Z",
+      "merchant": {
+        "merchant_id": "ME0025",
+        "name": "Loom and Pine"
+      },
+      "amount": 95.0,
+      "currency": "CHF",
+      "billing_amount_chf": 95.0,
+      "items": [
+        {
+          "item_name": "Rain coat",
+          "quantity": 1,
+          "unit_price": 95.0,
+          "currency": "CHF",
+          "item_details": "Rain coat, size S; returns accepted within 30 days"
+        }
+      ],
+      "injection_flag": null,
+      "evidence": [
+        {
+          "rule": "Per-order limit",
+          "outcome": "pass",
+          "detail": "CHF 95.00 is well within your CHF 250 limit."
+        },
+        {
+          "rule": "Session",
+          "outcome": "uncertain",
+          "detail": "This card is under watch after four orders between 02:14 and 02:24 on 18 August.",
+          "source": "ledger"
+        }
+      ],
+      "order_returnable": "true",
+      "delivery_by": null,
+      "session": {
+        "trust": "elevated",
+        "note": "On watch since the burst on 18 August. Your answer lifts it."
+      }
+    },
+    {
+      "mock": true,
+      "authorization_id": "AU0032",
+      "customer_id": "CU0012",
+      "card_id": "CA0023",
+      "decision": "approved",
+      "uncertain_outcome": null,
+      "status": "final",
+      "reason_codes": [
+        "session_recovered",
+        "within_limits",
+        "foreign_currency_converted"
+      ],
+      "message": "CHF 247.00, within your CHF 250 limit — the watch on this card lifted after you answered.",
+      "uncertainty": null,
+      "occurred_at": "2026-08-20T11:15:00Z",
+      "merchant": {
+        "merchant_id": "ME0027",
+        "name": "Milano Weave"
+      },
+      "amount": 260.0,
+      "currency": "EUR",
+      "billing_amount_chf": 247.0,
+      "items": [
+        {
+          "item_name": "Seasonal clothing order",
+          "quantity": 1,
+          "unit_price": 260.0,
+          "currency": "EUR",
+          "item_details": "Seasonal outerwear order, size S; returns accepted within 30 days"
+        }
+      ],
+      "injection_flag": null,
+      "evidence": [
+        {
+          "rule": "Per-order limit",
+          "outcome": "pass",
+          "detail": "EUR 260.00 converts to CHF 247.00, within your CHF 250 limit."
+        },
+        {
+          "rule": "Session",
+          "outcome": "pass",
+          "detail": "Normal activity resumed after you confirmed the earlier order.",
+          "source": "ledger"
+        }
+      ],
+      "order_returnable": "true",
+      "delivery_by": null
+    },
+    {
+      "mock": true,
       "authorization_id": "AU0034",
       "customer_id": "CU0012",
       "card_id": "CA0023",

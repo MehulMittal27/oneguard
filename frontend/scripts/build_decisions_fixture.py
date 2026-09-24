@@ -217,6 +217,37 @@ CURATION = {
             "note": "We're double-checking after unusual activity on your card",
         },
     },
+    # The day after the 02:14-02:24 burst. CHF 95.00 is far inside the CHF 250
+    # cap, so this step-up is purely the session watch — the amount is not what
+    # is being asked about.
+    "AU0031": {
+        "decision": "uncertain",
+        "uncertain_outcome": "pending",
+        "status": "pending_human",
+        "reason_codes": ["session_watch"],
+        "message": "CHF 95.00, well inside your CHF 250 limit. We're checking with you because this card is still under watch after Tuesday's burst.",
+        "uncertainty": {"note": "Whether the burst in the early hours of 18 August was you. Until you say, this card's orders come to you first."},
+        "injection_flag": None,
+        "evidence": [
+            {"rule": "Per-order limit", "outcome": "pass", "detail": "CHF 95.00 is well within your CHF 250 limit."},
+            {"rule": "Session", "outcome": "uncertain", "detail": "This card is under watch after four orders between 02:14 and 02:24 on 18 August.", "source": "ledger"},
+        ],
+        "session": {"trust": "elevated", "note": "On watch since the burst on 18 August. Your answer lifts it."},
+    },
+    # After the customer answers: the watch lifts and the next order goes through
+    # on the rules alone. EUR 260.00 converts to CHF 247.00, inside the cap.
+    "AU0032": {
+        "decision": "approved",
+        "status": "final",
+        "reason_codes": ["session_recovered", "within_limits", "foreign_currency_converted"],
+        "message": "CHF 247.00, within your CHF 250 limit — the watch on this card lifted after you answered.",
+        "uncertainty": None,
+        "injection_flag": None,
+        "evidence": [
+            {"rule": "Per-order limit", "outcome": "pass", "detail": "EUR 260.00 converts to CHF 247.00, within your CHF 250 limit."},
+            {"rule": "Session", "outcome": "pass", "detail": "Normal activity resumed after you confirmed the earlier order.", "source": "ledger"},
+        ],
+    },
     "AU0034": {
         "decision": "stopped",
         "status": "final",
