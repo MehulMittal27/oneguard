@@ -18,7 +18,7 @@ import asyncio
 import re
 import shutil
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -194,10 +194,25 @@ class Running:
     faulty: Faulty | None
     clock: Clock
     responses: list[httpx.Response] = field(default_factory=list)
+    handled: set[str] = field(default_factory=set)
+    """Live ids the worker has fully handled (``add_handled_listener``)."""
+    _handled_changed: asyncio.Event = field(default_factory=asyncio.Event)
 
     @property
     def services(self) -> Services:
         return self.app.state.services
+
+    def on_handled(self, live_id: str) -> None:
+        self.handled.add(live_id)
+        self._handled_changed.set()
+
+    async def until_handled(self, live_ids: Iterable[str]) -> None:
+        """Wait on the worker's own signal until it has fully handled every one of
+        ``live_ids``: decision posted and recorded, expiry scheduled, rows committed."""
+        wanted = set(live_ids)
+        while not wanted <= self.handled:
+            self._handled_changed.clear()
+            await asyncio.wait_for(self._handled_changed.wait(), timeout=120)  # a hang guard
 
     async def get(self, path: str, **kw: Any) -> httpx.Response:
         r = await self.http.get(path, **kw)
@@ -270,6 +285,8 @@ async def running(
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://oneguard.test") as http:
             run = Running(app, http, fake, faulty, clock)
+            if run.services.worker is not None:
+                run.services.worker.add_handled_listener(run.on_handled)
             if fake is not None:
                 await until(lambda: run.services.worker.status().state == "polling")
             yield run
@@ -648,6 +665,8 @@ def test_a_resolve_after_the_window_is_refused_and_not_recorded(db_url: str) -> 
             decisions = await live_run(run)
             step_up = next(d for d in decisions if d["status"] == "pending_human")
             live_id = step_up["authorization_id"]
+            # every expiry is scheduled on the real clock before the simulated one moves on
+            await run.until_handled(d["authorization_id"] for d in decisions)
             clock.offset = timedelta(seconds=61)  # the window is over; no expiry has run yet
             r = await run.post(f"/api/authorizations/{live_id}/resolve", json={"decision": "approve"})
             assert r.status_code == 409 and r.json()["error"]["code"] == "window_closed"
@@ -1266,12 +1285,10 @@ def test_d7_reads_the_stored_newest_run_after_a_restart(db_url: str) -> None:
     async def scenario() -> None:
         async with running(db_url, fake=FakeViseca(fast())) as run:
             await confirm_form(run)
-            # the worker says when the purchase is handled: decision recorded and its runs row
-            # committed (reading D7 would only see the in-memory count, ahead of the row)
-            handled = asyncio.Event()
-            run.services.worker.add_handled_listener(lambda live_id: handled.set())
             live = (await run.post("/api/dev/runs", json={"scenario_id": "SCEN0000", "card_id": "CA0001"})).json()
-            await asyncio.wait_for(handled.wait(), timeout=120)  # a hang guard, not a wait
+            # the worker says when the purchase is handled: decision recorded and its runs row
+            # committed (D7 alone shows the in-memory count, which is ahead of the row)
+            await run.until_handled(run.fake.auths)
             assert (await run.get("/api/dev/runs/current")).json()["decided"] == 1
         async with running(db_url) as run:  # no worker now
             current = (await run.get("/api/dev/runs/current")).json()

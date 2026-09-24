@@ -377,7 +377,7 @@ def test_a_restart_resumes_the_event_feed_from_the_stored_cursor(
             _, run_id = await start_run(client, worker, "SCEN0001")
             auths = fake.runs[run_id].auths
             await wait_until(lambda: all(a.decisions for a in auths))
-            await wait_until(lambda: stored_cursor(db) == len(fake.feed))
+            await wait_until(lambda: worker.events_cursor == len(fake.feed))  # stored first
             await worker.stop()
             cursor = stored_cursor(db)
             assert isinstance(cursor, int) and cursor >= 10
@@ -390,7 +390,8 @@ def test_a_restart_resumes_the_event_feed_from_the_stored_cursor(
                 assert restarted.events_cursor == cursor
                 _, next_run = await start_run(client, restarted, "SCEN0000")
                 await wait_until(lambda: all(a.decisions for a in fake.runs[next_run].auths))
-                await wait_until(lambda: stored_cursor(db) == len(fake.feed) > cursor)
+                await wait_until(lambda: restarted.events_cursor == len(fake.feed) > cursor)
+                assert stored_cursor(db) == restarted.events_cursor
             finally:
                 await restarted.stop()
             assert feed[0][0] == cursor
@@ -739,20 +740,35 @@ def test_a_revoked_mandate_declines_everything_delivered_afterwards(
 ) -> None:
     async def scenario() -> None:
         async with harness(db, fast(), history=history) as (fake, client, worker):
+            # Revoke right after the worker has handled the second purchase: revoke's local
+            # part runs before the next request can be decided (the loop's next step is a
+            # poll), so the first two are decided under the policy and the rest after revoke.
+            handled: list[str] = []
+            revoked: list[asyncio.Task[None]] = []
+            all_handled = asyncio.Event()
+
+            def on_handled(live_id: str) -> None:
+                if live_id in handled:
+                    return  # a waiting step-up served again
+                handled.append(live_id)
+                if len(handled) == 2:
+                    revoked.append(asyncio.create_task(worker.revoke(mandate_id)))
+                if len(handled) == 10:
+                    all_handled.set()
+
+            worker.add_handled_listener(on_handled)
             await worker.start()
             mandate_id, run_id = await start_run(client, worker, "SCEN0001")
             auths = fake.runs[run_id].auths
-            await wait_until(lambda: sum(bool(a.decisions) for a in auths) >= 2)
-            before = datetime.now(UTC)
-            await worker.revoke(mandate_id)
-            after = datetime.now(UTC)
+            await asyncio.wait_for(all_handled.wait(), timeout=120)  # a hang guard, not a wait
+            await revoked[0]
             assert fake.mandates[mandate_id]["status"] == "revoked"
-            await wait_until(lambda: all(a.decisions for a in auths), timeout=15)
+            assert all(a.decisions for a in auths)
 
-            entries = await worker.ledger_entries([a.live_id for a in auths])
-            earlier = [e for e in entries if e.decided_at < before]
-            later = [e for e in entries if e.decided_at > after]
-            assert len(earlier) >= 2 and len(later) >= 5
+            by_id = {e.live_authorization_id: e for e in await worker.ledger_entries(handled)}
+            earlier = [by_id[i] for i in handled[:2]]
+            later = [by_id[i] for i in handled[2:]]
+            assert len(later) == 8
             assert {e.outcome for e in earlier} == {"step_up"}
             for entry in later:
                 assert entry.outcome == "decline" and entry.step == 1
