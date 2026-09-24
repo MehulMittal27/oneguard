@@ -148,7 +148,17 @@ class Fulfilment(ApiModel):
     requested: int = Field(ge=0)
 
 
+class Confirmation(ApiModel):
+    """A remembered customer yes ("things you've confirmed"); names are untrusted text."""
+
+    rule_text: str
+    merchant_name: str
+    item_name: str
+
+
 class MandateUsage(ApiModel):
+    _omit_if_none = frozenset({"confirmations"})
+
     per_order_limit_chf: float | None
     period_limit_chf: float | None
     period_days: int | None
@@ -156,6 +166,7 @@ class MandateUsage(ApiModel):
     period_window_start: Timestamp
     pending_chf: float
     fulfilment: Fulfilment | None = None
+    confirmations: list[Confirmation] | None = None
     as_of: Timestamp
 
 
