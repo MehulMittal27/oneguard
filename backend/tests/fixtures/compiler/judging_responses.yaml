@@ -7,6 +7,10 @@
 # The replay does not see the prompt: re-record after changing it (the parser tests still pin the floor).
 # SCEN0113 re-recorded on 2026-09-24 (gpt-4.1, same settings) after the prompt learned
 # cart.purchases_in_period (p4/purchases-in-period); the other entries are unchanged.
+# SCEN0124 re-recorded on 2026-09-24 (gpt-4.1, same settings) after the prompt learned requested
+# products and their catalogue types (p4/requested-item): "no insurance" is now only the excluded
+# travel type, as the parser reads it. The other nine read the same under the new prompt (two
+# live runs each), so they are unchanged.
 - scenario: SCEN0101
   response:
     uncertainty_policy: ask
@@ -439,19 +443,7 @@
       currency: null
       scope: null
       period_days: null
-      words: No flights
-      source: exact
-      on_fail: decline
-    - field: unverifiable
-      operator: '='
-      value_number: null
-      value_text: no insurance
-      value_list: null
-      value_from: literal
-      currency: null
-      scope: null
-      period_days: null
-      words: no insurance
+      words: No flights, no insurance
       source: exact
       on_fail: decline
     open_questions:

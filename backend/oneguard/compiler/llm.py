@@ -32,7 +32,12 @@ from oneguard.compiler.draft import (
     number,
 )
 from oneguard.compiler.lint import stated_boundary
-from oneguard.compiler.parser import each_is_per_purchase
+from oneguard.compiler.parser import (
+    each_is_per_purchase,
+    is_product_question,
+    product_categories,
+    product_question,
+)
 from oneguard.compiler.resolve import last_price
 from oneguard.engine.types import HistoryIndex
 from oneguard.llm.provider import Provider
@@ -99,6 +104,8 @@ EXAMPLES: list[tuple[str, dict[str, Any]]] = [
             "requested_item": "road-running shoes",
             "nothing_extra": False,
             "rules": [
+                _example_rule("items[].item_category", "in", "road-running shoes", value_list=["sporting_goods"],
+                              source="inferred"),
                 _example_rule("items[].size_eu", "=", "in size 43", value_number=43),
                 _example_rule("merchant.merchant_category", "=", "specialist sports retailer",
                               value_text="sporting_goods"),
@@ -234,6 +241,8 @@ EXAMPLES: list[tuple[str, dict[str, Any]]] = [
             "requested_item": "trail shoes",
             "nothing_extra": False,
             "rules": [
+                _example_rule("items[].item_category", "in", "trail shoes", value_list=["sporting_goods"],
+                              source="inferred"),
                 _example_rule("items[].size_eu", "=", "size 44", value_number=44),
                 _example_rule("merchant.merchant_country", "=", "German", value_text="DE"),
                 _example_rule("merchant.merchant_category", "=", "outdoor retailer", value_text="sporting_goods",
@@ -301,9 +310,16 @@ Rules:
   (value_number, with currency as written). A vague request gets open_questions, not a guess.
 - Keep boundary words: "under / less than / below" is "<"; "at or below / or less / no more than /
   max / up to / at most" is "<=".
-- A specific product ("the 27-inch monitor I chose", "road-running shoes") goes in requested_item.
-  Add an items[].item_category rule only when the item clearly is one of the categories (a gym
-  membership is membership). "Do not add anything I did not ask for" sets nothing_extra true.
+- A specific product ("buy/order/get a|an|the|my|one <product>": "the 27-inch monitor I chose",
+  "road-running shoes", "a bag") goes in requested_item, the product words only. Category words
+  ("groceries", "electronics", "clothing", "lunch") are item types, never requested_item.
+- A requested product also gets one items[].item_category "in" rule (source "inferred") when the
+  catalogue files it under one category: hiking boots, running shoes, trail shoes, cycling helmets
+  -> sporting_goods; winter boots, jackets, rain coats, work shoes -> clothing; monitors,
+  headphones -> electronics; a camera lens -> photography; a gym membership -> membership. Bare
+  "boots" or "shoes" are none of them. A product no category holds ("a bag", "a phone plan") gets
+  no category rule.
+- "Do not add anything I did not ask for" / "Nothing else in the basket" sets nothing_extra true.
 - A shop type ("specialist sports retailer") is merchant.merchant_category, never an open question.
 - uncertainty_policy is what to do when a fact is UNKNOWN: "Ask me when uncertain" -> "ask";
   "decline if unsure" -> "decline"; not stated -> "ask". It never changes on_fail.
@@ -327,7 +343,8 @@ Rules:
 - Item types the customer allows ("groceries and household basics only", "weeknight dinners")
   are one items[].item_category "in" rule, also without "only": what the customer wants bought
   ("two meal deliveries a week", "a hotel") is that kind alone. Types after "no" are excluded,
-  never allowed.
+  never allowed. A word in such a phrase that no category holds ("books and stationery
+  purchases") adds nothing: the rule is the categories named (books), with no question.
 - Meals ("lunch", "dinners", "a meal delivery") are the item types dining and food_delivery
   (source "inferred"), also when the meal word sits inside another restriction: "weeknight
   dinners" is the item types and the weekdays; "one lunch delivery a day" is the item types and
@@ -496,13 +513,22 @@ def read_with_llm(
 
     requested = (out["requested_item"] or "").strip() or None
     specs: list[RuleSpec] = []
-    questions = [q.strip() for q in out["open_questions"] if q.strip()]
+    # The product question is the parser's (below), asked for the requested item only.
+    questions = [q.strip() for q in out["open_questions"]
+                 if q.strip() and not is_product_question(q.strip())]
     for raw in out["rules"]:
         spec, question = _convert(raw, instruction, history, card_id, today, requested)
         if spec:
             specs.append(spec)
         if question:
             questions.append(question)
+    if requested and not any(s.field == "items[].item_category" and s.operator == "in" for s in specs):
+        # The parser's mapping, not the model's: the item's type from the catalogue, or the question.
+        if categories := product_categories(requested):
+            specs.append(RuleSpec(field="items[].item_category", operator="in", value=categories,
+                                  words=requested, source="inferred"))
+        else:
+            questions.append(product_question(requested))
     return finalize(
         instruction, specs,
         uncertainty_policy=out["uncertainty_policy"],

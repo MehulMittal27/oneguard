@@ -302,17 +302,31 @@ async def confirm_form(run: Running, card_id: str = "CA0001", **form: Any) -> di
 
 
 async def live_run(run: Running, scenario_id: str = "SCEN0001", card_id: str = "CA0001", n: int = 10) -> list[dict[str, Any]]:
-    """A confirmed policy, a Viseca run started through D3, all ``n`` decisions in C6."""
+    """A confirmed policy, a Viseca run started through D3, all ``n`` decisions in C6, every
+    step-up's deadline the platform's."""
     await confirm_form(run, card_id)
     r = await run.post("/api/dev/runs", json={"scenario_id": scenario_id, "card_id": card_id})
     assert r.status_code == 200, r.text
     customer = {"CA0001": "CU0001", "CA0039": "CU0019"}[card_id]
 
-    async def all_in() -> bool:
-        return len(await run.decisions(customer)) == n
+    async def settled() -> list[dict[str, Any]] | None:
+        # A step-up is listed before the reply to its POST moves deadline_at to the
+        # platform's expiry; on a loaded machine that gap can pass a second.
+        listed = await run.decisions(customer)
+        if len(listed) != n:
+            return None
+        expiry = {a.live_id: a.expires_at for a in run.fake.all_auths()}
+        for d in listed:
+            expires = expiry.get(d["authorization_id"])
+            if d["status"] == "pending_human" and (
+                expires is None
+                or not d["deadline_at"]
+                or abs((datetime.fromisoformat(d["deadline_at"]) - expires).total_seconds()) > 1.0
+            ):
+                return None
+        return listed
 
-    await until(all_in)
-    return await run.decisions(customer)
+    return await until(settled)
 
 
 async def replay(run: Running, scenario_id: str, card_id: str, n: int, customer: str) -> list[dict[str, Any]]:
@@ -1185,10 +1199,14 @@ def test_operator_endpoints(db_url: str) -> None:
             await until(done)
             assert (await run.get("/api/dev/runs/run_nope")).status_code == 404
 
+            state = (await run.get("/api/dev/soft-signals")).json()
+            assert state == {"live": run.services.live_models(), "replay": False}
             assert (await run.post("/api/dev/soft-signals", json={"enabled": True})).json() == {"enabled": True}
             assert run.services.worker._signals_enabled is True
+            assert (await run.get("/api/dev/soft-signals")).json() == {"live": True, "replay": True}
             assert (await run.post("/api/dev/soft-signals", json={"enabled": False})).json() == {"enabled": False}
             assert run.services.worker._signals_enabled is False and run.services.live_models() is False
+            assert (await run.get("/api/dev/soft-signals")).json() == {"live": False, "replay": False}
 
             rows = await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
             assert len(rows) == 11  # the live one and the replay's ten
