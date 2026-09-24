@@ -10,7 +10,9 @@ the purchase is sent. Every answer is checked before it is used:
   "a month"; 0 days only with no-returns wording), so a model cannot invent a fact and
   an instruction hidden in the text cannot supply one;
 - a fact the shop contradicts stays unknown (the shop said two things; the customer
-  decides, not a model).
+  decides, not a model), and so does a return window the shop itself says it does not
+  state ("return policy not stated"); neither is ever sent (issue #17 R2). A fact the
+  English regex merely missed ("EU size not stated") is what tier 2 is for.
 
 Accepted values are ``FactValue(known=True, source="model")``. Amounts, merchant,
 categories, dates and order terms are never touched (A2, CLAUDE.md rule 2). On
@@ -39,6 +41,8 @@ log = logging.getLogger(__name__)
 MIN_BUDGET_S = 0.05
 SIZE_LETTERS = ("XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL")
 MODEL_DETAIL = "read from the shop's product text by the model"
+# facts.py's detail when the shop's own text says its return policy is not stated.
+SHOP_SAYS_NOT_STATED = "return policy not stated by seller"
 
 _NUMBER_WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
@@ -105,18 +109,24 @@ def _relevant(rules: list[RuleResult]) -> set[str]:
     return out or set(_FACTS)
 
 
+def _settled_unknown(fv: FactValue) -> bool:
+    """Unknown because of what the shop said, not because the regex missed it (R2)."""
+    return fv.detail.startswith(CONTRADICTORY) or fv.detail == SHOP_SAYS_NOT_STATED
+
+
 def _wanted(line: ItemFacts, relevant: set[str]) -> list[str]:
     """The unknown facts on this line worth asking for. Nothing about size is asked when
-    the shop contradicts itself on size; a contradicted fact is never asked."""
+    the shop contradicts itself on size; a contradicted or shop-declared unknown is
+    never asked."""
     if not line.item_details.strip():
         return []
-    contradicted = {n for n in _FACTS if getattr(line, n).detail.startswith(CONTRADICTORY)}
-    if contradicted & set(_SIZES):
-        contradicted |= set(_SIZES)
+    settled = {n for n in _FACTS if _settled_unknown(getattr(line, n))}
+    if settled & set(_SIZES):
+        settled |= set(_SIZES)
     out = []
     for name in _FACTS:
         fv: FactValue = getattr(line, name)
-        if name in relevant and not fv.known and name not in contradicted:
+        if name in relevant and not fv.known and name not in settled:
             out.append(name)
     return out
 

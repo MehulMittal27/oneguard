@@ -12,10 +12,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from oneguard.engine.facts import build_facts
+from oneguard.engine.facts import CONTRADICTORY, build_facts
 from oneguard.engine.interfaces import IMPLEMENTATIONS, load_implementations
 from oneguard.engine.policy import evaluate_rules
-from oneguard.engine.tier2 import SCHEMA, resolve_unknowns
+from oneguard.engine.tier2 import SCHEMA, SHOP_SAYS_NOT_STATED, resolve_unknowns
 from oneguard.engine.types import Policy
 from oneguard.llm.provider import NullProvider, ProviderUnavailable
 from oneguard.replay.events import all_events
@@ -76,6 +76,9 @@ def _outcome(rules, rule_id: str) -> str:
 
 def test_an_unknown_size_becomes_known_from_the_model_and_the_rule_re_evaluates():
     facts = _facts()
+    # pattern misses of the English regex, not statements of the shop: tier 2 may read them
+    assert facts.items[0].size_eu.detail == "EU size not stated"
+    assert facts.items[0].return_window_days.detail == "return terms not stated"
     rules = evaluate_rules(facts, SHOES)
     assert (_outcome(rules, "C6"), _outcome(rules, "C7")) == ("unknown", "unknown")
 
@@ -140,10 +143,39 @@ def test_only_the_missing_facts_of_the_text_are_sent():
 
 def test_a_contradictory_fact_is_not_sent_to_the_model():
     facts = _facts("Road-running shoe, size 42; size 43; returns accepted within 30 days")
-    assert not facts.items[0].size_eu.known
+    assert facts.items[0].size_eu.detail.startswith(CONTRADICTORY)
     provider = Answers(_line(size_eu=43))
-    assert resolve_unknowns(facts, evaluate_rules(facts, SHOES), provider, 1.5) is facts
+    resolved = resolve_unknowns(facts, evaluate_rules(facts, SHOES), provider, 1.5)
+    assert resolved is facts and not resolved.items[0].size_eu.known
     assert provider.calls == []
+
+
+def test_a_contradictory_return_window_is_not_sent_to_the_model():
+    """R2 (issue #17): picking one of two stated windows is a guess; the customer decides."""
+    facts = _facts("Road-running shoe, size 43; returns within 14 days; returns within 30 days")
+    line = facts.items[0]
+    assert line.size_eu.known and line.return_window_days.detail.startswith(CONTRADICTORY)
+    rules = evaluate_rules(facts, SHOES)
+    assert _outcome(rules, "C7") == "unknown"
+    provider = Answers(_line(days=30))
+    resolved = resolve_unknowns(facts, rules, provider, 1.5)
+    assert resolved is facts and not resolved.items[0].return_window_days.known
+    assert provider.calls == []
+
+
+def test_a_return_policy_the_shop_says_it_does_not_state_is_not_sent_to_the_model():
+    """R2 (issue #17): the shop said it states no return policy, so it stays unknown."""
+    facts = _facts("Laufschuh Größe 43, 30 Tage Testlauf. Return policy not stated.")
+    line = facts.items[0]
+    assert line.return_window_days.detail == SHOP_SAYS_NOT_STATED and not line.size_eu.known
+    provider = Answers(_line(size_eu=43, days=30))
+    resolved = resolve_unknowns(facts, evaluate_rules(facts, SHOES), provider, 1.5)
+    [(user, _)] = provider.calls
+    assert '"size_eu"' in user and '"return_window_days"' not in user
+    assert resolved.items[0].size_eu.value == 43.0  # the size the regex missed still resolves
+    assert resolved.items[0].return_window_days == line.return_window_days
+    assert not resolved.return_window_days.known
+    assert _outcome(evaluate_rules(resolved, SHOES), "C7") == "unknown"
 
 
 def test_nothing_happens_when_no_rule_is_unknown():
