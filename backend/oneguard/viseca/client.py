@@ -155,9 +155,17 @@ class VisecaClient:
         await self._http.aclose()
 
     async def drain(self) -> None:
-        """Wait until every call summary has reached the sink."""
+        """Wait until every call summary has reached the sink.
+
+        What was awaited is removed here, not only by each future's done callback: a
+        summary emitted while its call was being cancelled (``VisecaWorker.stop``) was
+        seen finished with that callback never run, and a drain relying on it spun on the
+        finished future forever at full CPU.
+        """
         while self._pending_logs:
-            await asyncio.gather(*list(self._pending_logs), return_exceptions=True)
+            pending = list(self._pending_logs)
+            await asyncio.gather(*pending, return_exceptions=True)
+            self._pending_logs.difference_update(pending)
 
     # Transport ----------------------------------------------------------------------
 
@@ -421,6 +429,8 @@ class VisecaClient:
 
     async def list_authorizations(self, **params: Any) -> list[dict[str, Any]]:
         """``GET /v1/authorizations``: a JSON list of pending and final authorizations.
+
+        The platform filters by ``run_id`` and ``status``; it ignores ``authorization_id``.
 
         Each item has ``authorization_id``, ``source_authorization_id``, ``scenario_id``,
         ``run_id``, ``status``, ``decision``, ``decision_source``, ``reason_codes``,

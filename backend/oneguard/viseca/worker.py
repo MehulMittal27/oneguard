@@ -26,8 +26,11 @@ loop, never blocked by a human:
   The loop never waits for it. Unanswered at the deadline → ``POST /resolve`` ``decline``
   with the timeout message, ``resolved_by: timeout``, and the ledger marks it expired and
   releases the reservation (rules.md Q2, api-contract §3.5). The platform expires it
-  itself at the same moment; when it gets there first our resolve is answered 409
-  ``authorization_not_pending`` and the ledger outcome is the same.
+  itself at the same moment, so the expiry reads the platform's state first
+  (``GET /v1/authorizations?run_id=``): already final there → record that, post nothing;
+  still pending → ``/resolve``, and on a 409 read again and record what it says.
+- at most one ``/resolve`` is ever sent per live id (customer or timeout), across
+  redelivery, retries and a rescheduled expiry.
 - a customer answer (C8) goes through ``resolve_by_customer``; it and the expiry are
   serialised, so exactly one of them closes a step-up.
 - ``revoke``: our policy flips to revoked at once, then ``DELETE /v1/mandates/{id}``;
@@ -39,8 +42,10 @@ loop, never blocked by a human:
 ``status()`` is what ``/healthz`` reports: state, last poll, events cursor, runs.
 
 All ledger and pipeline calls run on one dedicated thread, so a SQL ledger session is
-never used from two threads at once. Store writes (``events_raw``, ``runs``) use their
-own short sessions.
+never used from two threads at once. Each of them (a decision, a resolution, a read) runs
+in its own short ledger session (``ScopedStoreLedger``), closed afterwards; the worker
+never holds a pooled connection for its lifetime. Store writes (``events_raw``, ``runs``)
+use their own short sessions.
 """
 
 from __future__ import annotations
@@ -53,6 +58,7 @@ import threading
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
@@ -102,8 +108,8 @@ WAITING_STEP_UP_PAUSE_S = 0.5
 every poll, without the long-poll wait)."""
 STEP_UP_WAITING = "pending_step_up"
 """Envelope ``status`` of a step-up we posted that awaits ``/resolve``."""
-ALREADY_CLOSED = frozenset({"authorization_not_pending", "authorization_finalized"})
-"""409 codes for a resolve or decision on an authorization the platform has made final."""
+STOP_DRAIN_S = 5.0
+"""How long ``stop`` waits for the engine thread to finish its current unit of work."""
 POST_MARGIN_S = 0.5
 """Time kept free before ``deadline_at`` to POST the step-up when the engine overruns its budget."""
 POST_RETRY_DELAYS_S = (0.2, 0.5, 1.0)
@@ -319,9 +325,82 @@ def policy_from_snapshot(mandate: Mapping[str, Any]) -> Policy:
     )
 
 
+class ScopedStoreLedger:
+    """P2's ``StoreLedger`` on short sessions: one per unit of work, closed afterwards.
+
+    ``scope()`` opens a session and binds a ``StoreLedger`` to it for every call made
+    inside it on that thread; a call outside any scope gets a session of its own. The
+    worker runs each decision, resolution and read in one scope on its engine thread, so a
+    pooled connection (5 per process on Postgres) is held only while that work runs.
+    """
+
+    def __init__(self, db: Engine, history: HistoryIndex | None = None) -> None:
+        self.db = db
+        self.history = history
+        self._local = threading.local()
+        self._lock = threading.Lock()
+        self._open: set[Session] = set()
+
+    @contextmanager
+    def scope(self) -> Iterator[StoreLedger]:
+        current: StoreLedger | None = getattr(self._local, "ledger", None)
+        if current is not None:
+            yield current
+            return
+        db_session = Session(self.db, expire_on_commit=False)
+        with self._lock:
+            self._open.add(db_session)
+        self._local.ledger = StoreLedger(db_session, history=self.history)
+        try:
+            yield self._local.ledger
+        finally:
+            self._local.ledger = None
+            with self._lock:
+                self._open.discard(db_session)
+            db_session.close()
+
+    @property
+    def open_sessions(self) -> int:
+        with self._lock:
+            return len(self._open)
+
+    def close(self) -> None:
+        """Close any session still open: a unit of work cut short when the worker stops."""
+        with self._lock:
+            sessions, self._open = list(self._open), set()
+        for db_session in sessions:
+            db_session.close()
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_") or getattr(StoreLedger, name, None) is None:
+            raise AttributeError(name)
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            with self.scope() as ledger:
+                return getattr(ledger, name)(*args, **kwargs)
+
+        return call
+
+
 def default_ledger(db: Engine, history: HistoryIndex) -> Ledger:
-    """P2's store-backed ledger (``engine/ledger.py``) on a session of its own."""
-    return StoreLedger(Session(db, expire_on_commit=False), history=history)
+    """P2's store-backed ledger (``engine/ledger.py``) on short sessions."""
+    return cast(Ledger, ScopedStoreLedger(db, history=history))
+
+
+def platform_result(item: Mapping[str, Any]) -> tuple[Literal["approve", "decline"], Literal["customer", "timeout"]] | None:
+    """The final answer ``GET /v1/authorizations`` shows for a step-up, or None while it waits.
+
+    ``approved`` is the customer's approval; ``declined`` is the customer's decline when
+    ``decision_source`` says ``customer``, else the platform's timeout.
+    """
+    status = str(item.get("status") or "").lower()
+    decision = item.get("decision")
+    source = item.get("decision_source") or (decision.get("decision_source") if isinstance(decision, dict) else None)
+    if status == "approved":
+        return "approve", "customer"
+    if status in ("declined", "expired", "cancelled", "canceled"):
+        return "decline", "customer" if source == "customer" else "timeout"
+    return None
 
 
 class OverrunClaims:
@@ -516,6 +595,8 @@ class VisecaWorker:
         self._run_write_lock = threading.Lock()
         """``_save_run`` runs on several threads; ``merge`` is not an atomic upsert."""
         self._resolution_lock = asyncio.Lock()
+        self._resolve_sent: set[str] = set()
+        """Live ids a ``/resolve`` was sent for: never a second one."""
         self._feed_mismatches: list[EvidenceRow] = []
         self._feed_seen: set[tuple[str, str]] = set()
         self._listeners: list[DecisionListener] = []
@@ -622,7 +703,11 @@ class VisecaWorker:
         self._task = asyncio.create_task(self._loop(), name="viseca-worker")
 
     async def stop(self) -> None:
-        """Stop polling and cancel expiry timers (pending step-ups are recovered on start)."""
+        """Stop polling and cancel expiry timers (pending step-ups are recovered on start).
+
+        Waits up to ``STOP_DRAIN_S`` for the engine thread's current work, then closes any
+        ledger session still open, so no pooled connection outlives the worker.
+        """
         tasks = [t for t in [self._task, *self._expiry.values()] if t is not None]
         for task in tasks:
             task.cancel()
@@ -630,6 +715,15 @@ class VisecaWorker:
         self._task = None
         self._expiry.clear()
         self._state = "stopped"
+        try:
+            await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(self._pool, lambda: None), STOP_DRAIN_S
+            )
+        except TimeoutError:
+            log.warning("the engine thread is still busy after %s s; closing its ledger session", STOP_DRAIN_S)
+        close = getattr(self._ledger, "close", None)
+        if callable(close):
+            close()
         await self.client.drain()
 
     async def revoke(self, viseca_mandate_id: str) -> None:
@@ -657,7 +751,8 @@ class VisecaWorker:
         """C8: post the customer's answer to Viseca, then record it (``resolved_by: customer``).
 
         Raises KeyError (unknown), NotAwaitingAnswer, WindowClosed, or VisecaError (the
-        ledger is then unchanged).
+        ledger is then unchanged; no second ``/resolve`` is sent for it, and the expiry
+        records what the platform shows).
         """
         async with self._resolution_lock:
             entry = await self._engine(self.ledger.get, authorization_id)
@@ -667,6 +762,8 @@ class VisecaWorker:
                 raise NotAwaitingAnswer(f"{authorization_id} is not awaiting an answer")
             if entry.deadline_at is not None and self._now() >= entry.deadline_at:
                 raise WindowClosed(f"the window for {authorization_id} closed at {entry.deadline_at}")
+            if not self._claim_resolve(authorization_id):
+                raise NotAwaitingAnswer(f"an answer for {authorization_id} was already sent")
             await self.client.resolve(
                 authorization_id,
                 decision,
@@ -683,31 +780,64 @@ class VisecaWorker:
         return resolved
 
     async def expire(self, authorization_id: str) -> bool:
-        """Close an unanswered step-up (rules.md Q2). False if it was already closed."""
+        """Close an unanswered step-up (rules.md Q2). False if it was already closed.
+
+        The platform expires step-ups itself at the same moment, so its state is read
+        first. Already final there → that result is recorded and nothing is posted. Still
+        pending (or unreadable) → ``/resolve`` ``decline`` with the timeout message; on a
+        409 the state is read again and recorded. Whatever the platform cannot tell us is
+        recorded as the timeout decline. At most one ``/resolve`` per live id.
+        """
         async with self._resolution_lock:
             entry = await self._engine(self.ledger.get, authorization_id)
             if entry is None or entry.outcome != "step_up" or entry.final:
                 return False
-            resolved = await self._engine(
-                self.ledger.resolve, authorization_id, "decline", "timeout", self._now()
-            )
-            try:
-                await self.client.resolve(
-                    authorization_id,
-                    "decline",
-                    timeout_message(self.human_window_s),
-                    [_resolved_by_row("timeout")],
-                )
-            except VisecaError as exc:
-                if exc.status == 409 and exc.code in ALREADY_CLOSED:
-                    # The platform expires step-ups itself at the same moment (decline,
-                    # decision_source timeout); the outcome is the one recorded above.
-                    log.info("Viseca had already expired step-up %s (%s)", authorization_id, exc.code)
-                else:
-                    self._note_error(f"timeout resolve of {authorization_id} failed: {exc}")
-        log.info("step-up %s expired unanswered; declined, reservation released", authorization_id)
+            result = await self._platform_result(authorization_id)
+            if result is None and self._claim_resolve(authorization_id):
+                try:
+                    await self.client.resolve(
+                        authorization_id,
+                        "decline",
+                        timeout_message(self.human_window_s),
+                        [_resolved_by_row("timeout")],
+                    )
+                    result = ("decline", "timeout")
+                except VisecaError as exc:
+                    if exc.status == 409:
+                        log.info("Viseca closed step-up %s first (%s)", authorization_id, exc.code)
+                        result = await self._platform_result(authorization_id)
+                    else:
+                        self._note_error(f"timeout resolve of {authorization_id} failed: {exc}")
+            # still pending after an answer that was already sent: the platform's own
+            # expiry will decline it, so the timeout decline is recorded
+            decision, by = result or ("decline", "timeout")
+            resolved = await self._engine(self.ledger.resolve, authorization_id, decision, by, self._now())
+        log.info("step-up %s closed at its window: %s (%s)", authorization_id, resolved.uncertain_outcome, by)
         await self._after_resolution(authorization_id, resolved)
         return True
+
+    def _claim_resolve(self, live_id: str) -> bool:
+        """True the first time only: the one ``/resolve`` for ``live_id`` may be sent."""
+        if live_id in self._resolve_sent:
+            return False
+        self._resolve_sent.add(live_id)
+        return True
+
+    async def _platform_result(
+        self, live_id: str
+    ) -> tuple[Literal["approve", "decline"], Literal["customer", "timeout"]] | None:
+        """The platform's final answer for a step-up, or None while it waits or is unreadable."""
+        run = self._run_of.get(live_id)
+        params = {"run_id": run.viseca_run_id} if run is not None and run.viseca_run_id else {}
+        try:
+            items = await self.client.list_authorizations(**params)
+        except VisecaError as exc:
+            log.warning("platform state of %s unavailable: %s", live_id, exc)
+            return None
+        item = next(
+            (i for i in items if isinstance(i, dict) and i.get("authorization_id") == live_id), None
+        ) if isinstance(items, list) else None  # fmt: skip
+        return platform_result(item) if item is not None else None
 
     # Start-up ----------------------------------------------------------------------------
 
@@ -982,7 +1112,17 @@ class VisecaWorker:
     # Deciding ----------------------------------------------------------------------------
 
     async def _engine(self, fn: Callable[..., T], *args: Any) -> T:
-        return await asyncio.get_running_loop().run_in_executor(self._pool, partial(fn, *args))
+        """Run ``fn`` on the engine thread inside one short ledger session."""
+        return await asyncio.get_running_loop().run_in_executor(
+            self._pool, partial(self._in_scope, fn, *args)
+        )
+
+    def _in_scope(self, fn: Callable[..., T], *args: Any) -> T:
+        scope = getattr(self._ledger, "scope", None)
+        if scope is None:
+            return fn(*args)
+        with scope():
+            return fn(*args)
 
     async def _reconcile_context(self, run: RunState, data: dict[str, Any]) -> list[EvidenceRow]:
         theirs = data["context"]["approved_spend_in_period_chf"]
@@ -1033,7 +1173,7 @@ class VisecaWorker:
         assert run.ctx is not None
         live_id = data["authorization"]["authorization_id"]
         future = asyncio.get_running_loop().run_in_executor(
-            self._pool, partial(decide_event, data, run.ctx, extra)
+            self._pool, partial(self._in_scope, decide_event, data, run.ctx, extra)
         )
         waits = [self._budget_ms / 1000]
         waits.append((deadline_at - self._now()).total_seconds() - POST_MARGIN_S - waits[0])
@@ -1339,7 +1479,7 @@ class VisecaWorker:
         """Answer a redelivery with the decision already made; nothing is counted again."""
         live_id = stored.live_authorization_id
         try:
-            reply = await self._post(
+            await self._post(
                 live_id,
                 stored.outcome,
                 stored.reason_codes,
@@ -1351,45 +1491,21 @@ class VisecaWorker:
         except VisecaError as exc:
             self._note_error(f"re-post of {live_id} not accepted: {exc}")
             return
-        if stored.outcome != "step_up":
-            return
-        if not stored.final:
-            if live_id not in self._expiry:
-                self._schedule_expiry(live_id, stored.deadline_at or self._now())
-            return
-        if reply is None:
-            return
-        # Viseca had lost the step-up and takes it again: replay the answer already given.
-        await self._resolve_again(stored)
+        if stored.outcome == "step_up" and not stored.final and live_id not in self._expiry:
+            self._schedule_expiry(live_id, stored.deadline_at or self._now())
 
     async def _step_up_still_waiting(self, stored: LedgerEntry) -> None:
         """The platform served a step-up we posted that still waits for ``/resolve``.
 
         Nothing is posted or counted. Pending with us: make sure its expiry is scheduled.
-        Already closed with us: send the answer already given again. Then pause, because
-        the platform serves it on every poll without waiting.
+        Already closed with us, the envelope is older than our answer (its ``/resolve`` is
+        sent or on its way), so nothing is resent. Then pause, because the platform serves
+        a waiting step-up on every poll without waiting.
         """
         live_id = stored.live_authorization_id
-        if not stored.final:
-            if live_id not in self._expiry:
-                self._schedule_expiry(live_id, stored.deadline_at or self._now())
-        else:
-            async with self._resolution_lock:
-                await self._resolve_again(stored)
+        if not stored.final and live_id not in self._expiry:
+            self._schedule_expiry(live_id, stored.deadline_at or self._now())
         await asyncio.sleep(self._waiting_step_up_pause_s)
-
-    async def _resolve_again(self, stored: LedgerEntry) -> None:
-        live_id = stored.live_authorization_id
-        answer = "approve" if stored.uncertain_outcome == "approved" else "decline"
-        by = stored.resolved_by or "timeout"
-        message = timeout_message(self.human_window_s) if by == "timeout" else CUSTOMER_MESSAGES[answer]
-        try:
-            await self.client.resolve(live_id, answer, message, [_resolved_by_row(by)])
-        except VisecaError as exc:
-            if exc.status == 409 and exc.code in ALREADY_CLOSED:
-                log.info("Viseca already holds a final result for %s (%s)", live_id, exc.code)
-                return
-            self._note_error(f"re-resolve of {live_id} not accepted: {exc}")
 
     # Step-up expiry ----------------------------------------------------------------------
 

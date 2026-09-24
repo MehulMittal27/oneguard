@@ -70,9 +70,11 @@ oneguard/
   `data/metadata.json` it re-seeds `authorization_history` and logs it loudly. Every request is
   schema-checked, stored in `events_raw`, decided by `pipeline.decide_event` within
   `ONEGUARD_ENGINE_BUDGET_MS` and posted before `deadline_at`. A step-up's deadline is the
-  reply's `step_up_expires_at` (accepted time + the human window); an expiry task posts the
-  timeout `/resolve` (rules Q2). Until then the platform serves the step-up again on every
-  poll (`status: "pending_step_up"`); the worker posts nothing for it and pauses briefly.
+  reply's `step_up_expires_at` (accepted time + the human window). Until then the platform
+  serves the step-up again on every poll (`status: "pending_step_up"`); the worker posts
+  nothing for it and pauses briefly. At the deadline the expiry reads the platform's state
+  first and posts the timeout `/resolve` (rules Q2) only if it is still pending; at most one
+  `/resolve` per live id. Ledger calls run in short `ScopedStoreLedger` sessions.
   All ledger and pipeline calls run on one dedicated thread. `VisecaWorker.status()` is the
   `/healthz` worker block: `state`, `ok`, `last_poll_at`, `events_cursor`,
   `human_window_s`, `pending_step_ups`, `history_reseeded`, `last_error`, `runs`.

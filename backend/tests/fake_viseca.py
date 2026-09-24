@@ -17,7 +17,10 @@ behaviour the worker depends on:
   (the live run had only one purchase, so this order is assumed);
 - the platform expires a step-up itself at ``step_up_expires_at`` (accepted time + the
   human window): decline, ``decision_source: "timeout"``; a later ``/resolve`` is 409
-  ``authorization_not_pending``;
+  ``authorization_not_pending``. Tests move that moment with ``platform_expiry_offset_s``
+  and can have it happen just before a ``/resolve`` (``expire_before_resolve``);
+- ``GET /v1/authorizations`` filters by ``run_id`` and ``status`` (as live) and ignores
+  other parameters;
 - ``/v1/reference-data`` serves no history-file hash;
 - knobs for redelivery, corrupt events, a served history file that differs, a
   context / event-feed that disagrees with the worker, and whether team reset is enabled.
@@ -76,6 +79,14 @@ class FakeConfig:
     """History file served instead of data/authorization_history.csv."""
     reset_enabled: bool = True
     """``features.reset``; the live sandbox has it off (403 ``reset_disabled``)."""
+    platform_expiry_offset_s: float = 0.0
+    """When the fake expires a waiting step-up, relative to its ``step_up_expires_at``:
+    negative → before the worker's deadline check, positive → after it."""
+    expire_before_resolve: frozenset[str] = frozenset()
+    """Source ids the fake expires just before a ``/resolve`` for them is handled (after the
+    worker read the step-up as still pending), so that ``/resolve`` gets a 409."""
+    pending_serve_delay_s: float = 0.0
+    """Delay before a ``pending_step_up`` envelope is returned, so it can arrive stale."""
 
 
 @dataclass
@@ -102,6 +113,9 @@ class FakeAuth:
     """Every /resolve attempt; a refused one carries ``rejected: True``."""
     auto_declined: bool = False
     platform_expired: bool = False
+    platform_decision: dict[str, Any] | None = None
+    """The last decision the platform recorded (ours, the customer's or its timeout)."""
+    finalized_at: datetime | None = None
 
 
 @dataclass
@@ -161,6 +175,7 @@ class FakeViseca:
         self.auths: dict[str, FakeAuth] = {}
         self.feed: list[dict[str, Any]] = []
         self.resets: list[dict[str, Any]] = []
+        self.authorization_reads: list[dict[str, Any]] = []
         self.polls = 0
         self.authorization_headers: list[str] = []
 
@@ -241,6 +256,9 @@ class FakeViseca:
         return event_id
 
     def _feed_decision(self, auth: FakeAuth, data: dict[str, Any]) -> None:
+        auth.platform_decision = copy.deepcopy(data)
+        if auth.status in ("approved", "declined"):
+            auth.finalized_at = _now()
         status = self.config.feed_status_override.get(auth.source_id, PLATFORM_STATUS[auth.status])
         self._feed_add(auth.run_id, "authorization.decision", auth.live_id, status, data)
         run = self.runs[auth.run_id]
@@ -262,8 +280,14 @@ class FakeViseca:
             },
         )
 
+    def _expire_step_up(self, auth: FakeAuth) -> None:
+        auth.status = "declined"
+        auth.platform_expired = True
+        self._platform_decision(auth, "step_up_expired", "The confirmation window expired.")
+
     def _tick(self) -> None:
         now = _now()
+        offset = timedelta(seconds=self.config.platform_expiry_offset_s)
         for run in self.runs.values():
             for auth in run.auths:
                 if auth.status in ("queued", "delivered") and auth.deadline_at and now > auth.deadline_at:
@@ -271,10 +295,8 @@ class FakeViseca:
                     auth.auto_declined = True
                     self._platform_decision(auth, "decision_timeout", "No decision arrived in time.")
                     self._queue_next(run, auth)
-                elif auth.status == "pending" and auth.expires_at and now >= auth.expires_at:
-                    auth.status = "declined"
-                    auth.platform_expired = True
-                    self._platform_decision(auth, "step_up_expired", "The confirmation window expired.")
+                elif auth.status == "pending" and auth.expires_at and now >= auth.expires_at + offset:
+                    self._expire_step_up(auth)
 
     def _next_ready(self) -> FakeAuth | None:
         """A request to decide first; else a step-up still waiting for its answer."""
@@ -527,6 +549,8 @@ class FakeViseca:
             data = copy.deepcopy(auth.event)
             if auth.source_id in fake.config.corrupt:
                 del data["authorization"]["merchant"]
+            if status == "pending_step_up" and fake.config.pending_serve_delay_s:
+                await asyncio.sleep(fake.config.pending_serve_delay_s)
             return JSONResponse(
                 {
                     "event_id": auth.event_id,
@@ -592,6 +616,8 @@ class FakeViseca:
             body = await request.json()
             if set(body) - RESOLVE_KEYS or body.get("decision") not in ("approve", "decline"):
                 return _error(422, "validation_error", "bad resolve body")
+            if auth.status == "pending" and auth.source_id in fake.config.expire_before_resolve:
+                fake._expire_step_up(auth)
             now = _now()
             if auth.status != "pending":
                 auth.resolutions.append({**body, "at": now, "rejected": True})
@@ -607,22 +633,33 @@ class FakeViseca:
             )
 
         @app.get("/v1/authorizations")
-        async def authorizations() -> list[dict[str, Any]]:
+        async def authorizations(run_id: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
             fake._tick()
-            return [
-                {
-                    "authorization_id": a.live_id,
-                    "source_authorization_id": a.source_id,
-                    "scenario_id": fake.runs[a.run_id].scenario_id,
-                    "run_id": a.run_id,
-                    "status": PLATFORM_STATUS[a.status],
-                    "decision": a.decisions[0] if a.decisions else None,
-                    "occurred_at": _iso(a.queued_at) if a.queued_at else None,
-                    "authorization": copy.deepcopy(a.event["authorization"]) if a.event else None,
-                }
-                for a in fake.all_auths()
-                if a.status != "waiting"
-            ]
+            fake.authorization_reads.append({"run_id": run_id, "status": status})
+            listed = []
+            for a in fake.all_auths():
+                if a.status == "waiting" or (run_id is not None and a.run_id != run_id):
+                    continue
+                shown = PLATFORM_STATUS[a.status]
+                if status is not None and shown != status:
+                    continue
+                decision = a.platform_decision
+                listed.append(
+                    {
+                        "authorization_id": a.live_id,
+                        "source_authorization_id": a.source_id,
+                        "scenario_id": fake.runs[a.run_id].scenario_id,
+                        "run_id": a.run_id,
+                        "status": shown,
+                        "decision": decision,
+                        "decision_source": decision.get("decision_source") if decision else None,
+                        "reason_codes": decision.get("reason_codes", []) if decision else [],
+                        "occurred_at": _iso(a.queued_at) if a.queued_at else None,
+                        "finalized_at": _iso(a.finalized_at) if a.finalized_at else None,
+                        "authorization": copy.deepcopy(a.event["authorization"]) if a.event else None,
+                    }
+                )
+            return listed
 
         @app.get("/v1/events")
         async def events(since: int = 0) -> dict[str, Any]:

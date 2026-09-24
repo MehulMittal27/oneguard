@@ -32,9 +32,10 @@ from oneguard.store.db import make_engine, session
 from oneguard.store.history import StoreHistoryIndex
 from oneguard.store.schema import AuthorizationHistory, EventRaw, Run
 from oneguard.viseca import worker as worker_module
-from oneguard.viseca.client import VisecaClient, store_sink
+from oneguard.viseca.client import VisecaClient, VisecaError, store_sink
 from oneguard.viseca.worker import (
     NotAwaitingAnswer,
+    ScopedStoreLedger,
     VisecaWorker,
     WindowClosed,
     default_ledger,
@@ -132,29 +133,43 @@ async def wait_until(condition: Callable[[], bool], timeout: float = 20.0) -> No
 
 
 def timeout_resolution(auth: Any) -> dict[str, Any]:
-    """The worker's one timeout ``/resolve`` for ``auth``, as sent.
+    """The worker's one timeout ``/resolve`` for ``auth``, accepted by the platform.
 
-    The platform expires the step-up itself at the same moment, so the attempt may have
-    been refused (409 ``authorization_not_pending``); either way the platform has it
-    declined.
+    ``fast`` has the fake expire step-ups itself well after the worker's deadline, so the
+    worker reads them as still pending and its ``/resolve`` lands; exactly one is sent.
     """
     (resolution,) = auth.resolutions
+    assert "rejected" not in resolution and not auth.platform_expired
     assert auth.status == "declined"
-    assert resolution.get("rejected", False) == auth.platform_expired
-    return {k: v for k, v in resolution.items() if k != "rejected"}
+    return resolution
 
 
 def fast(**overrides: Any) -> FakeConfig:
-    return FakeConfig(**{"decision_deadline_s": 3.0, "human_window_s": 60.0, "max_wait_s": 0.2, **overrides})
+    defaults = {
+        "decision_deadline_s": 3.0,
+        "human_window_s": 60.0,
+        "max_wait_s": 0.2,
+        "platform_expiry_offset_s": 5.0,
+    }
+    return FakeConfig(**{**defaults, **overrides})
 
 
-def test_the_default_ledger_is_the_store_ledger(seeded_db: Path, history: StoreHistoryIndex) -> None:
+def test_the_default_ledger_is_the_store_ledger_on_short_sessions(
+    seeded_db: Path, history: StoreHistoryIndex
+) -> None:
     engine = make_engine(f"sqlite:///{seeded_db}")
     try:
         ledger = default_ledger(engine, history)
-        assert isinstance(ledger, StoreLedger) and ledger.history is history
-        assert ledger.get("lv_unknown") is None
-        ledger.session.close()
+        assert isinstance(ledger, ScopedStoreLedger) and ledger.history is history
+        assert ledger.get("lv_unknown") is None  # a call outside a scope: its own session
+        assert ledger.open_sessions == 0 and engine.pool.checkedout() == 0
+        with ledger.scope() as inner:
+            assert isinstance(inner, StoreLedger) and inner.history is history
+            with ledger.scope() as nested:
+                assert nested is inner
+            assert ledger.get("lv_unknown") is None  # runs on the scope's session
+            assert ledger.open_sessions == 1
+        assert ledger.open_sessions == 0 and engine.pool.checkedout() == 0
     finally:
         engine.dispose()
 
@@ -332,6 +347,126 @@ def test_an_unanswered_step_up_is_declined_at_the_window(db: Engine, history: St
             assert auth.step_up_serves > 0 and len(auth.decisions) == 1
             assert worker.run_status(run_id).redeliveries == 0  # type: ignore[union-attr]
             assert worker.status().last_error is None
+            # the platform was read first, narrowed to the run
+            assert fake.authorization_reads == [{"run_id": run_id, "status": None}]
+
+    asyncio.run(scenario())
+
+
+async def closed_by_the_window(
+    fake: FakeViseca, worker: VisecaWorker, run_id: str, seen: list[api.Decision]
+) -> tuple[Any, Any]:
+    (auth,) = fake.runs[run_id].auths
+    await wait_until(lambda: len(seen) == 2, timeout=10)
+    (entry,) = await worker.ledger_entries([auth.live_id])
+    assert (entry.final, entry.uncertain_outcome, entry.resolved_by) == (True, "expired", "timeout")
+    assert entry.reserved_chf == 0.0 and entry.spent_chf == 0.0
+    assert (seen[1].uncertain_outcome, seen[1].resolved_by) == ("expired", "timeout")
+    assert auth.status == "declined" and auth.platform_expired
+    assert worker.status().last_error is None and worker.status().pending_step_ups == 0
+    return auth, entry
+
+
+def test_a_step_up_the_platform_already_expired_is_recorded_without_a_resolve(
+    db: Engine, history: StoreHistoryIndex
+) -> None:
+    async def scenario() -> None:
+        seen: list[api.Decision] = []
+        config = fast(human_window_s=1.0, platform_expiry_offset_s=-0.3)
+        async with harness(db, config, history=history) as (fake, client, worker):
+            worker.add_listener(seen.append)
+            await worker.start()
+            _, run_id = await start_run(client, worker, "SCEN0000")
+            auth, _ = await closed_by_the_window(fake, worker, run_id, seen)
+            assert auth.resolutions == []  # nothing posted
+            assert fake.authorization_reads == [{"run_id": run_id, "status": None}]
+
+    asyncio.run(scenario())
+
+
+def test_a_step_up_the_platform_expires_between_read_and_resolve_gets_one_resolve(
+    db: Engine, history: StoreHistoryIndex
+) -> None:
+    async def scenario() -> None:
+        seen: list[api.Decision] = []
+        config = fast(human_window_s=1.0, expire_before_resolve=frozenset({"AU0001"}))
+        async with harness(db, config, history=history) as (fake, client, worker):
+            worker.add_listener(seen.append)
+            await worker.start()
+            _, run_id = await start_run(client, worker, "SCEN0000")
+            auth, _ = await closed_by_the_window(fake, worker, run_id, seen)
+            (resolution,) = auth.resolutions  # the one /resolve, answered 409
+            assert resolution["rejected"] and resolution["customer_message"] == timeout_message(1.0)
+            # read before the /resolve, and again after its 409
+            assert fake.authorization_reads == [{"run_id": run_id, "status": None}] * 2
+
+    asyncio.run(scenario())
+
+
+def test_a_refused_customer_answer_is_never_sent_again(db: Engine, history: StoreHistoryIndex) -> None:
+    async def scenario() -> None:
+        seen: list[api.Decision] = []
+        config = fast(human_window_s=1.0, expire_before_resolve=frozenset({"AU0001"}))
+        async with harness(db, config, history=history) as (fake, client, worker):
+            worker.add_listener(seen.append)
+            await worker.start()
+            _, run_id = await start_run(client, worker, "SCEN0000")
+            (auth,) = fake.runs[run_id].auths
+            await wait_until(lambda: len(seen) == 1)
+            with pytest.raises(VisecaError) as refused:
+                await worker.resolve_by_customer(auth.live_id, "approve")
+            assert refused.value.code == "authorization_not_pending"
+            with pytest.raises(NotAwaitingAnswer):
+                await worker.resolve_by_customer(auth.live_id, "approve")
+            # the window closes: the platform's result is recorded, nothing is sent again
+            await closed_by_the_window(fake, worker, run_id, seen)
+            (resolution,) = auth.resolutions
+            assert resolution["rejected"] and resolution["decision"] == "approve"
+
+    asyncio.run(scenario())
+
+
+def test_a_stale_pending_step_up_envelope_never_sends_a_second_resolve(
+    db: Engine, history: StoreHistoryIndex
+) -> None:
+    """The CI race: a ``pending_step_up`` envelope served just before the expiry arrives
+    after the ledger closed the step-up; nothing may be resolved again."""
+
+    async def scenario() -> None:
+        config = fast(human_window_s=0.5, pending_serve_delay_s=0.2)
+        async with harness(db, config, history=history) as (fake, client, worker):
+            await worker.start()
+            _, run_id = await start_run(client, worker, "SCEN0001")
+            auths = fake.runs[run_id].auths
+            await wait_until(lambda: all(a.status == "declined" for a in auths), timeout=30)
+            await asyncio.sleep(0.5)  # let the last stale envelopes arrive
+            assert sum(a.step_up_serves for a in auths) > 0
+            for auth in auths:
+                assert timeout_resolution(auth)["customer_message"] == timeout_message(0.5)
+            assert worker.status().last_error is None
+
+    asyncio.run(scenario())
+
+
+def test_the_ledger_holds_no_connection_between_decisions_or_after_stop(
+    db: Engine, history: StoreHistoryIndex, ledger_kind: str
+) -> None:
+    async def scenario() -> None:
+        async with harness(db, fast(), history=history) as (fake, client, worker):
+            await worker.start()
+            _, run_id = await start_run(client, worker, "SCEN0001")
+            auths = fake.runs[run_id].auths
+            await wait_until(lambda: all(a.decisions for a in auths), timeout=15)
+            # between decisions (the poll loop keeps reading the ledger) no session stays open
+            await wait_until(lambda: db.pool.checkedout() == 0, timeout=5)
+            if ledger_kind == "store":
+                ledger = worker.ledger
+                assert isinstance(ledger, ScopedStoreLedger)
+                await wait_until(lambda: ledger.open_sessions == 0, timeout=5)
+            await worker.stop()
+            assert db.pool.checkedout() == 0
+            if ledger_kind == "store":
+                assert ledger.open_sessions == 0
 
     asyncio.run(scenario())
 
@@ -480,8 +615,9 @@ def test_an_engine_over_budget_posts_a_step_up_before_the_deadline_that_expires_
             assert entry.deadline_at == auth.accepted_at + timedelta(seconds=2.0)
             assert worker.status().pending_step_ups == 1
 
-            # unanswered: the timeout decline at accepted time + human window
-            await wait_until(lambda: bool(auth.resolutions), timeout=5)
+            # unanswered: the timeout decline at accepted time + human window; the ledger
+            # records it once the platform exchange is over (the expiry task then ends)
+            await wait_until(lambda: worker.status().pending_step_ups == 0, timeout=5)
             resolution = timeout_resolution(auth)
             assert resolution["decision"] == "decline"
             assert resolution["customer_message"] == timeout_message(2.0)

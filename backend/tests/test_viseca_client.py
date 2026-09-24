@@ -241,6 +241,21 @@ def test_demo_compiles_confirms_runs_and_tails_a_scenario(db: Engine) -> None:
     assert lines[-1] == "Summary: {'step_up/expired': 10}"
 
 
+def test_drain_returns_when_a_finished_summary_was_never_discarded() -> None:
+    """A finished call-log future whose done callback never ran must not spin ``drain``."""
+
+    async def scenario() -> None:
+        client = VisecaClient("http://x", SECRET)
+        finished = asyncio.get_running_loop().create_future()
+        finished.set_result(None)
+        client._pending_logs.add(finished)  # as if its discard callback had not run
+        await asyncio.wait_for(client.drain(), timeout=1)
+        assert not client._pending_logs
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+
 def test_httpx_transport_errors_are_not_raised_raw(db: Engine) -> None:
     def boom(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("timed out", request=request)
