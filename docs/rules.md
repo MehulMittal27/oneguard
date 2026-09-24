@@ -68,7 +68,7 @@ The first step that applies decides.
 | ID | Rule | Fail → | Unknown → |
 |---|---|---|---|
 | C1 | **Order limit.** Total in CHF, delivery included, vs the per-order limit. "At or below / no more than / max / up to" → equal passes. "Under / less than / below" → equal fails. | Decline | Uncertainty setting (total missing) |
-| C2 | **Period limit.** Final approvals in the window + reserved pending + this purchase ≤ limit. "Any seven days" = rolling 168 h before purchase time. "Per month" = rolling 30 days unless "calendar month". Declines never count. | Decline | — |
+| C2 | **Period limit.** Final approvals in the window + reserved pending + this purchase ≤ limit. "Any seven days" = rolling 168 h before purchase time. "Per month" = rolling 30 days unless "calendar month". Declines never count. A purchase count per period ("one a day", "two orders a week", field `cart.purchases_in_period`) counts the same way: final approvals + pending step-ups on this card in the window + this purchase ≤ the count; declines never count, a redelivery counts once, and a breach caused only by pending step-ups asks (M5). | Decline | Uncertainty setting (count not available, or its window differs from the policy's shortest period) |
 | C3 | **Allowed item types.** Every cart line's `item_category` in the allowed set. Shop category proves nothing about the basket. | Decline | — |
 | C4 | **Blocked item types.** No cart line in the blocked set. | Decline | — |
 | C5 | **Specific item.** The item bought is the item asked for; a similar item is not it (trail ≠ road shoe; gift voucher ≠ monitor). | Decline | — |
