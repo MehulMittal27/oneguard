@@ -93,6 +93,35 @@ reads it to build `Decision` responses and `Mandate.usage`. Nobody else writes i
 5. Backup plan if Supabase is unreachable during the demo: `ONEGUARD_DATABASE_URL` unset →
    SQLite on the Fly machine, `make seed`, restart. Rehearse the switch once.
 
+### 5.1 What the session pooler actually does (verified 24 Sep 2026, `store/db.py`)
+
+- **Statement timeout.** Supavisor ignores the libpq `options=-c statement_timeout=…`
+  startup parameter (`SHOW statement_timeout` stayed at Supabase's `2min`). `db.py` runs
+  `SET statement_timeout = 5000` on every new connection, outside any transaction so the
+  pool's rollback-on-return keeps it. A 6 s `pg_sleep` is cancelled at 5 s.
+- **Prepared statements work.** psycopg prepares a query from its 5th execution on one
+  connection; in session mode that is safe. The pooler resets a server connection before
+  handing it to the next client (same backend pid, only the new client's statements), so
+  no `prepare_threshold=None`. The same reset is why settings are applied per connection.
+- **TLS.** libpq's default `sslmode=prefer` negotiated TLS, but would fall back silently;
+  `db.py` sets `sslmode=require` unless the URL names an `sslmode`. (`pg_stat_ssl` on the
+  server shows the pooler→Postgres hop, not ours; check `pgconn.ssl_in_use`.)
+- **Pool.** `pool_size=5, max_overflow=0, pool_pre_ping=True`: at most 5 pooler clients per
+  process (each session-mode client holds a server connection; SQLAlchemy's default
+  overflow would allow 15).
+- **Round trips are the cost.** The project runs in AWS eu-west-1 (Ireland). From the laptop
+  a round trip is p50 ~50 ms, p90 ~170 ms; a short `session()` is four of them (pre-ping,
+  BEGIN, query, COMMIT) ≈ 0.3 s, a new connection ≈ 2 s (TLS + pooler auth). Hence: warm
+  the pool at startup, keep `HistoryIndex` in memory (load ≈ 2.5 s once; lookups are
+  in-process), and pick the Fly region nearest eu-west-1.
+- **Seed.** `seed.py` inserts with one Core `executemany` per table (psycopg pipelines
+  it): `make seed` takes ~5 s against Supabase. The ORM bulk path split rows wherever their
+  NULL columns changed (~850 round trips, ~2 min).
+- **Test.** `tests/test_store_postgres.py` reruns the store tests against
+  `ONEGUARD_TEST_DATABASE_URL` in a throwaway schema (`oneguard_test_<hex>`, dropped at the
+  end; `public` is never touched). CI does not set the variable, so it is skipped.
+  `backend/scripts/store_latency.py` reproduces the timings above.
+
 ## 6. Optional (Wave 3, P3, only if everything else is green)
 
 Supabase Realtime on the `decisions` table for the customer feed, merged through

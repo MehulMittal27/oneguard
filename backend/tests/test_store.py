@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import shutil
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -10,15 +12,33 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import Engine, func, select
-from sqlalchemy.exc import StatementError
+from sqlalchemy.exc import OperationalError, StatementError
 
 from oneguard.engine.types import HistoryIndex
 from oneguard.store import seed as seed_module
 from oneguard.store.db import database_url, init_db, make_engine, session
 from oneguard.store.history import StoreHistoryIndex, normalise_merchant_name
-from oneguard.store.schema import AuthorizationHistory, Base, Decision, Merchant
+from oneguard.store.schema import (
+    REFERENCE_TABLES,
+    AuthorizationHistory,
+    Base,
+    Decision,
+    Merchant,
+)
 
 DATA = Path(__file__).resolve().parents[2] / "data"
+
+
+def pack_row_counts() -> dict[str, int]:
+    """Rows per reference table, as ``data/metadata.json`` states them."""
+    metadata = json.loads((DATA / "metadata.json").read_text(encoding="utf-8"))
+    csv_rows = {e["path"]: e["rows"] for e in metadata["files"] if e.get("format") == "csv"}
+    return {m.__tablename__: csv_rows[f"{m.__tablename__}.csv"] for m in REFERENCE_TABLES}
+
+
+def stored_row_counts(engine: Engine) -> dict[str, int]:
+    with session(engine) as s:
+        return {m.__tablename__: s.scalar(select(func.count()).select_from(m)) for m in REFERENCE_TABLES}
 
 
 @pytest.fixture(scope="module")
@@ -42,11 +62,17 @@ def test_seed_loads_every_reference_table(engine: Engine) -> None:
         assert s.scalar(select(func.count()).select_from(Merchant)) == 58
 
 
+def test_every_reference_table_matches_the_pack(engine: Engine) -> None:
+    expected = pack_row_counts()
+    assert expected["authorization_history"] == 4701
+    assert stored_row_counts(engine) == expected
+
+
 def test_seed_is_idempotent(engine: Engine) -> None:
-    counts = seed_module.run(engine=engine)
-    assert counts["authorization_history"] == 4701
-    with session(engine) as s:
-        assert seed_module.history_row_count(s) == 4701
+    expected = pack_row_counts()
+    assert seed_module.run(engine=engine) == expected
+    assert seed_module.run(engine=engine) == expected
+    assert stored_row_counts(engine) == expected
 
 
 def test_every_table_in_database_md_exists(engine: Engine) -> None:
@@ -188,9 +214,27 @@ def test_database_url(monkeypatch: pytest.MonkeyPatch, configured: str | None, e
 
 
 def test_postgres_engine_is_built_without_connecting() -> None:
-    engine = make_engine("postgresql+psycopg://u:p@localhost:5432/db")
+    engine = make_engine("postgres://u:p@localhost:5432/db")
     assert engine.dialect.name == "postgresql" and engine.dialect.driver == "psycopg"
-    assert engine.pool.size() == 5
+    assert engine.pool.size() == 5 and engine.pool._max_overflow == 0
+
+
+def test_database_password_never_reaches_logs_or_reprs(caplog: pytest.LogCaptureFixture) -> None:
+    canary = "pw-canary-7f3a9c"
+    engine = make_engine(f"postgresql+psycopg://oneguard:{canary}@127.0.0.1:1/db?connect_timeout=2")
+    caplog.set_level(logging.DEBUG, logger="sqlalchemy")  # sqlalchemy defaults itself to WARN
+    with pytest.raises(OperationalError) as failed, engine.connect():
+        pass
+    engine.dispose()
+    exposed = {
+        "repr(engine)": repr(engine),
+        "str(engine.url)": str(engine.url),
+        "repr(engine.url)": repr(engine.url),
+        "str(error)": str(failed.value),
+        "repr(error)": repr(failed.value),
+        "logs": caplog.text,
+    }
+    assert [where for where, text in exposed.items() if canary in text] == []
 
 
 def test_normalise_merchant_name() -> None:

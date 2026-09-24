@@ -128,7 +128,10 @@ def seed(s: Session, data_dir: Path = DATA_DIR) -> dict[str, int]:
     for model in REFERENCE_TABLES:
         rows = loaded[model]
         if rows:
-            s.execute(insert(model), rows)
+            # Core insert on the Table: one executemany per table, which psycopg pipelines.
+            # The ORM bulk path splits rows wherever their NULL columns change, and each
+            # batch costs a round trip to the Supabase pooler (~2 min instead of seconds).
+            s.execute(insert(model.__table__), rows)
         counts[model.__tablename__] = len(rows)
     s.flush()
     return counts
