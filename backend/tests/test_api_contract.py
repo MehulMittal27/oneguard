@@ -51,7 +51,7 @@ from oneguard.engine.types import (
 )
 from oneguard.store import seed as seed_module
 from oneguard.store.db import make_engine, session
-from oneguard.store.schema import Decision, Mandate, PolicyDraft
+from oneguard.store.schema import Decision, Mandate, PolicyDraft, Run
 from oneguard.viseca.client import VisecaClient, store_sink
 from oneguard.viseca.demo import rule_to_viseca
 from tests.fake_viseca import FakeConfig, FakeViseca
@@ -242,6 +242,7 @@ async def running(
     fake: FakeViseca | None = None,
     clock: Clock | None = None,
     client_timeout_s: float = 10.0,
+    ready: str = "polling",
     **config: Any,
 ) -> AsyncIterator[Running]:
     clock = clock or Clock()
@@ -271,7 +272,7 @@ async def running(
         async with httpx.AsyncClient(transport=transport, base_url="http://oneguard.test") as http:
             run = Running(app, http, fake, faulty, clock)
             if fake is not None:
-                await until(lambda: run.services.worker.status().state == "polling")
+                await until(lambda: run.services.worker.status().state == ready)
             yield run
 
 
@@ -301,17 +302,31 @@ async def confirm_form(run: Running, card_id: str = "CA0001", **form: Any) -> di
 
 
 async def live_run(run: Running, scenario_id: str = "SCEN0001", card_id: str = "CA0001", n: int = 10) -> list[dict[str, Any]]:
-    """A confirmed policy, a Viseca run started through D3, all ``n`` decisions in C6."""
+    """A confirmed policy, a Viseca run started through D3, all ``n`` decisions in C6, every
+    step-up's deadline the platform's."""
     await confirm_form(run, card_id)
     r = await run.post("/api/dev/runs", json={"scenario_id": scenario_id, "card_id": card_id})
     assert r.status_code == 200, r.text
     customer = {"CA0001": "CU0001", "CA0039": "CU0019"}[card_id]
 
-    async def all_in() -> bool:
-        return len(await run.decisions(customer)) == n
+    async def settled() -> list[dict[str, Any]] | None:
+        # A step-up is listed before the reply to its POST moves deadline_at to the
+        # platform's expiry; on a loaded machine that gap can pass a second.
+        listed = await run.decisions(customer)
+        if len(listed) != n:
+            return None
+        expiry = {a.live_id: a.expires_at for a in run.fake.all_auths()}
+        for d in listed:
+            expires = expiry.get(d["authorization_id"])
+            if d["status"] == "pending_human" and (
+                expires is None
+                or not d["deadline_at"]
+                or abs((datetime.fromisoformat(d["deadline_at"]) - expires).total_seconds()) > 1.0
+            ):
+                return None
+        return listed
 
-    await until(all_in)
-    return await run.decisions(customer)
+    return await until(settled)
 
 
 async def replay(run: Running, scenario_id: str, card_id: str, n: int, customer: str) -> list[dict[str, Any]]:
@@ -332,12 +347,13 @@ def by_total(decisions: list[dict[str, Any]], total: float) -> dict[str, Any]:
 
 
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-TIMESTAMP_KEYS = {"occurred_at", "deadline_at", "confirmed_at", "period_window_start", "as_of", "next_at"}
+TIMESTAMP_KEYS = {"occurred_at", "deadline_at", "confirmed_at", "period_window_start", "as_of", "next_at", "run_started_at"}
 DECISION_KEYS = {
     "authorization_id", "customer_id", "card_id", "decision", "uncertain_outcome", "status", "reason_codes",
     "message", "uncertainty", "occurred_at", "merchant", "amount", "currency", "billing_amount_chf", "items",
     "injection_flag", "evidence", "order_returnable", "delivery_by",
     "counterfactual", "related", "session", "merchant_meta", "engine_version", "latency_ms", "explanation_source",
+    "run_id", "run_started_at",
 }  # fmt: skip
 NULLABLE_DECISION_KEYS = {"uncertain_outcome", "uncertainty", "injection_flag", "delivery_by", "counterfactual", "related", "session"}
 MATRIX = {
@@ -601,6 +617,34 @@ def test_offline_replay_terms_injection_merchants_and_one_customer(db_url: str) 
             assert lookalike and original
             assert {d["merchant"]["merchant_id"] for d in lookalike} != {d["merchant"]["merchant_id"] for d in original}
             assert all(not d["merchant_meta"]["familiar"] for d in lookalike)
+
+    asyncio.run(scenario())
+
+
+def test_each_decision_names_its_run_and_when_the_run_started(db_url: str) -> None:
+    """Two runs on one card: C6 carries each decision's run id and its run's start (§2)."""
+
+    async def scenario() -> None:
+        clock = Clock()
+        async with running(db_url, clock=clock) as run:
+            first = await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
+            clock.offset = timedelta(minutes=5)
+            both = await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
+            assert len({d["authorization_id"] for d in both}) == 20
+            first_ids = {d["authorization_id"] for d in first}
+            runs: dict[str, set[str]] = {}
+            for d in both:
+                assert d["run_id"] and TIMESTAMP.match(d["run_started_at"])
+                runs.setdefault(d["run_id"], set()).add(d["run_started_at"])
+            assert len(runs) == 2 and all(len(starts) == 1 for starts in runs.values())
+            (older,) = {d["run_id"] for d in both if d["authorization_id"] in first_ids}
+            (newer,) = set(runs) - {older}
+            (older_start,), (newer_start,) = runs[older], runs[newer]
+            gap = datetime.fromisoformat(newer_start) - datetime.fromisoformat(older_start)
+            assert timedelta(minutes=5) <= gap < timedelta(minutes=6)
+            with session(run.services.db_engine) as s:
+                stored = dict(s.execute(select(Run.run_id, Run.started_at)).all())
+            assert {older, newer} <= set(stored)
 
     asyncio.run(scenario())
 
@@ -1155,10 +1199,14 @@ def test_operator_endpoints(db_url: str) -> None:
             await until(done)
             assert (await run.get("/api/dev/runs/run_nope")).status_code == 404
 
+            state = (await run.get("/api/dev/soft-signals")).json()
+            assert state == {"live": run.services.live_models(), "replay": False}
             assert (await run.post("/api/dev/soft-signals", json={"enabled": True})).json() == {"enabled": True}
             assert run.services.worker._signals_enabled is True
+            assert (await run.get("/api/dev/soft-signals")).json() == {"live": True, "replay": True}
             assert (await run.post("/api/dev/soft-signals", json={"enabled": False})).json() == {"enabled": False}
             assert run.services.worker._signals_enabled is False and run.services.live_models() is False
+            assert (await run.get("/api/dev/soft-signals")).json() == {"live": False, "replay": False}
 
             rows = await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
             assert len(rows) == 11  # the live one and the replay's ten
@@ -1174,6 +1222,38 @@ def test_operator_endpoints(db_url: str) -> None:
             assert health["events_cursor"] == health["worker"]["events_cursor"] > 0
             assert health["database"]["ok"] and health["database"]["round_trip_ms"] is not None
             assert TIMESTAMP.match(health["worker"]["last_poll_at"])
+
+    asyncio.run(scenario())
+
+
+class TakenLease:
+    """The worker lease while another process holds it."""
+
+    def acquire(self) -> bool:
+        return False
+
+    def held(self) -> bool:
+        return False
+
+    def release(self) -> None:
+        return None
+
+
+def test_healthz_shows_standby_while_another_process_holds_the_worker_lease(db_url: str) -> None:
+    """A second process on the same store does not poll; /healthz says so and stays 200."""
+
+    async def scenario() -> None:
+        fake = FakeViseca(fast())
+        options = {"poll_wait_s": 0.2, "lease": TakenLease(), "standby_retry_s": 0.05}
+        async with running(db_url, fake=fake, ready="standby", worker_options=options) as run:
+            await asyncio.sleep(0.3)
+            r = await run.get("/healthz")
+            assert r.status_code == 200
+            worker = r.json()["worker"]
+            assert (worker["state"], worker["polling"], worker["ok"], worker["last_poll_at"]) == (
+                "standby", False, False, None,
+            )  # fmt: skip
+            assert r.json()["status"] == "degraded" and fake.polls == 0
 
     asyncio.run(scenario())
 
@@ -1218,12 +1298,13 @@ def test_d7_shows_the_newest_run_live_or_replay(db_url: str, monkeypatch: pytest
             live = (await run.post("/api/dev/runs", json={"scenario_id": "SCEN0000", "card_id": "CA0001"})).json()
             current = (await run.get("/api/dev/runs/current")).json()
             assert current["run_id"] == live["run_id"]
-            assert current == (await run.get(f"/api/dev/runs/{live['run_id']}")).json()
 
             async def decided() -> bool:
                 return (await run.get("/api/dev/runs/current")).json()["decided"] == 1
 
-            await until(decided)
+            await until(decided)  # counters settled: D7 and D4 read the same run alike
+            current = (await run.get("/api/dev/runs/current")).json()
+            assert current == (await run.get(f"/api/dev/runs/{live['run_id']}")).json()
             await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
             current = (await run.get("/api/dev/runs/current")).json()
             assert set(current) == {"scenario_id", "card_id", "delivered", "total", "running", "next_at"}

@@ -1,4 +1,4 @@
-"""The replay matrix: every public purchase, its decision and message (docs/replay-matrix.md).
+"""The replay matrix: every public purchase, its decision, message and counterfactual (docs/replay-matrix.md).
 
     make matrix    # python -m oneguard.replay.matrix --out ../docs/replay-matrix.md
 
@@ -105,12 +105,15 @@ def markdown(pack: Pack, rows: list[Row]) -> str:
         f"| Oracle match | {matched}/{total} |",
         f"| Signals off vs on | {identical}/{total} identical outcomes |",
         "",
-        "| ID | Decision | Reason codes | Message |",
-        "|---|---|---|---|",
+        "| ID | Decision | Reason codes | Message | Counterfactual |",
+        "|---|---|---|---|---|",
     ]  # fmt: skip
     for r in rows:
         d = r.decided
-        lines.append(f"| {d.source_id} | {d.outcome} | {', '.join(d.reason_codes)} | {_cell(d.message)} |")
+        lines.append(
+            f"| {d.source_id} | {d.outcome} | {', '.join(d.reason_codes)} | {_cell(d.message)} "
+            f"| {_cell(d.counterfactual)} |"
+        )
     return "\n".join(lines) + "\n"
 
 

@@ -123,9 +123,21 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 
 ## 9. Explanations
 
-- **E1** One plain sentence per outcome, written for the customer; a Decline adds one sentence for E3. The amount is said once, in the lead.
-- **E2** Names the customer's own rule and the deciding fact: "Declined CHF 38.90: over your CHF 20.00 per-order limit."
-- **E3** For Decline, what would make it a yes, said once, as the message's last sentence and in the API's `counterfactual`: "Declined CHF 38.90: over your CHF 20.00 per-order limit. Would approve at CHF 20.00 or less."
+- **E1** One sentence: "{Outcome} CHF {amount}: {clause}." Outcome is Approved, Declined or Waiting for you. The clause comes from the deciding rule or signal, one clause, at most 15 words (an amount counts as one word). At most one short clause is joined to it: the second of two warning signs that decide together, else "the shop's instructions to the agent were ignored" when shop text tried to instruct the agent but did not decide. Other failing rules and signs stay in the evidence. Approvals read "Approved CHF {amount}: it is within the limits you set."; a re-quote reads "Approved CHF {amount}: it re-quotes the CHF {x} order declined {n} days earlier and is within your limits.". A lookalike shop (A7) is named whenever it fired, even when another rule decided. No authorization id ever appears in a message or counterfactual: an earlier order is named by amount and time ("the CHF 70.00 order 6 min earlier"); the id stays in `related`. A step-up closed by the timeout reads "Expired: no answer within {n} s; nothing was approved."
+- **E2** One template per field names the customer's own rule and the deciding fact (clause / counterfactual):
+  - known shop: "You haven't bought from {shop} before." / "Would approve at a shop you've bought from before."
+  - amount: "CHF {x} is over your CHF {cap} limit." / "Would approve at CHF {cap} or less." (per item: "{item} at CHF {x} is over your CHF {cap} item limit.")
+  - period: "This would take the week to CHF {total}, over your CHF {limit}." / "Would approve at CHF {room} or less this week." ("day" / "today" for 1 day, "month" / "this month" for 30, "{n} days" / "in these {n} days" otherwise; no room left: "Nothing more fits this week."). Only because of step-ups still waiting: "With CHF {w} unanswered, this would take …" / "Would approve if you decline the unanswered CHF {w}."
+  - purchase count: "You allowed one order per day; one was already approved today at 12:10." / "Would approve from tomorrow at 12:10."
+  - item type: "{item} is {category}, not {allowed}." (excluded: "{item} is {category}, which you excluded.") / "Would approve without {item}."
+  - shop type: "{shop} is a {type} shop, not a {wanted} shop." / "Would approve at a {wanted} shop."
+  - size: "Size {x}; you asked for {y}." / "Would approve in size {y}."
+  - returns: "Returns: {x}; you asked for {y} days or more." ({x} is "none" for final sale, "not stated" when the shop is silent) / "Would approve with returns of {y} days or more."
+  - country: "{shop} is in {country}, not {wanted}." / "Would approve at a shop in {wanted}."; weekday: "Placed on a {day}, not {days}." / "Would approve on {days}."; quantity: "Quantity {x}; you allowed {n} or fewer." / "Would approve with a quantity of {n} or fewer."
+  - requested item: "The cart has {items}, not the {wanted} you asked for." / "Would approve with the {wanted}."; nothing extra: "The cart adds {items}, which you didn't ask for." / "Would approve without {items}."
+  - signs and protections: injection "The shop's text had instructions aimed at the agent; they were ignored, so you decide."; duplicate "Same shop and items as the CHF {x} order {n} min earlier."; split "Together with the CHF {x} order {n} min earlier, CHF {total} is over your CHF {cap} limit."; recurring "{item} adds a recurring charge you did not ask for."; lookalike "{shop} is 1 letter away from {known shop}, a shop you know; it's a different shop."; no history "You have no purchase history yet, so we can't tell if you know this shop."; session watch "After recent unusual attempts on this card, we check with you until you approve one."
+  A broken rule's clause is also its evidence detail (engine/policy.py); a typed rule on known shop, item type or shop type is checked by the same check as the flag, so both read alike.
+- **E3** What would make it a yes is the API's `counterfactual` ("Would approve …"), never part of the message. A decline joins every failing rule's counterfactual ("Would approve at CHF 400.00 or less and without Extended protection plan."); a step-up has the deciding rule's or signal's, when there is one.
 - **E4** For Ask, what is uncertain: "The seller doesn't state a return policy."
 - **E5** For A1: say instructions were found and ignored; never repeat the injected instruction as if true.
 - **E6** No codes, jargon or "risk detected".
@@ -135,6 +147,7 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 ## 10. Turning words into rules
 
 - **T1** Every stated restriction becomes a rule. **T2** No invented limits; vague requests produce open questions. **T3** Boundary wording preserved ("under" ≠ "at or below"). **T4** Foreign-currency limits converted with M1 and shown. **T5** Customer confirms before rules apply; then tighten only. **T6** Revoke stops everything: later purchases under it are declined (platform pre-check; queued ones per Q6). **T7** Same rules from DE/FR/IT/EN — LLM compiler path only; the fallback parser is English.
+- A requested product ("buy/order/get a|an|the|my|one <product>") is C5 on both compiler paths. When the item catalogue files that product under one item type ("hiking boots": sporting goods; "27-inch monitor": electronics; "camera lens": photography), C3 is added with that type (inferred); when it files it under none ("a bag"; bare "boots", which the catalogue has as sporting goods and clothing), C5 stays and the open question is "Which kind of item or shop counts as <product>?". Category words ("groceries", "electronics") stay C3 and are never a requested item. An LLM reading that loses the parser's requested item is rejected for the parser's (lint floor).
 
 ## 11. Open questions and defaults
 

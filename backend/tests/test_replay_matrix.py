@@ -44,6 +44,6 @@ def test_problems_names_an_oracle_miss_and_a_signal_move():
 
 
 def test_a_pipe_in_a_message_stays_in_its_cell(pack):
-    decided = Decided("AU1", "step_up", ["a", "b"], "Waiting for you: a | b.", "")
+    decided = Decided("AU1", "step_up", ["a", "b"], "Waiting for you: a | b.", "c | d")
     text = matrix.markdown(pack, [matrix.Row(decided, expected="step_up", off="step_up")])
-    assert "| AU1 | step_up | a, b | Waiting for you: a \\| b. |" in text.splitlines()
+    assert "| AU1 | step_up | a, b | Waiting for you: a \\| b. | c \\| d |" in text.splitlines()

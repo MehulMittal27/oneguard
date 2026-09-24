@@ -182,6 +182,8 @@ def test_a3_counts_an_answered_step_up_only_if_the_customer_approved_it(approved
 def test_a3_names_the_earlier_order():
     a3 = signal(run(v=view([prior(auth="LIVE-7")])), "A3")
     assert a3.related == ("LIVE-7", "duplicate_of") and a3.outcome_if_triggered == "ask"
+    # the customer reads the order by amount and time; the id is only in `related`
+    assert a3.detail == "Same shop and items as the CHF 100.00 order 60 min earlier (CHF 100.00 then, CHF 100.00 now)."
 
 
 # --- A4 split -------------------------------------------------------------------------
@@ -195,7 +197,9 @@ def _split(minutes: float, earlier: float, now: float, rule=None):
 
 def test_a4_fires_within_ten_minutes_over_the_limit():
     a4 = _split(6, 70.0, 65.0)
-    assert a4.triggered and a4.related[1] == "split_of" and "135.00" in a4.detail
+    assert a4.triggered and a4.related == ("LIVE-1", "split_of")
+    assert a4.detail == ("6 min after the CHF 70.00 order at the same shop; together CHF 135.00, "
+                         "over the CHF 120.00 per-order limit.")  # fmt: skip
 
 
 @pytest.mark.parametrize(("minutes", "fires"), [(10, True), (10.02, False)])
@@ -233,11 +237,19 @@ def test_a5_links_a_declined_purchase_and_suppresses_a3():
     signals = run(facts(related="LIVE-3"), v=v)
     assert signal(signals, "A5").related == ("LIVE-3", "requote_of")
     assert signal(signals, "A5").outcome_if_triggered == "info"
+    assert signal(signals, "A5").detail == "Re-quote of the CHF 100.00 order declined 60 min earlier; judged on its own facts."
     assert not signal(signals, "A3").triggered
 
 
+def test_a5_names_a_decline_days_earlier_by_amount_and_age():
+    v = view([prior(auth="LIVE-3", outcome="decline", amount=520.0, at=T0 - timedelta(days=5))])
+    a5 = signal(run(facts(related="LIVE-3"), v=v), "A5")
+    assert a5.detail == "Re-quote of the CHF 520.00 order declined 5 days earlier; judged on its own facts."
+
+
 def test_a5_uses_the_event_status_when_the_decline_is_older_than_the_ledger_window():
-    assert signal(run(facts(related="LIVE-OLD", related_status="declined")), "A5").triggered
+    a5 = signal(run(facts(related="LIVE-OLD", related_status="declined")), "A5")
+    assert a5.triggered and a5.detail == "Re-quote of an order declined earlier; judged on its own facts."
     assert not signal(run(facts(related="LIVE-OLD", related_status="approved")), "A5").triggered
 
 
