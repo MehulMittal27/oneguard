@@ -52,11 +52,12 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
    `fly deploy` from here until the show ends.
 
 2. **Health**: `curl -s $API/healthz | jq '{worker: .worker.state, polling: .worker.polling, ok: .worker.ok, signals, model_loaded, database: .database.ok}'`.
-   Expect `worker: "polling"`, `polling: true`, `ok: true`, `signals.enabled: true`,
-   `model_loaded: true` (Laya loaded) and `database: true`. `worker: "standby"` means a
-   second process holds the store's worker lease (for example a laptop `make serve` with
-   the Supabase `.env` sourced): stop that process. `model_loaded: false` means Laya did
-   not load on this deploy: step 4 then shows keywords only; say so rather than claim Laya.
+   Expect `worker: "polling"`, `polling: true`, `ok: true`, `signals.backend: "keywords"`,
+   `signals.enabled: true`, `model_loaded: false` and `database: true`. The cloud runs
+   keyword soft signals (Fly secret `ONEGUARD_SOFT_SIGNALS=keywords`, docs/decisions.md), so
+   `model_loaded: false` is expected. `worker: "standby"` means a second process holds the
+   store's worker lease (for example a laptop `make serve` with the Supabase `.env`
+   sourced): stop that process.
 
 3. **Soft signals on** (the strip's button always starts as "on" after a reload and does
    not read the server, so make the server agree):
@@ -284,18 +285,25 @@ curl -s -X POST $API/api/dev/replay/restart -H 'Content-Type: application/json' 
 
 About 3 s later the newest run shows the same eleven outcomes; open **Earlier runs (n)** and
 the step-2 run (the latest "Started ...") to compare row by row. Switch to the `/healthz`
-tab and reload: `"signals": {"backend": "laya", "enabled": false, "model_loaded": true}`
-and top-level `"model_loaded": true`: the model is loaded, it is just not consulted.
+tab and reload: `"signals": {"backend": "keywords", "enabled": false, "model_loaded": false}`
+and top-level `"model_loaded": false`: the cloud's soft signal is the keyword detector, and
+it is switched off for this replay.
 
 **Say**: the deterministic gate decides; with every model off the outcomes are identical
 (proven for all 45 pack purchases in the matrix, signals on vs off). A soft signal can only
-move an approve to an ask, never approve or soften a decline.
+move an approve to an ask, never approve or soften a decline. The small model (Laya) is
+measured but not on the cloud: on Fly's CPUs it does not answer a purchase inside its
+500 ms budget, so the cloud keeps keywords (Laya demoed on the laptop):
+
+| Fly machine (lhr, 4 GB) | per purchase P50 / P95 | per item line P50 / P95 |
+|---|---|---|
+| `shared-cpu-4x` (burst balance used up) | 328 / 3,712 ms | 320 / 3,996 ms |
+| `performance-2x` (2 dedicated CPUs) | 683 / 1,333 ms | 670 / 861 ms |
 
 Press **Soft signals: off** again so it reads **Soft signals: on** before leaving the step.
 
 **Fallback**: if an outcome differs, it can only be an approve with signals on that asked
-(more cautious); say that. If `/healthz` shows `model_loaded: false`, say Laya did not load
-on this deploy and the soft signal fell back to keywords; the decisions are the same.
+(more cautious); say that.
 
 ### 5. The sandbox path: live judging run on record (0:25) - Hannah Chen, CA1643, SCEN0104
 

@@ -3,9 +3,10 @@
 # (VISECA_API_KEY, OPENAI_API_KEY, ONEGUARD_DATABASE_URL, ...) are Fly secrets.
 # The worker long-polls Viseca from inside the app, so the machine never auto-stops.
 # ONEGUARD_LOG_VISECA_CALLS stays unset (no viseca_calls rows); set it only to debug.
-# 4 GB: the Laya checkpoint baked into the image (Dockerfile) is loaded once at startup and
-# answers agent_directed on the machine's CPUs. Dedicated CPUs: shared ones run out of burst
-# balance after a few hundred model calls and then throttle (docs/benchmark.md §3).
+# Keyword soft signals only: the Fly secret ONEGUARD_SOFT_SIGNALS=keywords overrides the
+# image's laya default, because on Fly's CPUs Laya does not answer a purchase inside its
+# budget (docs/benchmark.md §3), so 1 GB is enough. Turning Laya on needs 4 GB first
+# (the model alone is ~2 GB resident) and then `fly secrets unset ONEGUARD_SOFT_SIGNALS`.
 app = "oneguard"
 primary_region = "lhr"
 
@@ -36,5 +37,5 @@ primary_region = "lhr"
     path = "/healthz"
 
 [[vm]]
-  size = "performance-2x"
-  memory = "4gb"
+  size = "shared-cpu-1x"
+  memory = "1gb"
