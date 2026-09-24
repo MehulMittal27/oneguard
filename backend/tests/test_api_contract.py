@@ -692,6 +692,13 @@ def test_a_resolve_after_the_window_is_refused_and_not_recorded(db_url: str) -> 
             decisions = await live_run(run)
             step_up = next(d for d in decisions if d["status"] == "pending_human")
             live_id = step_up["authorization_id"]
+            # The deadline is stored before the worker arms its expiry timer, and the timer
+            # reads the clock when it first runs: move the clock only once it is sleeping,
+            # or on a loaded machine it closes the step-up before the customer's answer lands.
+            worker = run.services.worker
+            assert worker is not None
+            await until(lambda: live_id in worker._expiry)
+            await asyncio.sleep(0)  # the timer's first step: it now sleeps out the real window
             clock.offset = timedelta(seconds=61)  # the window is over; no expiry has run yet
             r = await run.post(f"/api/authorizations/{live_id}/resolve", json={"decision": "approve"})
             assert r.status_code == 409 and r.json()["error"]["code"] == "window_closed"
