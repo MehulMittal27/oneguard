@@ -22,6 +22,21 @@ const DOT_STYLE: Record<DecisionOutcome, string> = {
  * not say "processed" — a period limit governs spend, so a stopped or uncertain
  * purchase must not move this bar.
  */
+/**
+ * The window a period limit is measured over, in the customer's own words. The
+ * length comes from the mandate (`usage.period_days`, or the check wording),
+ * so a 14- or 30-day policy stops being described as "this week".
+ */
+function periodLabel(days: number): string {
+  if (days === 7) return 'This week'
+  return `Last ${days} days`
+}
+
+/** The same window as a sentence fragment: "CHF 45.50 left this week". */
+function periodPhrase(days: number): string {
+  return days === 7 ? 'this week' : `in the last ${days} days`
+}
+
 export function PeriodLeashMeter({
   limitChf,
   spentChf,
@@ -40,7 +55,9 @@ export function PeriodLeashMeter({
   return (
     <div>
       <div className="flex justify-between text-[13px] text-ink-soft tabular-nums">
-        <span>This week: {formatChf(spentChf)}</span>
+        <span>
+          {periodLabel(days)}: {formatChf(spentChf)}
+        </span>
         <span>of {formatChf(limitChf)}</span>
       </div>
 
@@ -72,7 +89,7 @@ export function PeriodLeashMeter({
 
       <div className="mt-2 flex flex-col gap-1 text-[12px] text-ink-muted">
         <span>
-          {formatChf(remaining)} left in the last {days} days
+          {formatChf(remaining)} left {periodPhrase(days)}
         </span>
         {pendingChf > 0 && (
           <span className="text-asked">
