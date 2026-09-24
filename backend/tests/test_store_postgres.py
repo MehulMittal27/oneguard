@@ -28,6 +28,7 @@ from oneguard.store.db import (
     session,
 )
 from oneguard.store.history import StoreHistoryIndex
+from oneguard.store.lease import AdvisoryLease, worker_lease
 from tests.test_store import (  # noqa: F401  collected again here, against the fixtures below
     test_a_bad_served_table_leaves_the_store_as_it_was,
     test_every_reference_table_matches_the_pack,
@@ -139,3 +140,58 @@ def test_password_never_reaches_logs_or_reprs(engine: Engine, caplog: pytest.Log
     }
     assert "select count(*) from merchants" in caplog.text  # the engine did log
     assert [where for where, logged in exposed.items() if password in logged] == []
+
+
+# The worker lease (store/lease.py) -------------------------------------------------------
+
+
+def _lease_key() -> int:
+    """A key of this test run's own: advisory locks are database-wide, and the live worker
+    may hold ``WORKER_LOCK_KEY`` on a shared database."""
+    return uuid.uuid4().int >> 65
+
+
+def _lease_holder_pid(engine: Engine, key: int) -> int | None:
+    with engine.connect() as c:
+        return c.execute(
+            text(
+                "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted"
+                " AND classid = :hi AND objid = :lo AND objsubid = 1"
+            ),
+            {"hi": key >> 32, "lo": key & 0xFFFFFFFF},
+        ).scalar()
+
+
+def test_only_one_worker_lease_is_granted_and_it_is_handed_on(engine: Engine) -> None:
+    assert isinstance(worker_lease(engine), AdvisoryLease)
+    key = _lease_key()
+    first, second = AdvisoryLease(engine, key), AdvisoryLease(engine, key)
+    try:
+        assert first.acquire() and first.acquire()  # held: asking again keeps it
+        assert not second.acquire() and not second.held()
+        assert first.held() and _lease_holder_pid(engine, key) is not None
+        assert engine.pool.checkedout() == 0  # its connection is not one of the pool's
+        first.release()
+        assert not first.held() and _lease_holder_pid(engine, key) is None
+        assert second.acquire() and second.held()
+    finally:
+        first.release()
+        second.release()
+
+
+def test_a_worker_lease_whose_connection_dies_is_lost_and_can_be_taken_again(engine: Engine) -> None:
+    key = _lease_key()
+    lease, other = AdvisoryLease(engine, key), AdvisoryLease(engine, key)
+    try:
+        assert lease.acquire()
+        pid = _lease_holder_pid(engine, key)
+        with engine.connect() as c:
+            assert c.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": pid}).scalar()
+        assert not lease.held()  # the lock went with the connection
+        assert other.acquire()  # so another process may take it
+        assert not lease.acquire()
+        other.release()
+        assert lease.acquire() and lease.held()
+    finally:
+        lease.release()
+        other.release()

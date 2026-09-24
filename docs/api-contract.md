@@ -64,20 +64,43 @@ Unchanged from the frontend README except: C1 gains `504`, C2 gains the two `409
 |---|---|---|---|---|
 | D1 | GET | `/api/dev/replay` | — | `ReplayStatus` (offline replay of the data pack) |
 | D2 | POST | `/api/dev/replay/restart` | `{ scenario_id, card_id, speed_ms? }` | `ReplayStatus` |
-| D3 | POST | `/api/dev/runs` | `{ scenario_id, card_id }` | `LiveRun` — creates a Viseca run against the card's active mandate and starts the worker |
+| D3 | POST | `/api/dev/runs` | `{ scenario_id, card_id, force?: boolean }` | `LiveRun` — creates a Viseca run against the card's active mandate, followed by the worker; names the run card's holder |
 | D4 | GET | `/api/dev/runs/{run_id}` | — | `LiveRun` — progress, counters, worker health |
 | D5 | POST | `/api/dev/soft-signals` | `{ enabled: boolean }` | `{ enabled }` — chaos toggle for the small decision model |
+| D5 | GET | `/api/dev/soft-signals` | - | `{ live: boolean, replay: boolean }` - whether the models run now for live runs and for the offline replay; the two differ until an operator sets D5 (§3.7). Reads only |
 | D6 | GET | `/api/dev/ledger/{card_id}` | — | `LedgerSnapshot` — the engine's own state, for the "reproduce this decision" view |
 | D7 | GET | `/api/dev/runs/current` | — | `LiveRun` or `ReplayStatus` — the newest run (live or replay, by the real time it started) with the counters D4 / D1 show; 404 when none. Starts nothing |
+| D8 | GET | `/api/dev/scenarios` | — | `{ scenarios: Scenario[] }` — every scenario in the store's catalogue, whether the platform serves it now, the customer and card it runs on when known, and a run of it still in progress. Reads only |
 
 D3 requires an active mandate on the card (409 otherwise). While `ONEGUARD_ALLOW_RUNS=false` D3 starts nothing and
-answers 409 `runs_disabled` (unset: runs allowed); `make demo-live` refuses the same way. D1/D2 use the same engine and
-ledger as D3; only the event source differs (CSV vs Viseca long-poll).
+answers 409 `runs_disabled` (unset: runs allowed); `make demo-live` refuses the same way. While the worker still follows
+an unfinished run D3 answers 409 `run_active` (detail `{ run_id, scenario_id }`) before anything else: one run at a
+time. Also 409 `run_active` when the scenario has a run in progress anywhere: a live run the store last saw starting or
+running (unless the platform's `GET /v1/scenario-runs/{id}` says it is over), or a run with a purchase still open at
+the platform (`GET /v1/authorizations` status `awaiting_decision` or `pending_step_up`), whoever started it; the
+message and detail name that run. `force: true` skips both checks and starts the run anyway. D1/D2 use the same engine and ledger as D3; only the event source differs (CSV vs Viseca long-poll).
 D3 accepts any scenario in the store's `scenario_catalogue`, which the worker syncs from Viseca's
 `/v1/reference-data` at start (docs/judging-pack.md): 404 for an unknown scenario or card, 422 when the scenario's card
-is known (the local pack's, or the served bootstrap profile's) and is another. D2 replays only scenarios the local pack
-has purchases for (404 otherwise). C12 lists the customers in the store, so served-only customers appear once synced;
-their `scenario_ids` / `live` include the scenario the served bootstrap profile runs on their card.
+is known and is another. D2 replays only scenarios the local pack has purchases for (404 otherwise).
+
+**Scenario bindings.** The served catalogue names no card. The platform names one in the `/v1/bootstrap` `profile`
+(one scenario), in every run's `fixture_profiles` and in every authorization; the worker stores each sighting
+(`scenario_profiles`, docs/database.md) at start (bootstrap, and one `GET /v1/authorizations`), from D3's run reply,
+from run progress, from a run's first event and from the event feed. A scenario's binding is the stored one, else the
+local pack's. C12 `scenario_ids` lists every scenario bound to the customer's cards; `live` is true when one of them is
+served now (the scenario ids the worker read at its last start), or, for a store that never reached the platform,
+when any is bound (the offline replay). C12 `card_id` is the card of the customer's newest live scenario, else newest
+scenario, else the card of an active policy. D3's reply (`LiveRun`) names the card the run's fixture profile uses and
+its holder (`customer_id`, `customer_name`); when that card is not the one D3 was called with (a scenario never run
+before), the policy moves there: a copy of the mandate (same Viseca mandate) becomes that card's active policy and the
+original is marked revoked (docs/decisions.md). D4 and D7 name the holder too.
+
+**`make demo-live SCEN=<id>`** never decides: it drives the server at `ONEGUARD_API` (default
+`https://oneguard.fly.dev`): D8 → D7 (an unfinished newest run, or the scenario's `active_run_id`: that run is named,
+exit 1, nothing changed; `--force` / `make demo-live FORCE=1` skips this and sends D3 `force: true`) → C1 on the scenario's card (unknown:
+`--card`, else the bootstrap profile's) → C2 → D3, prints `Sign in as <name> (<customer_id>, card <card_id>)` from
+D3's reply, then follows D4 and the customer's C6 read-only. Only when no OneGuard server answers `/healthz` there does
+it fall back to a worker in its own process, and says so.
 
 ---
 
@@ -88,8 +111,9 @@ backend. Fields marked `NEW` are optional and may be omitted by the backend in e
 
 ```ts
 Customer  { customer_id, name, home_region, card_id: string|null,
-            scenario_ids: string[],          // CHANGED from scenario_id: CU0001 backs two scenarios
-            live: boolean }
+            scenario_ids: string[],          // CHANGED from scenario_id: CU0001 backs two scenarios;
+                                             // every scenario bound to their cards (§1.2 Scenario bindings)
+            live: boolean }                  // one of them is served now
 
 Card      { card_id, card_type, card_purpose, status }
 
@@ -146,7 +170,7 @@ Decision {
   uncertain_outcome: 'pending'|'expired'|'approved'|'declined' | null,
   status: 'final' | 'pending_human',
   reason_codes: string[],
-  message: string,                            // one sentence, names the number once; a decline adds "Would approve …" (= counterfactual)
+  message: string,                            // "{Outcome} CHF {amount}: {clause}." one clause (rules.md §9); never the counterfactual
   uncertainty: { note: string } | null,
   occurred_at: string,                        // SIMULATED time
   merchant: { merchant_id, name },            // name untrusted
@@ -158,7 +182,7 @@ Decision {
   delivery_by: string | null,
   deadline_at?: string,                       // pending_human only — REAL clock
 
-  counterfactual?: string | null,             // NEW: "Would approve at CHF 400 or less."
+  counterfactual?: string | null,             // NEW: "Would approve at CHF 400.00 or less." on its own, not in `message`
   related?: { authorization_id: string,       // NEW: link to an earlier decision in this run
               relation: 'requote_of' | 'duplicate_of' | 'retry_of' | 'split_of' } | null,
   session?: { trust: 'normal' | 'elevated' | 'frozen', note: string } | null,   // NEW
@@ -169,8 +193,11 @@ Decision {
   explanation_source?: 'template' | 'model', // NEW: who wrote `message` (rules.md §4a, tier 3); UI tag: template →
                                               // "Explained by OneGuard", model → "Wording refined by AI · decision made by your rules"
   resolved_by?: 'customer' | 'timeout',       // NEW: resolved step-ups only (§3.5)
-  confirmable?: { rule_id: string, phrase: string } | null   // NEW: step-up decided by one `unverifiable` rule
+  confirmable?: { rule_id: string, phrase: string } | null,  // NEW: step-up decided by one `unverifiable` rule
                                               // (§3.3); phrase = its value. Approving can be remembered for the shop
+  run_id?: string,                            // NEW: the run this decision belongs to (decisions.run_id); C6 sends it
+  run_started_at?: string                     // NEW: that run's start, REAL clock (runs.started_at); C6 sends it
+                                              // when the run has a `runs` row. The UI lists a card's newest run
 }
 
 Evidence  { rule: string,                     // which check or signal
@@ -180,7 +207,13 @@ Evidence  { rule: string,                     // which check or signal
 
 ReplayStatus { scenario_id, card_id, delivered, total, running: boolean, next_at: string|null }
 LiveRun      { run_id, scenario_id, card_id, mandate_id, state: 'starting'|'running'|'done'|'error',
-               delivered, decided, pending_human, total, worker_ok: boolean, last_error: string|null }
+               delivered, decided, pending_human, total, worker_ok: boolean, last_error: string|null,
+               customer_id?: string, customer_name?: string }         // NEW: who holds card_id
+Scenario     { scenario_id, scenario_name, cardholder_instruction,    // NEW (D8)
+               served: boolean,                                       // the platform serves it now
+               profile: { customer_id, name, card_id, profile_id: string|null,
+                          source: 'pack'|'bootstrap'|'run'|'authorization' } | null,   // null: not run yet
+               active_run_id: string | null }                         // a run of it in progress (D3's run_active)
 LedgerSnapshot { card_id, mandate_id, entries: [{ authorization_id, occurred_at, decision,
                  counted_chf, note }], period_spent_chf, frozen: boolean }
 ```
@@ -258,7 +291,7 @@ expire — that is a broken state, not a degraded one.
 |---|---|
 | `authorization.billing_amount_chf` | total in CHF, delivery included (never add delivery again) |
 | `authorization.billing_amount_chf` + `scope: period`, `period_days: 7` | rolling window; sum of **final approvals** whose simulated timestamp ≥ current − 7×24h |
-| `cart.purchases_in_period` + `scope: period`, `period_days: N` | integer; purchases on this card in the rolling window of N×24h before the current simulated timestamp: **final approvals + pending step-ups** (declines and expired step-ups never count; a redelivered live id counts once). This purchase is compared as count + 1: `<= 1`, `period_days: 1` is "one a day", so a second purchase fails. Operators `<=` / `<` only. Fail: `period_count_exceeded`; evidence "You allowed one order per day; one was already approved today at 12:10" (time of the latest approval, Europe/Zurich), message "Declined CHF 32.00: you allowed one order per day; one was already approved today at 12:10. Would approve from tomorrow at 12:10."; a breach caused only by pending step-ups asks (`period_reserved_pending`, M5) |
+| `cart.purchases_in_period` + `scope: period`, `period_days: N` | integer; purchases on this card in the rolling window of N×24h before the current simulated timestamp: **final approvals + pending step-ups** (declines and expired step-ups never count; a redelivered live id counts once). This purchase is compared as count + 1: `<= 1`, `period_days: 1` is "one a day", so a second purchase fails. Operators `<=` / `<` only. Fail: `period_count_exceeded`; evidence "You allowed one order per day; one was already approved today at 12:10" (time of the latest approval, Europe/Zurich), message "Declined CHF 32.00: You allowed one order per day; one was already approved today at 12:10.", counterfactual "Would approve from tomorrow at 12:10."; a breach caused only by pending step-ups asks (`period_reserved_pending`, M5) |
 | `merchant.merchant_category` | trusted catalogue category |
 | `merchant.known_shop` | `"true"` if ≥1 approved purchase by this customer at this `merchant_id` on any of their cards (history + this run's finals); customer-level per rules.md Q7. `merchant.familiar_on_card` is accepted as an alias for the same check |
 | `items[].item_category` | every cart line must satisfy `in` / `not_in` |
@@ -335,7 +368,7 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 
 - Off by default in the offline replay; on by default in live runs if the model loaded.
   D5 toggles at runtime.
-- Timeout 500 ms; on timeout/error the keyword detector runs instead. Output only ever adds
+- Timeout 500 ms (`ONEGUARD_SIGNAL_BUDGET_MS`); on timeout/error the keyword detector runs instead. Output only ever adds
   `evidence` rows with `source: 'model'` and may raise `approve → uncertain`. It can never
   lower `stopped` or override a policy check. `engine_version` records whether the model
   was on, so a replay with it off is comparable.
@@ -352,7 +385,7 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 All errors: `{ error: { code: string, message: string, detail?: object } }`. Codes used:
 `not_found`, `validation`, `draft_confirmed`, `lint_failed`, `not_pure_addition`,
 `not_awaiting_answer`, `window_closed`, `upstream_unavailable`, `compiler_timeout`,
-`internal`, `runs_disabled`.
+`internal`, `runs_disabled`, `run_active` (D3: an unfinished run is still followed).
 `upstream_unavailable` (503: Viseca or the database unreachable or too slow) never changes a
 stored decision; the UI shows its offline state ("Nothing was approved while we were
 offline"). `internal` (500) is an unexpected server error.
@@ -413,7 +446,7 @@ neutral fallback for unknown codes.
 
 1. `Customer.scenario_id` → `scenario_ids: string[]`.
 2. `Decision.related` — one link row in DecisionDetail "Related decisions".
-3. `Decision.counterfactual` — one line under the message in DecisionDetail; when the message ends with the same suggestion, DecisionDetail drops that trailing copy so it is said once (lists keep the full message).
+3. `Decision.counterfactual` — one line under the message in DecisionDetail and on the Approvals pending card; when the message ends with the same suggestion, both drop that trailing copy so it is said once (lists keep the full message).
 4. `Mandate.usage` — `lib/spend.ts` prefers it when present; keep client math as mock fallback; ensure human-approved step-ups count as spend.
 5. `Evidence.outcome: 'info'` — neutral styling; unknown values fall back to neutral.
 6. Optional: `Decision.session` banner on DecisionDetail when trust ≠ normal; a "Revoke policy" shortcut on the Approvals card.
@@ -424,8 +457,12 @@ neutral fallback for unknown codes.
 11. Optional: `Mandate.usage.confirmations` as a "Things you've confirmed" list on the policy screen (names rendered as plain text)
 12. Optional: `Decision.confirmable` - on a step-up, "Approve, and treat <shop> as <phrase> from now on"; absent or null means the ordinary approve button
 13. Policy review: a draft with no checks disables "Confirm policy" (C2 would refuse it, §3.2) and shows its `open_questions`, falling back to "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'" when there are none
+14. `Decision.run_id` / `run_started_at` - Activity and Home list each card's newest run (latest `run_started_at`); older runs sit collapsed under "Earlier runs (n)", each headed by its start time. A decision without `run_id` is always listed. Approvals is unchanged (pending only)
 
-No endpoint changes. No screen removals. Tighten UI stays dormant.
+15. Approvals pending card: `uncertainty.note` shows only when it says something the message does not (`lib/decisionMessage.ts` `noteAddsToMessage`); the note is usually the uncertain evidence row's detail, which the card lists anyway.
+16. Operator strip (`?demo=1`, operator only): reads D5 GET on each poll and labels the toggle with what the server reports (on, off, live only, replay only), never an assumed "on"; D1's 404 reads as "no replay yet", not as the backend being unreachable.
+
+No customer endpoint changes. No screen removals. Tighten UI stays dormant.
 
 ---
 

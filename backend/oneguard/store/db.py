@@ -21,9 +21,10 @@ from contextlib import contextmanager
 from functools import cache
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import URL, Engine, create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 DATABASE_URL_ENV = "ONEGUARD_DATABASE_URL"
 DEFAULT_DATABASE_URL = "sqlite:///./oneguard.sqlite"
@@ -44,9 +45,13 @@ def database_url() -> str:
     return normalise_url(os.environ.get(DATABASE_URL_ENV, "").strip() or DEFAULT_DATABASE_URL)
 
 
-def _enable_sqlite_foreign_keys(dbapi_connection: Any, _record: Any) -> None:
+def _configure_sqlite(dbapi_connection: Any, _record: Any) -> None:
+    # WAL: readers never wait for the writer and a commit is one append, so the worker's
+    # concurrent writes (call log, events_raw, run rows, cursor, ledger) do not stall its
+    # loop past a decision deadline, as the rollback journal did (docs/database.md §1).
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA journal_mode=WAL")
     cursor.close()
 
 
@@ -60,22 +65,29 @@ def _set_postgres_statement_timeout(dbapi_connection: Any, _record: Any) -> None
         dbapi_connection.autocommit = autocommit
 
 
-def make_engine(url: str | None = None) -> Engine:
-    """A new engine for ``url`` (default: ``database_url()``)."""
-    parsed = make_url(normalise_url(url or database_url()))
+def make_engine(url: str | URL | None = None, *, pooled: bool = True) -> Engine:
+    """A new engine for ``url`` (default: ``database_url()``).
+
+    ``pooled=False`` (Postgres only): every connection is opened for its caller and closed
+    with it, outside the process's pool of ``POSTGRES_POOL_SIZE`` (the worker lease).
+    """
+    parsed = url if isinstance(url, URL) else make_url(normalise_url(url or database_url()))
     backend = parsed.get_backend_name()
     if backend == "sqlite":
         engine = create_engine(
             parsed, pool_pre_ping=True, connect_args={"check_same_thread": False}
         )
-        event.listen(engine, "connect", _enable_sqlite_foreign_keys)
+        event.listen(engine, "connect", _configure_sqlite)
         return engine
     if backend == "postgresql":
+        pool: dict[str, Any] = (
+            {"pool_pre_ping": True, "pool_size": POSTGRES_POOL_SIZE, "max_overflow": 0}
+            if pooled
+            else {"poolclass": NullPool}
+        )
         engine = create_engine(
             parsed,
-            pool_pre_ping=True,
-            pool_size=POSTGRES_POOL_SIZE,
-            max_overflow=0,
+            **pool,
             connect_args={} if "sslmode" in parsed.query else {"sslmode": "require"},
         )
         event.listen(engine, "connect", _set_postgres_statement_timeout)

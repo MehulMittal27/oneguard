@@ -400,6 +400,26 @@ class WorkerState(Base):
     updated_at: Mapped[datetime]
 
 
+class ScenarioProfile(Base):
+    """Which customer and card a served scenario runs on. Used only by ``api/routes_dev.py``
+    (and C12 through it) and the worker that writes it.
+
+    The served catalogue names no card; the platform says it in the bootstrap ``profile``
+    (one scenario) and in every run's ``fixture_profiles`` and authorizations, so a row is
+    written as soon as any of those names the scenario, the newest sighting winning.
+    ``source``: ``bootstrap`` | ``run`` | ``authorization``.
+    """
+
+    __tablename__ = "scenario_profiles"
+
+    scenario_id: Mapped[str] = mapped_column(primary_key=True)
+    profile_id: Mapped[str | None]
+    customer_id: Mapped[str]
+    card_id: Mapped[str]
+    source: Mapped[str]
+    seen_at: Mapped[datetime]
+
+
 class VisecaCall(Base):
     """Append-only log of Viseca requests: summaries only, never the key, ≤ 4 KB each."""
 
