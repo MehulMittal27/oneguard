@@ -991,5 +991,6 @@ def test_operator_endpoints(db_url: str) -> None:
             assert health["status"] == "ok" and health["worker"]["polling"] is True
             assert health["events_cursor"] == health["worker"]["events_cursor"] > 0
             assert health["database"]["ok"] and health["database"]["round_trip_ms"] is not None
+            assert TIMESTAMP.match(health["worker"]["last_poll_at"])
 
     asyncio.run(scenario())

@@ -40,6 +40,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from oneguard import __version__
 from oneguard.api import errors, queries, routes_customer, routes_dev, static
+from oneguard.api.models import _utc_z
 from oneguard.api.offline import OfflineRunner
 from oneguard.api.services import (
     COMPILE_TIMEOUT_S,
@@ -175,6 +176,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     config: AppConfig = app.state.config
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    # Every Viseca call is already summarised in viseca_calls; one INFO line per long-poll is noise.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     own_engine = config.database_url is not None
     db = make_engine(config.database_url) if own_engine else get_engine()
     await asyncio.to_thread(init_db, db)
@@ -269,7 +272,7 @@ async def healthz(request: Request) -> JSONResponse:
             state=status.state,
             ok=status.ok,
             polling=status.state == "polling",
-            last_poll_at=status.last_poll_at.isoformat() if status.last_poll_at else None,
+            last_poll_at=_utc_z(status.last_poll_at) if status.last_poll_at else None,
             events_cursor=status.events_cursor,
             human_window_s=status.human_window_s,
             decision_deadline_s=status.decision_deadline_s,
