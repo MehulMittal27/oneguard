@@ -135,8 +135,8 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
   (for `bench_engine.py --laya` on the machine) and `frontend/dist` copied in, run as a
   non-root user; `uvicorn oneguard.api.app:app` listens on `$PORT` (8080);
   `ONEGUARD_SOFT_SIGNALS=laya` and `ONEGUARD_ENV=prod` are the image defaults.
-- `fly.toml`: region `lhr` (nearest Supabase in eu-west-1), one `shared-cpu-4x` machine with
-  4 GB (Laya on CPU; shared rather than `performance-2x` on cost), never auto-stopped (the
+- `fly.toml`: region `lhr` (nearest Supabase in eu-west-1), one `performance-2x` machine with
+  4 GB (Laya on CPU; dedicated CPUs because shared ones throttle, docs/benchmark.md §3), never auto-stopped (the
   worker polls from inside the app), no volume: state lives in Supabase via
   `ONEGUARD_DATABASE_URL`. Health check `GET /healthz`, 120 s grace (the model loads before
   the app answers).
