@@ -235,7 +235,12 @@ export function Home({
         )}
 
         <section className="flex flex-col gap-3">
-          <p className="font-display text-[20px] font-bold text-ink">Active policies</p>
+          {/* The heading belongs to the list under it: with nothing active it
+              labelled either empty space or the "Closed to your agent" group,
+              which is the opposite of what it says. */}
+          {activePolicies.length > 0 && (
+            <p className="font-display text-[20px] font-bold text-ink">Active policies</p>
+          )}
 
           {accountsStatus === 'loading' && (
             <div className="flex flex-col gap-3" aria-live="polite" aria-busy="true">
