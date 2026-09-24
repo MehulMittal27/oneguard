@@ -166,8 +166,11 @@ Decision {
   explanation_source?: 'template' | 'model', // NEW: who wrote `message` (rules.md §4a, tier 3); UI tag: template →
                                               // "Explained by OneGuard", model → "Wording refined by AI · decision made by your rules"
   resolved_by?: 'customer' | 'timeout',       // NEW: resolved step-ups only (§3.5)
-  confirmable?: { rule_id: string, phrase: string } | null   // NEW: step-up decided by one `unverifiable` rule
+  confirmable?: { rule_id: string, phrase: string } | null,  // NEW: step-up decided by one `unverifiable` rule
                                               // (§3.3); phrase = its value. Approving can be remembered for the shop
+  run_id?: string,                            // NEW: the run this decision belongs to (decisions.run_id); C6 sends it
+  run_started_at?: string                     // NEW: that run's start, REAL clock (runs.started_at); C6 sends it
+                                              // when the run has a `runs` row. The UI lists a card's newest run
 }
 
 Evidence  { rule: string,                     // which check or signal
@@ -421,6 +424,7 @@ neutral fallback for unknown codes.
 11. Optional: `Mandate.usage.confirmations` as a "Things you've confirmed" list on the policy screen (names rendered as plain text)
 12. Optional: `Decision.confirmable` - on a step-up, "Approve, and treat <shop> as <phrase> from now on"; absent or null means the ordinary approve button
 13. Policy review: a draft with no checks disables "Confirm policy" (C2 would refuse it, §3.2) and shows its `open_questions`, falling back to "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'" when there are none
+14. `Decision.run_id` / `run_started_at` - Activity and Home list each card's newest run (latest `run_started_at`); older runs sit collapsed under "Earlier runs (n)", each headed by its start time. A decision without `run_id` is always listed. Approvals is unchanged (pending only)
 
 No endpoint changes. No screen removals. Tighten UI stays dormant.
 
