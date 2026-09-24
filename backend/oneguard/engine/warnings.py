@@ -12,6 +12,11 @@ weak alone → nothing). Signs are evaluated per purchase and never carry over (
 - W5 night-time (weak): 00:00 ≤ local time < 05:00, Europe/Zurich
 - W6 price outside catalogue range (weak): a line's CHF unit price outside the item's
   ``unit_price_min_chf`` … ``unit_price_max_chf``
+
+No baseline yet: a customer with no approved purchase in history (any card) and no final
+approval in this run has no usual device, country or amount to compare with, so W1, W3 and
+W4 report "no baseline yet" as info (never asks) instead of triggering. A purchase with no
+device id still triggers W1. The first final approval in the run starts the baseline.
 """
 
 from __future__ import annotations
@@ -38,6 +43,18 @@ def country_name(code: str | None) -> str:
     return COUNTRY_NAMES.get(code, code or "an unknown country")
 
 
+def no_baseline(ledger: LedgerView) -> bool:
+    """No approved purchase in history (any card) and none in this run (rules.md §8)."""
+    return not ledger.known_merchant_ids
+
+
+def _no_baseline(sign_id: str, strength: str, detail: str) -> Signal:
+    return Signal(
+        id=sign_id, triggered=True, strength=strength, outcome_if_triggered="info",
+        detail=f"No baseline yet: {detail}", source="history",
+    )  # fmt: skip
+
+
 def _sign(sign_id: str, triggered: bool, strength: str, detail: str, source: str) -> Signal:
     return Signal(
         id=sign_id, triggered=triggered, strength=strength, outcome_if_triggered="ask",
@@ -50,6 +67,8 @@ def w1_new_device(facts: Facts, ledger: LedgerView) -> Signal:
         return _sign("W1", True, "strong", "The purchase came without a device id.", "history")
     if facts.device_id in ledger.known_device_ids:
         return _sign("W1", False, "strong", "Made from a device you have used before.", "history")
+    if no_baseline(ledger):
+        return _no_baseline("W1", "strong", "no approved purchase yet to learn your devices from.")
     return _sign("W1", True, "strong", "Made from a device you have not used before.", "history")
 
 
@@ -64,6 +83,8 @@ def w3_new_country(facts: Facts, ledger: LedgerView) -> Signal:
     country = country_name(facts.merchant_country)
     if facts.merchant_country in ledger.known_countries:
         return _sign("W3", False, "weak", f"You have bought from shops in {country} before.", "history")
+    if no_baseline(ledger):
+        return _no_baseline("W3", "weak", f"no approved purchase yet to compare {country} with.")
     return _sign("W3", True, "weak", f"First purchase from a shop in {country}.", "history")
 
 
@@ -75,6 +96,8 @@ def w4_amount_above_normal(
     if per_order_limit_chf is not None and total <= per_order_limit_chf:
         detail = f"CHF {total:.2f} is within your CHF {per_order_limit_chf:.2f} per-order limit."
         return _sign("W4", False, "weak", detail, "history")
+    if no_baseline(ledger):
+        return _no_baseline("W4", "weak", f"CHF {total:.2f}, and no approved purchase yet to compare with.")
     if largest is None:
         return _sign("W4", True, "weak", f"CHF {total:.2f}, and there is no earlier approved purchase to compare with.", "history")
     if total > largest:

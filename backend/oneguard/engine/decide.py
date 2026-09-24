@@ -106,11 +106,16 @@ def _signal_code(signal: Signal) -> str:
     return _SIGNAL_CODE.get(signal.id, "unusual_activity")
 
 
+def _warns(signal: Signal) -> bool:
+    """A triggered warning sign that asks; "info" ones (no baseline yet) never do (P5)."""
+    return signal.triggered and signal.outcome_if_triggered != "info"
+
+
 def _session_trust(warnings_: list[Signal], ledger: LedgerView) -> str:
-    on = {w.id for w in warnings_ if w.triggered}
+    on = {w.id for w in warnings_ if _warns(w)}
     if {"W1", "W2"} <= on or ledger.frozen:
         return "frozen"
-    if any(w.triggered and w.strength == "strong" for w in warnings_):
+    if any(_warns(w) and w.strength == "strong" for w in warnings_):
         return "elevated"
     return "normal"
 
@@ -194,8 +199,8 @@ def decide(
         return result("step_up", 5, [_signal_code(s) for s in asking], [s.id for s in asking], asking)
 
     # Step 6: warning signs (one strong, or two weak), soft signals, the session watch.
-    strong = [w for w in warnings_ if w.triggered and w.strength == "strong"]
-    weak = [w for w in warnings_ if w.triggered and w.strength == "weak"]
+    strong = [w for w in warnings_ if _warns(w) and w.strength == "strong"]
+    weak = [w for w in warnings_ if _warns(w) and w.strength == "weak"]
     signs = strong + (weak if len(weak) >= 2 else [])
     signs += [s for s in soft if s.triggered and s.outcome_if_triggered == "ask"]
     if signs:

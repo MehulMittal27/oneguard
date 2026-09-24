@@ -14,6 +14,8 @@ Rules it enforces (docs/rules.md):
 - C2  the period window is rolling on simulated time: final approvals with
       ``ts_sim >= at - period_days`` and ``ts_sim < at`` (api-contract §3.3), per card.
 - Q7  known shops are customer level: history (any card) plus this run's approvals.
+- W1, W3 known devices and countries: history plus this run's approvals (their stored
+      events); W4 the largest approved purchase, the same way.
 
 Both PM decisions below carry over between sessions for live runs, and stay inside the
 run for replays (``runs.kind``), so replaying a scenario always decides the same way.
@@ -54,7 +56,7 @@ from oneguard.engine.ledger_base import (
 )
 from oneguard.engine.ledger_base import Ledger as LedgerBase
 from oneguard.engine.types import HistoryIndex, LedgerView, PriorDecision
-from oneguard.store.schema import Decision, MerchantFlag, Run
+from oneguard.store.schema import Decision, EventRaw, MerchantFlag, Run
 
 CENT = Decimal("0.01")
 
@@ -131,6 +133,7 @@ class StoreLedger(LedgerBase):
             maxima.append(hist_max)
 
         flagged = set(self.session.scalars(select(MerchantFlag.merchant_id).where(MerchantFlag.run_id == run_id)))
+        run_devices, run_countries = self._approved_devices_and_countries([d.live_authorization_id for d in approved])
         known = set(on_card) | set(other_cards)
 
         return LedgerView(
@@ -159,8 +162,9 @@ class StoreLedger(LedgerBase):
             known_merchant_names=known_merchant_names(self.history, known),
             merchant_approvals_on_card=on_card,
             merchant_approvals_other_cards=other_cards,
-            known_device_ids=set(self.history.known_devices(customer_id)) if self.history else set(),
-            known_countries=set(self.history.known_countries(customer_id)) if self.history else set(),
+            known_device_ids=(set(self.history.known_devices(customer_id)) if self.history else set()) | run_devices,
+            known_countries=(set(self.history.known_countries(customer_id)) if self.history else set())
+            | run_countries,
             max_approved_chf=max(maxima) if maxima else None,
             flagged_merchant_ids=flagged,
             frozen=self._frozen(self._earlier_card_decisions(run_id, card_id)
@@ -168,6 +172,22 @@ class StoreLedger(LedgerBase):
             # P1 contract change, P2 to review: the field exists now, so no feature check.
             confirmed_keys=self._confirmed_keys(run_id, at),
         )
+
+    def _approved_devices_and_countries(self, live_ids: list[str]) -> tuple[set[str], set[str]]:
+        """Device and shop country of this run's final approvals (W1, W3), read from the
+        stored events (``events_raw``, written by the worker and the offline replay before
+        the next decision). An approval with no stored event teaches nothing."""
+        if not live_ids:
+            return set(), set()
+        devices: set[str] = set()
+        countries: set[str] = set()
+        for event in self.session.scalars(select(EventRaw.event).where(EventRaw.live_authorization_id.in_(live_ids))):
+            auth = event.get("authorization") or {}
+            if auth.get("customer_device_id"):
+                devices.add(auth["customer_device_id"])
+            if (auth.get("merchant") or {}).get("merchant_country"):
+                countries.add(auth["merchant"]["merchant_country"])
+        return devices, countries
 
     @staticmethod
     def _frozen(decisions: list[Decision]) -> bool:

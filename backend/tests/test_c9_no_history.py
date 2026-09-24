@@ -118,7 +118,6 @@ def c9_row(explanation, pol: Policy):
 
 
 LEDGERS = ["store", "memory"]
-ALSO_NEW_DEVICE = "also made from a device you have not used before"
 
 
 # --- first purchase: unknown, the uncertainty setting decides --------------------------
@@ -136,8 +135,8 @@ def test_first_purchase_follows_the_uncertainty_setting(tmp_path, kind, typed, s
         engine, explanation, _ = decide_event(event(), ctx(ledger, pol))
     assert (engine.outcome, engine.step) == (outcome, 4)
     assert engine.deciding_ids == ["C9"] and engine.reason_codes == ["unevaluable"]
-    # The customer has no known device either, so W1 (new device) is named as well.
-    assert explanation.message == f"{lead} CHF 30.00: {NO_HISTORY}; {ALSO_NEW_DEVICE}."
+    # No baseline yet: W1, W3, W4 are info only, so the message names C9 alone.
+    assert explanation.message == f"{lead} CHF 30.00: {NO_HISTORY}."
     row = c9_row(explanation, pol)
     assert (row.outcome, row.detail, row.source) == ("uncertain", NO_HISTORY, "history")
     assert "no purchase history yet" in NO_HISTORY
@@ -151,7 +150,7 @@ def test_asking_rule_reads_no_history_too(tmp_path, kind):
     with make_ledger(kind, tmp_path) as ledger:
         engine, explanation, _ = decide_event(event(), ctx(ledger, pol))
     assert engine.outcome == "step_up"
-    assert explanation.message == f"Waiting for you CHF 30.00: {NO_HISTORY}; {ALSO_NEW_DEVICE}."
+    assert explanation.message == f"Waiting for you CHF 30.00: {NO_HISTORY}."
 
 
 # --- after one approval: the shop is known ----------------------------------------------
@@ -244,10 +243,10 @@ def test_next_live_session_remembers_the_shop(tmp_path):
         ledger.session.commit()
         _approve_step_up(ledger, pol, "live-1", "IT_A")
 
+        engine, other_shop, _ = decide_event(event(merchant=SHOP2, minutes=30), ctx(ledger, pol, "live-2"))
+        assert engine.outcome == "step_up" and c9_row(other_shop, pol).detail == NO_HISTORY
+
         engine, same_shop, _ = decide_event(event(item="IT_B", minutes=60), ctx(ledger, pol, "live-2"))
         row = c9_row(same_shop, pol)
         assert (row.outcome, row.detail) == ("pass", f"{CONFIRMED} shop earlier")
-        assert "C9" not in engine.deciding_ids
-
-        _, other_shop, _ = decide_event(event(merchant=SHOP2, minutes=90), ctx(ledger, pol, "live-2"))
-        assert c9_row(other_shop, pol).detail == NO_HISTORY
+        assert engine.outcome == "approve" and "customer_confirmation" in engine.reason_codes
