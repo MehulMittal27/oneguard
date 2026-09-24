@@ -18,6 +18,7 @@ const EMPTY_FORM: FormInput = {
 }
 
 type Step = 'describe' | 'reading' | 'timeout' | 'check'
+type AccountStatus = 'loading' | 'error' | 'ready'
 
 /**
  * Owns the new-policy flow's state machine (DESIGN.md #7/#13-16, C1/C2).
@@ -49,9 +50,11 @@ export function NewPolicyFlow({
   // Which card the policy applies to — starts at whichever card this flow
   // was opened for (Home/Accounts/Card detail), but the customer can pick a
   // sibling card on the same account before compiling (D-050). Only fetched
-  // for the "Applies to" picker; a failed or still-loading fetch just means
-  // no other cards to offer yet, not a blocked flow.
+  // for the "Applies to" picker; while it loads or after it fails the picker
+  // shows that state with a retry, and the flow itself is not blocked.
   const [account, setAccount] = useState<Account | null>(null)
+  const [accountStatus, setAccountStatus] = useState<AccountStatus>('loading')
+  const [accountAttempt, setAccountAttempt] = useState(0)
   const [selectedCardId, setSelectedCardId] = useState(cardId)
 
   useEffect(() => {
@@ -61,14 +64,16 @@ export function NewPolicyFlow({
       .then((accounts) => {
         if (cancelled) return
         setAccount(accounts.find((a) => a.cards.some((c) => c.card_id === cardId)) ?? null)
+        setAccountStatus('ready')
       })
       .catch(() => {
-        // No sibling cards to offer — same as a single-card account.
+        if (cancelled) return
+        setAccountStatus('error')
       })
     return () => {
       cancelled = true
     }
-  }, [signedInAs, cardId])
+  }, [signedInAs, cardId, accountAttempt])
 
   async function readWithAi() {
     setStep('reading')
@@ -157,6 +162,11 @@ export function NewPolicyFlow({
       onSubmitForm={submitForm}
       onCancel={onClose}
       formError={formError}
+      accountStatus={accountStatus}
+      onRetryAccounts={() => {
+        setAccountStatus('loading')
+        setAccountAttempt((attempt) => attempt + 1)
+      }}
     />
   )
 }
