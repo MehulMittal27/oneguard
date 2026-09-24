@@ -231,9 +231,9 @@ def bench_laya(reps: int) -> int:
 
 
 def signals_budget_ms() -> float:
-    from oneguard.pipeline import SOFT_SIGNALS_MAX_S
+    from oneguard.pipeline import signal_budget_s_from_env
 
-    return SOFT_SIGNALS_MAX_S * 1000
+    return signal_budget_s_from_env() * 1000
 
 
 def main() -> int:

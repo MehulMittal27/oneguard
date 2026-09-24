@@ -84,8 +84,31 @@ and the bare Laya `agent_directed` call per item line (56).
   two runs before it; the first includes torch's first import after install). It happens
   once at API startup, never inside a decision.
 - 0 of 450 purchases went over the pipeline's 500 ms soft-signal budget
-  (`SOFT_SIGNALS_MAX_S`), so on this machine Laya never falls back to keywords for time.
+  (`ONEGUARD_SIGNAL_BUDGET_MS`), so on this machine Laya never falls back to keywords for time.
 - No purchase in the pack triggered on the model alone (0/450): with Laya on, the soft
   signal answers exactly as the keywords do on this pack.
 - Laya warns at load that the checkpoint ships out-of-range temperatures and treats the
   affected confidences as uncalibrated; the 0.6 threshold (signals.py) is unchanged.
+
+## 3. Soft signal: Laya in the image (CPU torch)
+
+The deploy image (Dockerfile: CPU-only torch, `laya-typed-decisions` baked in), the same
+`bench_engine.py --laya --reps 10`, run inside the container
+(`docker exec <container> python scripts/bench_engine.py --laya`).
+
+Local container, Docker Desktop on an Apple-silicon laptop (linux/aarch64, 6 CPUs), torch
+CPU only:
+
+| stage | n | P50 ms | P95 ms | max ms |
+|---|---:|---:|---:|---:|
+| soft_signals per purchase (laya) | 450 | 324.2 | 656.7 | 1357.5 |
+| Laya agent_directed per item line | 560 | 285.4 | 395.8 | 711.1 |
+
+- Load 13.5 s in the bench process; the app itself was answering `/healthz` with
+  `model_loaded: true` 7 s after start. App RSS with the model: 2.1 GB.
+- 115 of 450 purchases went over the 500 ms budget: a purchase asks once per item line, so
+  multi-line carts fall back to keywords for time (never less cautious, signals.py).
+- A second process with its own model copy takes another ~2.5 GB, so on the 4 GB machine the
+  bench does not run beside the app: it runs on a throwaway machine of the same size and
+  image (`fly machine run <image> python scripts/bench_engine.py --laya -a oneguard
+  --vm-size shared-cpu-4x --vm-memory 4096 -r lhr --restart no --rm`).
