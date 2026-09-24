@@ -59,6 +59,13 @@ make replay SCEN=SCEN0004            # offline replay, prints the decision table
 make dev                             # backend :8000 + frontend :5173 (proxy /api)
 ```
 
+Frontend only (no backend needed in mock mode):
+
+```bash
+cp frontend/.env.example frontend/.env   # VITE_USE_MOCKS=true serves fixtures, false calls /api
+cd frontend && npm install && npm run dev
+```
+
 Live run (event day): `make demo-live SCEN=SCEN0002` creates the mandate from the
 scenario instruction, starts the Viseca run and streams progress.
 
@@ -66,6 +73,9 @@ scenario instruction, starts the Viseca run and streams progress.
 
 See `docs/architecture.md`. Binding docs: `docs/rules.md`, `docs/api-contract.md`,
 `docs/acceptance-oracle.yaml`. Working rules for humans and agents: `CLAUDE.md`.
+
+`frontend/`: the customer's wallet control app (React PWA: sign in, policy, activity,
+step-up approvals, revoke); see [frontend/README.md](frontend/README.md).
 
 ## Research this builds on
 

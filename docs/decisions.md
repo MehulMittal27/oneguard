@@ -4,6 +4,8 @@ Choices made where the spec, the data, or the platform disagreed. Newest first.
 
 | Date | Decision | Why | Where |
 |---|---|---|---|
+| 2026-09-24 | Frontend contract merged into docs/api-contract.md; frontend/API-CONTRACT.md is a pointer | One canonical contract; the backend-facing requirements (envelopes, consistency matrix, check wording, checklist) now live in it | api-contract.md §1.0, §3.1a, §3.9, Appendix A; frontend/API-CONTRACT.md |
+| 2026-09-24 | Spend meter reads `Mandate.usage` first, check wording second | `usage` is the engine ledger's own view; parsing limits back out of prose fails silently (the fixture's "across any rolling 7 days" never matched) | frontend/src/lib/spend.ts `limitsFromMandate`; api-contract.md §3.9 |
 | 2026-09-24 | `Decision.explanation_source` ('template' \| 'model'); C6 may return the template message first and the model rewrite on a later poll | Viseca Q&A | api-contract.md §2, §3.4, §6 |
 | 2026-09-24 | C8 no longer bound to a hash of the step-up rendering; the step-up still renders the complete purchase | Viseca Q&A | api-contract.md §3.5 |
 | 2026-09-24 | Expired step-up: backend posts `/resolve` `decline` with the timeout message; `Decision.resolved_by: 'customer' \| 'timeout'` (NEW) | Viseca Q&A | api-contract.md §3.5 |
