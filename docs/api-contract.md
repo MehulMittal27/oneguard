@@ -106,7 +106,8 @@ FormInput { per_order_limit_chf: number|null, period_limit_chf: number|null,
 DryRunResult { sample_size, would_violate, would_fit, would_ask, insight,
                examples?: [{ occurred_at, merchant_name, billing_amount_chf,
                              outcome: 'fit'|'violate'|'ask', reason }],    // NEW, ≤3 rows
-               agent_history?: { attempts: number, approved: number } }   // NEW: history rows with initiator_type 'agent'
+               agent_history?: { attempts: number, approved: number } }   // NEW: history rows with initiator_type 'agent',
+                                              // customer-level (all the customer's cards); the rest of the dry run is card-scoped
 
 PolicyDraft  { draft_id, card_id, instruction, checks: RuleCheck[],
                uncertainty_policy: 'ask'|'decline', open_questions: string[],
@@ -155,7 +156,8 @@ Decision {
                     prior_approvals_on_card: number, prior_approvals_other_cards: number },
   engine_version?: string,                    // NEW
   latency_ms?: number,                        // NEW: engine wall time for this decision
-  explanation_source?: 'template' | 'model', // NEW: who wrote `message` (rules.md §4a, tier 3)
+  explanation_source?: 'template' | 'model', // NEW: who wrote `message` (rules.md §4a, tier 3); UI tag: template →
+                                              // "Explained by OneGuard", model → "Wording refined by AI · decision made by your rules"
   resolved_by?: 'customer' | 'timeout',       // NEW: resolved step-ups only (§3.5)
   confirmable?: { rule_id: string, phrase: string } | null   // NEW: step-up decided by one `unverifiable` rule
                                               // (§3.3); phrase = its value. Approving can be remembered for the shop
@@ -319,6 +321,9 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
   was on, so a replay with it off is comparable.
 - `ONEGUARD_SOFT_SIGNALS`: `off` = no soft signal; `keywords` = the A1 pattern list;
   `laya` = triggered if keywords OR Laya fire (Laya can only add, never clear a keyword hit).
+- Instruction readings (compiler): "under CHF X" = "Total under CHF X per order"; "two tickets" =
+  `cart.quantity`; "the present I picked" = an `unverifiable` rule; "by Friday" = from the card's
+  simulated date (docs/decisions.md, P4/P5 review).
 - Tier-2 fact extraction and tier-3 explanation use the same provider interface as the
   compiler (OpenAI first, model-agnostic).
 
@@ -391,7 +396,7 @@ neutral fallback for unknown codes.
 6. Optional: `Decision.session` banner on DecisionDetail when trust ≠ normal; a "Revoke policy" shortcut on the Approvals card.
 7. Fixtures: add the new fields to `build_decisions_fixture.py` / `build_policy_fixture.py` so mock mode matches.
 8. `Decision.explanation_source` and `Decision.resolved_by` in `types.ts`; `mergeDecisions.sameDecision` also compares `explanation_source` and `counterfactual` so a tier-3 rewrite re-renders.
-9. Policy screen renders DryRunResult.examples and dry_run.agent_history as one line
+9. Policy screen renders DryRunResult.examples and dry_run.agent_history as one line; agent_history is customer-level and labelled "across your cards", the dry run stays card-scoped and says so ("on this card"). `Decision.explanation_source` tag strings: `template` → "Explained by OneGuard", `model` → "Wording refined by AI · decision made by your rules"
 10. PolicyDraft.compiler == 'fallback' shown as a banner; Decision.explanation_source shown as a subtle tag
 11. Optional: `Mandate.usage.confirmations` as a "Things you've confirmed" list on the policy screen (names rendered as plain text)
 12. Optional: `Decision.confirmable` - on a step-up, "Approve, and treat <shop> as <phrase> from now on"; absent or null means the ordinary approve button
