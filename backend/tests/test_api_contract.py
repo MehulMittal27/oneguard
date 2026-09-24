@@ -32,9 +32,10 @@ from sqlalchemy import select
 
 from oneguard.api import queries
 from oneguard.api.app import AppConfig, create_app, sanitise
-from oneguard.api.policies import NO_CAP_QUESTION
+from oneguard.api.policies import NO_CAP_QUESTION, per_order_cap
 from oneguard.api.services import Services
 from oneguard.engine import stubs
+from oneguard.engine.interfaces import load_implementations
 from oneguard.engine.tier3 import rewrite_explanation
 from oneguard.engine.types import (
     CompiledDraft,
@@ -42,6 +43,7 @@ from oneguard.engine.types import (
     EvidenceRow,
     Explanation,
     Facts,
+    Rule,
     RuleResult,
 )
 from oneguard.store import seed as seed_module
@@ -915,6 +917,57 @@ def test_policy_drafts_and_the_viseca_dance(db_url: str) -> None:
             assert run.fake.mandates[tm]["status"] == "revoked"
 
     asyncio.run(scenario())
+
+
+def test_c2_relints_through_the_lint_accepted_interface(db_url: str) -> None:
+    """C2 asks the registered ``lint_accepted``: a floor alone is no per-order cap (409),
+    an exact price is (the gym renewal's "same price as last time")."""
+    lint_accepted = load_implementations()["lint_accepted"]
+    calls: list[list[str]] = []
+
+    def recording_lint(rules: list[Rule], accepted_ids: list[str]) -> tuple[list[str], list[str]]:
+        calls.append(accepted_ids)
+        return lint_accepted(rules, accepted_ids)
+
+    def amount_compiler(text: str, *_: Any) -> CompiledDraft:
+        operator = text.split()[1]
+        rule = Rule(id="C1", field="authorization.billing_amount_chf", operator=operator, value=59, currency="CHF",
+                    scope="purchase", text=f"Total {operator} CHF 59", source="inferred", kind="amount")
+        return CompiledDraft(instruction=text, rules=[rule], uncertainty_policy="ask", open_questions=[],
+                             dry_run=stubs.STUBS["dry_run"](None, None, ""), compiler="llm")
+
+    async def scenario() -> None:
+        engine = {**TEST_ENGINE, "compile_instruction": amount_compiler, "lint_accepted": recording_lint}
+        async with running(db_url, implementations=engine) as run:
+            for operator, capped in ((">=", False), (">", False), ("=", True)):
+                draft = (await run.post("/api/cards/CA0001/policy-drafts", json={"instruction": f"Total {operator} 59"})).json()
+                assert (NO_CAP_QUESTION not in draft["open_questions"]) is capped, operator
+                r = await run.post(
+                    f"/api/policy-drafts/{draft['draft_id']}/confirm",
+                    json={"checks": draft["checks"], "uncertainty_policy": "ask", "open_questions": []},
+                )
+                if capped:
+                    assert r.status_code == 200, r.text
+                else:
+                    assert r.status_code == 409 and r.json()["error"] == {
+                        "code": "lint_failed",
+                        "message": "Not confirmed: the policy needs a limit on what one purchase may cost.",
+                        "detail": {"missing": ["per_order_limit"]},
+                    }, operator
+            assert calls == [["C1"], ["C1"], ["C1"]]
+
+    asyncio.run(scenario())
+
+
+def test_an_exact_price_is_a_per_order_cap_and_a_floor_is_not() -> None:
+    def amount(operator: str) -> Rule:
+        return Rule(id="C1", field="authorization.billing_amount_chf", operator=operator, value=59, currency="CHF",
+                    scope="purchase", text="Total", source="inferred", kind="amount")
+
+    for operator in ("<", "<=", "="):
+        assert per_order_cap([amount(operator)]) == (59.0, operator)
+    for operator in (">=", ">"):
+        assert per_order_cap([amount(operator)]) is None
 
 
 def test_usage_follows_the_ledger(db_url: str) -> None:

@@ -309,8 +309,7 @@ async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: R
         if unknown:
             raise ApiError(422, "validation", "Some checks are not part of this draft.", {"unknown": unknown})
         accepted = [r for r in draft_rules if r.id in set(chosen)]
-        draft_checks = [api.RuleCheck.model_validate(c) for c in row.checks]
-        missing, reasons = policies.relint(draft_checks, accepted)
+        missing, reasons = s.functions["lint_accepted"](draft_rules, [r.id for r in accepted])
         if missing:
             raise ApiError(409, "lint_failed", "Not confirmed: " + "; ".join(reasons) + ".", {"missing": missing})
         flags = policies.accepted_flags(flags, draft_rules, accepted)
