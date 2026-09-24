@@ -139,6 +139,7 @@ class PolicyDraft(ApiModel):
     checks: list[RuleCheck]
     uncertainty_policy: UncertaintyChoice
     open_questions: list[str]
+    """With no checks read, the first entry is ``policies.NO_CHECKS_QUESTION`` and C2 refuses the draft."""
     dry_run: DryRunResult
     compiler: Literal["llm", "form", "fallback"] | None = None
 
