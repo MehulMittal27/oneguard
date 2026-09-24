@@ -201,24 +201,59 @@ function PendingCard({
         </div>
       )}
 
-      <div className="mt-4 grid grid-cols-2 gap-3">
-        <button
-          type="button"
-          disabled={resolving}
-          onClick={() => handle('approve')}
-          className="h-14 rounded-row bg-approved text-[16px] font-semibold text-on-ink disabled:opacity-60"
-        >
-          Approve
-        </button>
-        <button
-          type="button"
-          disabled={resolving}
-          onClick={() => handle('decline')}
-          className="h-14 rounded-row border-2 border-destructive-border text-[16px] font-semibold text-destructive disabled:opacity-60"
-        >
-          Reject
-        </button>
-      </div>
+      {/*
+        A step-up on a restriction no data can check ("an official ticket
+        seller") is the one case where approving can also be remembered: the
+        engine stores the answer against this shop and item and stops asking
+        (engine/policy.py `is_unverifiable`). The button says so in full, so the
+        customer is never agreeing to a standing rule by pressing a button that
+        only said "Approve". It stacks rather than sharing the two-column row —
+        the sentence does not fit half a 390px screen.
+      */}
+      {decision.confirmable ? (
+        <div className="mt-4 flex flex-col gap-3">
+          <button
+            type="button"
+            disabled={resolving}
+            onClick={() => handle('approve')}
+            className="min-h-14 rounded-row bg-approved px-4 py-3 text-[15px] leading-[1.35] font-semibold text-on-ink disabled:opacity-60"
+          >
+            {/* Merchant name is untrusted shop text — a plain text node here too. */}
+            Approve, and treat {decision.merchant.name} as {decision.confirmable.phrase} from now
+            on
+          </button>
+          <p className="text-[12px] text-ink-muted">
+            Applies to this shop and the items in this order. Everything else still asks you.
+          </p>
+          <button
+            type="button"
+            disabled={resolving}
+            onClick={() => handle('decline')}
+            className="h-14 rounded-row border-2 border-destructive-border text-[16px] font-semibold text-destructive disabled:opacity-60"
+          >
+            Reject
+          </button>
+        </div>
+      ) : (
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            disabled={resolving}
+            onClick={() => handle('approve')}
+            className="h-14 rounded-row bg-approved text-[16px] font-semibold text-on-ink disabled:opacity-60"
+          >
+            Approve
+          </button>
+          <button
+            type="button"
+            disabled={resolving}
+            onClick={() => handle('decline')}
+            className="h-14 rounded-row border-2 border-destructive-border text-[16px] font-semibold text-destructive disabled:opacity-60"
+          >
+            Reject
+          </button>
+        </div>
+      )}
 
       {error && (
         <p className="mt-3 text-[13px] text-destructive">

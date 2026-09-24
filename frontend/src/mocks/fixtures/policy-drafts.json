@@ -221,8 +221,15 @@
         "period_days": null,
         "period_spent_chf": 165.0,
         "period_window_start": "2026-08-11T10:15:00Z",
-        "pending_chf": 194.0,
-        "as_of": "2026-08-17T11:00:00Z"
+        "pending_chf": 383.0,
+        "as_of": "2026-08-18T14:25:00Z",
+        "confirmations": [
+          {
+            "rule_text": "Specialist sports retailer only",
+            "merchant_name": "Summit Thread",
+            "item_name": "Trail running shoes"
+          }
+        ]
       }
     },
     {

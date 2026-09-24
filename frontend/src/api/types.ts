@@ -136,6 +136,15 @@ export interface MandateUsage {
   fulfilment?: { bought: number; requested: number } | null
   // Simulated time of the last decision.
   as_of: string
+  /**
+   * Restrictions the customer has already answered for a shop and item, which
+   * the engine remembers so it stops asking (`LedgerView.confirmed_keys`;
+   * engine/policy.py `is_unverifiable` — only a restriction no data can check
+   * can be passed this way). PENDING: not yet in `../docs/api-contract.md` §2
+   * or `api/models.py`; requested from P1. Absent until then, so this renders
+   * nothing rather than guessing.
+   */
+  confirmations?: { rule_text: string; merchant_name: string; item_name: string }[]
 }
 
 export type DecisionRelation = 'requote_of' | 'duplicate_of' | 'retry_of' | 'split_of'
@@ -193,6 +202,16 @@ export interface Decision {
   explanation_source?: 'template' | 'model'
   // Resolved step-ups only: a customer's answer or the window timing out.
   resolved_by?: 'customer' | 'timeout'
+  /**
+   * Present on a step-up whose deciding rule is one no data can check (a
+   * restriction like "an official ticket seller" — engine/policy.py
+   * `is_unverifiable`). Approving it can also be remembered for this shop and
+   * item, which is what the confirm button then offers. `phrase` is the
+   * restriction in the customer's own words, for that sentence.
+   * PENDING: not yet in `../docs/api-contract.md` §2 or `api/models.py`;
+   * requested from P1. Absent means the ordinary approve button.
+   */
+  confirmable?: { rule_id: string; phrase: string } | null
 }
 
 // Operator-only shapes (`../docs/api-contract.md` §1.1 D1–D6), for the `?demo=1`

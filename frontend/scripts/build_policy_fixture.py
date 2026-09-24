@@ -59,6 +59,22 @@ DRY_RUN_SPEC = {
 
 SAMPLE_SIZE = 30
 
+# Restrictions the customer has already answered for a shop and item, which the
+# engine then stops asking about (LedgerView.confirmed_keys). Only a restriction
+# no data can check can be remembered this way (engine/policy.py
+# is_unverifiable), so the one here is SCEN0002's retailer rule — nothing in an
+# event settles whether a shop is "specialist". Curated, like the rest of this
+# file's review content: no ledger exists in mock mode to read them back from.
+CONFIRMATIONS = {
+    "SCEN0002": [
+        {
+            "rule_text": "Specialist sports retailer only",
+            "merchant_name": "Summit Thread",
+            "item_name": "Trail running shoes",
+        }
+    ],
+}
+
 # scenario_id -> (period_limit_chf, period_days) for the scenarios that state
 # one; the per-order limit comes from DRY_RUN_SPEC.
 PERIOD_SPEC = {
@@ -264,7 +280,7 @@ def mandate_usage(scenario_id, card_id, limit, run_start):
         window_start = run_start
         in_window = spend_rows
 
-    return {
+    usage = {
         "per_order_limit_chf": limit,
         "period_limit_chf": period_limit,
         "period_days": period_days,
@@ -276,6 +292,10 @@ def mandate_usage(scenario_id, card_id, limit, run_start):
         ),
         "as_of": max((r["occurred_at"] for r in rows), default=run_start),
     }
+    confirmations = CONFIRMATIONS.get(scenario_id)
+    if confirmations:
+        usage["confirmations"] = confirmations
+    return usage
 
 
 def build():

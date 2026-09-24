@@ -59,6 +59,8 @@ export function CardDetail({
     .filter((d) => d.card_id === cardId)
     .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))
   const { perOrder, period } = limitsFromMandate(mandate)
+  // Absent until the backend sends it (see types.ts) — an empty list, never a guess.
+  const confirmations = mandate.usage?.confirmations ?? []
   // Ledger-first: `usage` when the engine sent it, the client sum only in mock mode.
   const spend = period ? spendFromMandate(mandate, decisions, cardId, period.days) : null
 
@@ -197,6 +199,36 @@ export function CardDetail({
           </>
         )}
       </div>
+
+      {/*
+        Answers the customer gave once that the engine now remembers, so it stops
+        asking (engine/policy.py: only a restriction no data can check can be
+        passed this way). Read-only on purpose — this screen shows what is
+        remembered, and a policy is tightened or revoked, never edited here.
+        Hidden when empty: a heading over nothing would imply the engine is
+        remembering things it is not.
+      */}
+      {confirmations.length > 0 && (
+        <div>
+          <p className="mb-3 font-display text-[20px] font-bold text-ink">
+            Things you&apos;ve confirmed
+          </p>
+          <ul className="flex flex-col gap-2">
+            {confirmations.map((c, index) => (
+              <li
+                key={`${c.rule_text}-${c.merchant_name}-${c.item_name}-${index}`}
+                className="rounded-row border border-hairline bg-surface px-4 py-3"
+              >
+                <p className="text-[15px] font-medium text-ink">{c.rule_text}</p>
+                {/* Shop and item names are untrusted text — plain text nodes. */}
+                <p className="mt-0.5 text-[13px] text-ink-muted">
+                  {c.merchant_name} · {c.item_name}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div>
         <p className="mb-3 font-display text-[20px] font-bold text-ink">Card activity</p>

@@ -155,6 +155,25 @@ CURATION = {
             {"rule": "Item matches request", "outcome": "uncertain", "detail": "An extended protection plan wasn't part of “replace my worn shoes”."},
         ],
     },
+    # A restriction no data can check: nothing in the event says whether GreenLoop
+    # is "a specialist sports retailer", and no field can (engine/policy.py
+    # is_unverifiable). CHF 189 is inside the CHF 200 cap, so the amount is not
+    # the question — the shop is. This is the one case where approving can also
+    # be remembered, which is what `confirmable` tells the UI.
+    "AU0022": {
+        "decision": "uncertain",
+        "uncertain_outcome": "pending",
+        "status": "pending_human",
+        "reason_codes": ["rule_not_met", "unfamiliar_merchant"],
+        "message": "CHF 189.00, inside your CHF 200 limit — but nothing says whether this shop counts as a specialist sports retailer.",
+        "uncertainty": {"note": "Your rule asks for a specialist sports retailer. Nothing in this order says whether GreenLoop is one, and no record can settle it."},
+        "injection_flag": None,
+        "evidence": [
+            {"rule": "Per-order limit", "outcome": "pass", "detail": "CHF 189.00 is within your CHF 200 limit."},
+            {"rule": "Retailer", "outcome": "uncertain", "detail": "No record says whether GreenLoop is a specialist sports retailer.", "source": "policy"},
+        ],
+        "confirmable": {"rule_id": "retailer", "phrase": "a specialist sports retailer"},
+    },
     "AU0024": {
         "decision": "approved",
         "status": "final",
@@ -311,7 +330,14 @@ CURATION = {
 # `explanation_source` is curated: no tier-3 rewrite exists to observe, so the
 # three rows carrying it were chosen by how their `message` reads. The rest omit
 # it, which exercises the absent case in the UI.
-OPTIONAL_KEYS = ("counterfactual", "related", "session", "explanation_source", "resolved_by")
+OPTIONAL_KEYS = (
+    "counterfactual",
+    "related",
+    "session",
+    "explanation_source",
+    "resolved_by",
+    "confirmable",
+)
 
 
 def build():
