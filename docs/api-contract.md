@@ -4,8 +4,8 @@ Version 1.0 · 24 Sep 2026 · replaces `.claude/contracts/api-contract.md`
 
 This contract adopts the frontend's existing shapes **unchanged** and only adds fields.
 Every addition is marked `NEW` and is optional on the wire, so the current UI keeps
-working before any of it is rendered. If this file and `backend/app/domain.py` disagree,
-`domain.py` wins and this file gets fixed in the same commit.
+working before any of it is rendered. If this file and `backend/oneguard/api/models.py`
+disagree, `models.py` wins and this file gets fixed in the same commit.
 
 ---
 
@@ -179,7 +179,7 @@ LedgerSnapshot { card_id, mandate_id, entries: [{ authorization_id, occurred_at,
 | step_up | `uncertain` | `pending_human` | `pending` | POST …/decision `step_up` |
 | customer approves | `uncertain` | `final` | `approved` | POST …/resolve `approve` |
 | customer declines | `uncertain` | `final` | `declined` | POST …/resolve `decline` |
-| window lapses | `uncertain` | `final` | `expired` | none — never invent a human answer |
+| window lapses | `uncertain` | `final` | `expired` | backend posts `/resolve` `decline`, message "No answer within 120 s; nothing was approved", `resolved_by: timeout` |
 
 A step-up **stays** `decision: 'uncertain'` after resolution; the history must keep showing
 that a person was needed.
@@ -244,8 +244,9 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 
 ### 3.4 Decision lifecycle and the ledger
 
-- One SQLite transaction per decision: insert decision, consume live `authorization_id`
-  (redelivery of the same id → return stored result, count nothing), update period spend.
+- One transaction in the store (docs/database.md) per decision: insert decision, consume
+  live `authorization_id` (redelivery of the same id → return stored result, count nothing),
+  update period spend.
 - **Spend counts final approvals only.** `pending_human` contributes to `pending_chf`, not
   `period_spent_chf`. A human approval moves it across; a decline or expiry drops it.
 - Rolling window uses `authorization.timestamp` (simulated). Real clock is used only for
@@ -272,9 +273,9 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
 - The worker never blocks on a pending step-up; polling continues.
 - C8 after the window → 409. A GET of C6 after the window marks the decision
   `uncertain_outcome: 'expired'`, `status: 'final'` server-side (so a reload agrees). On
-  expiry the backend posts `/resolve` `decline` with the message "No answer within 120 s;
-  nothing was approved" and `resolved_by: 'timeout'` (rules.md Q2). Not spent. A customer
-  answer through C8 sets `resolved_by: 'customer'`.
+  expiry the backend posts `/resolve` `decline`, message "No answer within 120 s; nothing
+  was approved", `resolved_by: timeout` (rules.md Q2). Not spent. A customer answer through
+  C8 sets `resolved_by: 'customer'`.
 - A step-up renders the **complete** purchase (all lines, delivery fee, currency, recurring
   flag, flagged text).
 
@@ -332,7 +333,7 @@ Existing: `within_limits`, `rule_satisfied`, `per_order_limit_exceeded`,
 
 Added: `split_order_suspected`, `requote_accepted`, `already_fulfilled`,
 `recurring_charge_added`, `wrong_size`, `session_recovered`, `on_other_card`,
-`foreign_currency_converted` (info), `ledger_mismatch` (info).
+`foreign_currency_converted` (info), `ledger_mismatch` (info), `period_reserved_pending`.
 
 Any new code is added here before it is emitted. The UI maps codes to labels with a
 neutral fallback for unknown codes.
@@ -360,6 +361,8 @@ neutral fallback for unknown codes.
 6. Optional: `Decision.session` banner on DecisionDetail when trust ≠ normal; a "Revoke policy" shortcut on the Approvals card.
 7. Fixtures: add the new fields to `build_decisions_fixture.py` / `build_policy_fixture.py` so mock mode matches.
 8. `Decision.explanation_source` and `Decision.resolved_by` in `types.ts`; `mergeDecisions.sameDecision` also compares `explanation_source` and `counterfactual` so a tier-3 rewrite re-renders.
+9. Policy screen renders DryRunResult.examples and dry_run.agent_history as one line
+10. PolicyDraft.compiler == 'fallback' shown as a banner; Decision.explanation_source shown as a subtle tag
 
 No endpoint changes. No screen removals. Tighten UI stays dormant.
 

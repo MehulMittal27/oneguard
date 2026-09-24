@@ -18,6 +18,7 @@ Lives at `docs/database.md` · owner P1 · read by every lane before Gate 0.
 - **Seed once, read forever.** `make seed` loads the challenge CSVs into the reference
   tables. The engine never opens a CSV after Gate 0; `replay/` still reads
   `purchase_attempts*.csv` to *generate events* (that is test tooling, not the engine).
+  pandas is permitted in replay/ and seed.py only.
 
 ## 2. Schema
 

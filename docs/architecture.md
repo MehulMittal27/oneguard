@@ -64,10 +64,31 @@ oneguard/
 - SQLite file per environment (`ONEGUARD_DB`). One transaction per decision.
 - Viseca key from `VISECA_API_KEY`; base URL from `VISECA_BASE_URL`; both server-side.
 
+## Deployment (Plan C)
+
+One container on Fly, built by P1-2 (docs/team-plan.md). The files below arrive with that
+code; this section is the target they are built to.
+
+- `Dockerfile`: a node build stage builds `frontend/dist`; the runtime stage is
+  `python:3.12-slim` with the backend installed and `frontend/dist` copied in; `uvicorn`
+  listens on `$PORT`; `ONEGUARD_SOFT_SIGNALS=keywords` is the image default.
+- `fly.toml`: region `ams` or `fra`, one machine, no volume (state lives in Supabase via
+  `ONEGUARD_DATABASE_URL`).
+- Fly secrets: `VISECA_API_KEY`, `OPENAI_API_KEY`, `ONEGUARD_DATABASE_URL`.
+- Makefile targets: `make deploy`, `make demo-live SCEN=…`, `make demo-offline`,
+  `make matrix` (45-row replay matrix), `make seed`, `make reset-db` (guarded by
+  `ONEGUARD_ENV != prod`). `demo-live` and `demo-offline` exist today; the others are added
+  with the Wave 1–2 code (P1-0 `seed` / `reset-db`, P1-2 `deploy`, P5-4 `matrix`).
+- `/healthz` reports worker polling, provider configured, signals backend, database engine
+  (sqlite/postgres), a 1-row round-trip time, and the `GET /v1/events` cursor position;
+  the `viseca_calls` table (docs/database.md §2) feeds it.
+- SQLite fallback (docs/database.md §5): if Supabase is unreachable, unset
+  `ONEGUARD_DATABASE_URL` → SQLite on the Fly machine, `make seed`, restart.
+
 ## Dependencies (ask before adding)
 
-Python 3.12 · fastapi · uvicorn · pydantic v2 · httpx · jsonschema · pyyaml · pandas (replay
-and dry-run only) · pytest · ruff · optional: openai, anthropic (compiler; `oneguard/llm/`), laya==0.3.20 (signals:
+Python 3.12 · fastapi · uvicorn · pydantic v2 · httpx · sqlalchemy · psycopg[binary] · jsonschema ·
+pyyaml · pandas (replay/ and store/seed.py only) · pytest · ruff · optional: openai, anthropic (compiler; `oneguard/llm/`), laya==0.3.20 (signals:
 agent_directed only; ~850 MB checkpoint cached outside the repo; ~5 s first load, keep warm).
 
 ## Latency budget per decision

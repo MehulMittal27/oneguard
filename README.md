@@ -59,6 +59,8 @@ make replay SCEN=SCEN0004            # offline replay, prints the decision table
 make dev                             # backend :8000 + frontend :5173 (proxy /api)
 ```
 
+Deployment (one container on Fly, Plan C): see `docs/architecture.md` § Deployment.
+
 Frontend only (no backend needed in mock mode):
 
 ```bash

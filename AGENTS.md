@@ -30,8 +30,9 @@ Two services: `backend/` (FastAPI, deterministic engine, Viseca client) and `fro
 5. **Only final approvals are spend.** Pending step-ups are reservations. Declines never
    count. Redelivery of the same live `authorization_id` returns the stored result and
    counts nothing.
-6. **Never invent a human answer.** `/resolve` is called only from C8 after a real
-   customer action. An expired window is recorded as `expired`, nothing is posted.
+6. **Never invent a human answer.** /resolve is called from C8 after a real customer
+   action, or by the timeout rule (docs/rules.md Q2): decline with the timeout message and
+   resolved_by: timeout.
 7. **Tighten only.** Mandates gain rules or move `uncertainty_policy` toward `decline`;
    loosening is a new mandate the customer confirms.
 8. **The Viseca bearer key lives in the environment, server-side.** Never in the browser,
@@ -43,10 +44,11 @@ Two services: `backend/` (FastAPI, deterministic engine, Viseca client) and `fro
 
 ## Stack (ask before adding)
 
-Backend: Python 3.12, FastAPI, Pydantic v2 (`extra="forbid"`), httpx, SQLite via the
-standard library or SQLModel, pytest, ruff. Optional: `laya` (soft signals), `anthropic`
+Backend: Python 3.12, FastAPI, Pydantic v2 (`extra="forbid"`), httpx, SQLAlchemy 2.x
+(Core + ORM) with psycopg; SQLite for tests and local runs, Supabase Postgres in the cloud
+(docs/database.md), pytest, ruff. Optional: `laya` (soft signals), `anthropic`
 (compiler). Frontend: as in `frontend/README.md` — TypeScript, Vite, React 19,
-Tailwind v4, lucide-react. No LangChain/LangGraph, no ORM beyond SQLModel, no Redis.
+Tailwind v4, lucide-react. No LangChain/LangGraph, no Redis.
 
 ## Conventions
 

@@ -102,12 +102,17 @@ FactSource = Literal["event", "regex", "model", "history"]
 class FactValue(Generic[T]):    value: T | None; known: bool; source: FactSource; detail: str
 class ItemFacts:               line_no, item_id, item_name, item_category, quantity, unit_price, currency,
                                unit_price_chf, item_details (untrusted str), size_eu: FactValue[int],
-                               return_window_days: FactValue[int], recurring: FactValue[bool]
+                               return_window_days: FactValue[int], recurring: FactValue[bool],
+                               unit_price_min_chf, unit_price_typical_chf, unit_price_max_chf  # from the catalogue, nullable
 class Facts:                   authorization_id, source_authorization_id, timestamp (datetime, simulated),
                                local_weekday, local_hour, amount, currency, billing_amount_chf, items: list[ItemFacts],
                                merchant_id, merchant_name (untrusted), merchant_category, merchant_country,
                                device_id, recent_attempt_count_10m, order_returnable, order_cancellable,
                                delivery_by, related_authorization_id, related_status, return_window_days: FactValue[int],
+                               authority_status, card_status_at_attempt, merchant_mcc,
+                               merchant_recurring_capable: bool,
+                               merchant_known: bool,  # customer-level, set by pipeline from LedgerView
+                               merchant_known_on_card: bool,
                                agent_directed_text: list[str]  # filled by signals, empty by default
 class Rule:                    id, field, operator, value, currency, scope, period_days, text, source, kind
 class Policy:                  mandate_id, instruction, rules: list[Rule], uncertainty_policy, requested_item: str | None,
@@ -118,7 +123,7 @@ class LedgerView:              period_spent_chf, period_reserved_chf, period_win
                                known_merchant_ids: set, known_device_ids: set, known_countries: set,
                                max_approved_chf: float, flagged_merchant_ids: set, frozen: bool
 class RuleResult:              rule_id, outcome: RuleOutcome, detail, counterfactual: str | None, source: FactSource
-class Signal:                  id (A1..A7, W1..W5, S_agent_directed), triggered: bool, strength: Literal["strong","weak","protection"],
+class Signal:                  id (A1..A7, W1..W6, S_agent_directed), triggered: bool, strength: Literal["strong","weak","protection"],
                                outcome_if_triggered: Literal["ask","decline","info"], detail, source, related: tuple[str, str] | None
 class EngineDecision:          outcome, reason_codes: list[str], step: int, deciding_ids: list[str],
                                related: tuple[str, str] | None, session_trust: Literal["normal","elevated","frozen"]
