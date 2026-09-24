@@ -2,7 +2,8 @@
 
 Unless a test says otherwise every engine function is stubbed, so every purchase is a
 ``step_up``. Deadlines and the human window are shortened to keep the suite fast; the
-logic is the live one.
+logic is the live one. Every test that uses ``db`` runs twice: on P2's ``StoreLedger``
+(the worker's own ``default_ledger``) and on the ``InMemoryLedger`` reference.
 """
 
 from __future__ import annotations
@@ -23,16 +24,20 @@ from sqlalchemy import Engine, func, select
 
 from oneguard.api import models as api
 from oneguard.engine import stubs
+from oneguard.engine.ledger import StoreLedger
+from oneguard.engine.ledger_base import InMemoryLedger
 from oneguard.engine.types import Policy
 from oneguard.store import seed as seed_module
 from oneguard.store.db import make_engine, session
 from oneguard.store.history import StoreHistoryIndex
 from oneguard.store.schema import AuthorizationHistory, EventRaw, Run
+from oneguard.viseca import worker as worker_module
 from oneguard.viseca.client import VisecaClient, store_sink
 from oneguard.viseca.worker import (
     NotAwaitingAnswer,
     VisecaWorker,
     WindowClosed,
+    default_ledger,
     overrun_setting,
     timeout_message,
 )
@@ -60,8 +65,19 @@ def history(seeded_db: Path) -> StoreHistoryIndex:
     return index
 
 
+@pytest.fixture(params=["store", "memory"])
+def ledger_kind(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """``store``: the worker builds its default ledger, a ``StoreLedger`` session on ``db``.
+    ``memory``: the worker gets the ``InMemoryLedger`` reference instead."""
+    if request.param == "memory":
+        monkeypatch.setattr(
+            worker_module, "default_ledger", lambda db, history: InMemoryLedger(history=history)
+        )
+    return request.param
+
+
 @pytest.fixture
-def db(seeded_db: Path, tmp_path: Path) -> Engine:
+def db(seeded_db: Path, tmp_path: Path, ledger_kind: str) -> Engine:
     path = tmp_path / "oneguard.sqlite"
     shutil.copy(seeded_db, path)
     engine = make_engine(f"sqlite:///{path}")
@@ -117,6 +133,17 @@ async def wait_until(condition: Callable[[], bool], timeout: float = 20.0) -> No
 
 def fast(**overrides: Any) -> FakeConfig:
     return FakeConfig(**{"decision_deadline_s": 3.0, "human_window_s": 60.0, "max_wait_s": 0.2, **overrides})
+
+
+def test_the_default_ledger_is_the_store_ledger(seeded_db: Path, history: StoreHistoryIndex) -> None:
+    engine = make_engine(f"sqlite:///{seeded_db}")
+    try:
+        ledger = default_ledger(engine, history)
+        assert isinstance(ledger, StoreLedger) and ledger.history is history
+        assert ledger.get("lv_unknown") is None
+        ledger.session.close()
+    finally:
+        engine.dispose()
 
 
 def test_timeout_message_is_the_documented_wording_for_the_default_window() -> None:
