@@ -24,7 +24,7 @@ export function CardDetail({
   onAddPolicy: (cardId: string) => void
   onGoHome: () => void
 }) {
-  const { policiesByCard, revokePolicyForCard } = usePolicy()
+  const { policiesByCard, status: policiesStatus, revokePolicyForCard } = usePolicy()
   const { decisions } = useDecisions()
   const [revoking, setRevoking] = useState(false)
   const [viewingId, setViewingId] = useState<string | null>(null)
@@ -44,9 +44,14 @@ export function CardDetail({
           <BackChevronIcon size={20} strokeWidth={2} />
           Accounts
         </button>
-        <p className="text-[15px] text-ink-muted">
-          Nothing found for card {cardId} in this session.
-        </p>
+        {policiesStatus === 'loading' ? (
+          <div aria-live="polite" aria-busy="true">
+            <div className="h-40 animate-pulse rounded-card bg-surface-sunken" />
+            <span className="sr-only">Loading policy</span>
+          </div>
+        ) : (
+          <p className="text-[15px] text-ink-muted">No policy found for card {cardId}.</p>
+        )}
       </div>
     )
   }

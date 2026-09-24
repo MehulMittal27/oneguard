@@ -34,7 +34,7 @@ export function Home({
   onAddPolicy: (cardId: string) => void
 }) {
   const { signedInAs, logout } = useCustomer()
-  const { policiesByCard } = usePolicy()
+  const { policiesByCard, status: policiesStatus, retry: retryPolicies } = usePolicy()
   const { decisions, pending, status, retry } = useDecisions()
   const [viewingId, setViewingId] = useState<string | null>(null)
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -60,6 +60,15 @@ export function Home({
   }, [signedInAs, accountsAttempt])
 
   if (!signedInAs) return null
+
+  // The cards come from C10, their policies from C3. Until both are in, no card
+  // may read "No policy yet": that is only true once C3 has said `null`.
+  const policiesSection: PolicyStatus =
+    accountsStatus === 'error' || policiesStatus === 'error'
+      ? 'error'
+      : accountsStatus === 'ready' && policiesStatus === 'ready'
+        ? 'ready'
+        : 'loading'
 
   // Every card with an active policy, across every account this customer
   // has — not just their one "primary" card (2 of 4 live customers'
@@ -242,21 +251,24 @@ export function Home({
             <p className="font-display text-[20px] font-bold text-ink">Active policies</p>
           )}
 
-          {accountsStatus === 'loading' && (
+          {policiesSection === 'loading' && (
             <div className="flex flex-col gap-3" aria-live="polite" aria-busy="true">
               <div className="h-16 animate-pulse rounded-row bg-surface-sunken" />
               <span className="sr-only">Loading policies</span>
             </div>
           )}
 
-          {accountsStatus === 'error' && (
+          {policiesSection === 'error' && (
             <div className="flex flex-col items-start gap-4 rounded-row border border-hairline bg-surface p-5">
               <p className="text-[15px] text-ink-soft">Couldn&apos;t load your policies.</p>
               <button
                 type="button"
                 onClick={() => {
-                  setAccountsStatus('loading')
-                  setAccountsAttempt((n) => n + 1)
+                  if (accountsStatus === 'error') {
+                    setAccountsStatus('loading')
+                    setAccountsAttempt((n) => n + 1)
+                  }
+                  if (policiesStatus === 'error') retryPolicies()
                 }}
                 className="h-11.5 rounded-button border-2 border-ink px-5 text-[15px] font-semibold text-ink"
               >
@@ -265,13 +277,13 @@ export function Home({
             </div>
           )}
 
-          {accountsStatus === 'ready' &&
+          {policiesSection === 'ready' &&
             activePolicies.length === 0 &&
             unguardedCards.length === 0 && (
               <p className="text-[15px] text-ink-muted">No active policies yet.</p>
             )}
 
-          {accountsStatus === 'ready' && activePolicies.length > 0 && (
+          {policiesSection === 'ready' && activePolicies.length > 0 && (
             <div className="scrollbar-none max-h-72 overflow-y-auto rounded-card border border-hairline bg-surface p-2">
               <div className="flex flex-col gap-1">
                 {/* Card and date, then through to Card detail where Manage and
@@ -306,7 +318,7 @@ export function Home({
 
           {/* Their own group, so "active" keeps meaning active. No date — there
               is no policy to have started — and they lead to writing one. */}
-          {accountsStatus === 'ready' && unguardedCards.length > 0 && (
+          {policiesSection === 'ready' && unguardedCards.length > 0 && (
             <div className="rounded-card border border-hairline bg-surface p-2">
               <p className="px-4 pt-2 pb-1 text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
                 Closed to your agent

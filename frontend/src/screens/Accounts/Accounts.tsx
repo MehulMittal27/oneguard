@@ -47,8 +47,8 @@ export function Accounts({
   onViewCard: (cardId: string) => void
 }) {
   const { signedInAs } = useCustomer()
-  const { policiesByCard } = usePolicy()
-  const [status, setStatus] = useState<Status>('loading')
+  const { policiesByCard, status: policiesStatus, retry: retryPolicies } = usePolicy()
+  const [accountsStatus, setAccountsStatus] = useState<Status>('loading')
   const [accounts, setAccounts] = useState<Account[]>([])
   const [attempt, setAttempt] = useState(0)
 
@@ -59,11 +59,11 @@ export function Accounts({
       .then((result) => {
         if (cancelled) return
         setAccounts(result)
-        setStatus('ready')
+        setAccountsStatus('ready')
       })
       .catch(() => {
         if (cancelled) return
-        setStatus('error')
+        setAccountsStatus('error')
       })
     return () => {
       cancelled = true
@@ -71,6 +71,14 @@ export function Accounts({
   }, [signedInAs, attempt])
 
   if (!signedInAs) return null
+
+  // A card row says "No policy" only once C3 has said so (see Home).
+  const status: Status =
+    accountsStatus === 'error' || policiesStatus === 'error'
+      ? 'error'
+      : accountsStatus === 'ready' && policiesStatus === 'ready'
+        ? 'ready'
+        : 'loading'
 
   return (
     <div className="flex flex-col gap-7 px-8 pt-9 pb-9 sm:pt-5">
@@ -97,8 +105,11 @@ export function Accounts({
           <button
             type="button"
             onClick={() => {
-              setStatus('loading')
-              setAttempt((n) => n + 1)
+              if (accountsStatus === 'error') {
+                setAccountsStatus('loading')
+                setAttempt((n) => n + 1)
+              }
+              if (policiesStatus === 'error') retryPolicies()
             }}
             className="h-11.5 rounded-button border-2 border-ink px-5 text-[15px] font-semibold text-ink"
           >
