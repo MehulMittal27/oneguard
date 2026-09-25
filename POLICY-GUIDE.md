@@ -1,23 +1,7 @@
 # OneGuard Policy Guide
 
 Every check OneGuard runs on a purchase, what it does today, and how often it decided the
-45 public test purchases.
-
-## How to change a policy
-
-- **A customer's own rules** (limits, shops, item types): no code. The customer writes them in
-  the app under *New policy* and confirms. After that they can only be tightened or revoked.
-- **How strict a check is**: one constant in the engine.
-  - `backend/oneguard/engine/protections.py` for A1–A8: duplicate window 24 h, amount band
-    5%, split-order window 10 min, lookalike distance 2 letters.
-  - `backend/oneguard/engine/warnings.py` for W1–W6: burst = 2 attempts, night = 00:00–05:00.
-- **Whether a check declines or asks**: `backend/oneguard/engine/policy.py` (customer rules
-  C1–C12) and `backend/oneguard/engine/decide.py` (the order of steps, and "two weak signs ask").
-- **The wording the customer reads**: `backend/oneguard/engine/explain.py`.
-- **After any change**:
-  1. Update `docs/rules.md` and the expected outcomes in `docs/acceptance-oracle.yaml`.
-  2. Add a line to `docs/decisions.md`.
-  3. Run `make test`. It must stay green, including 45 of 45 with models on and off.
+45 public test purchases. Find how to chnage the policies at the end of this file. 
 
 ## Summary: what OneGuard protects
 
@@ -141,3 +125,20 @@ The engine goes in a fixed order and the first step that applies decides:
 | W5 | Night-time 00:00–05:00 Zurich (weak) | 2 weak signs → Ask | — | 0 |
 | W6 | Unit price outside the catalogue range (weak) | 2 weak signs → Ask | — | 0 |
 | Session watch | After a burst, the next clean purchase asks once; the customer's yes turns it off. | Ask once | — | 1 |
+
+## How to change a policy
+
+- **A customer's own rules** (limits, shops, item types): no code. The customer writes them in
+  the app under *New policy* and confirms. After that they can only be tightened or revoked.
+- **How strict a check is**: one constant in the engine.
+  - `backend/oneguard/engine/protections.py` for A1–A8: duplicate window 24 h, amount band
+    5%, split-order window 10 min, lookalike distance 2 letters.
+  - `backend/oneguard/engine/warnings.py` for W1–W6: burst = 2 attempts, night = 00:00–05:00.
+- **Whether a check declines or asks**: `backend/oneguard/engine/policy.py` (customer rules
+  C1–C12) and `backend/oneguard/engine/decide.py` (the order of steps, and "two weak signs ask").
+- **The wording the customer reads**: `backend/oneguard/engine/explain.py`.
+- **After any change**:
+  1. Update `docs/rules.md` and the expected outcomes in `docs/acceptance-oracle.yaml`.
+  2. Add a line to `docs/decisions.md`.
+  3. Run `make test`. It must stay green, including 45 of 45 with models on and off.
+
