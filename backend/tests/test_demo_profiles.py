@@ -629,3 +629,56 @@ def test_a_run_started_after_a_pack_change_compiles_its_new_instruction(
             assert run.services.worker.pack_version == "saw27"
 
     asyncio.run(scenario())
+
+
+def test_demo_live_dry_run_checks_everything_and_starts_nothing(
+    db_url: str,  # noqa: F811
+    no_local_worker: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``make demo-live DRY=1``: one line per check, then the exact command; no device key is
+    enrolled, no policy compiled or confirmed, no run started. A run in progress fails it, as
+    does an operator token the server does not accept."""
+    monkeypatch.setenv("ONEGUARD_ENV", "prod")
+    monkeypatch.setenv(demo.OPERATOR_TOKEN_ENV, "op-secret-dry")
+
+    async def scenario() -> None:
+        fake = two_profiles()
+        fake.config.human_window_s = 60.0  # the run below keeps its step-up open
+        async with running(db_url, fake=fake, **REAL_ENGINE) as run:
+            no_local_worker.clear()
+            lines: list[str] = []
+            assert await demo_live(run, "SCEN9001", lines, dry_run=True) == 0, lines
+            assert lines[0].startswith(f"Dry run of make demo-live SCEN=SCEN9001 at {API}: nothing is enrolled")
+            marks = {line.split(":")[0].split(maxsplit=1)[1]: line.split()[0] for line in lines[1:-2]}
+            assert marks == {
+                "server": "ok", "worker": "ok", "runs": "ok", "operator token": "ok", "scenario": "ok",
+                "no run open": "ok", "card": "info", "device": "info", "instruction": "info",
+            }  # fmt: skip
+            assert lines[-3] == (
+                "  info  instruction: C1 compiles and C2 registers it verbatim: "
+                "Buy one ordinary grocery item for CHF 20 or less. Ask me when uncertain."
+            )
+            assert "has no device yet" in next(line for line in lines if "device:" in line)
+            assert lines[-1] == f"  {demo.API_ENV}={API} make demo-live SCEN=SCEN9001"
+            assert fake.mandates == {} and fake.runs == {} and no_local_worker == []
+            assert (await run.get("/api/cards/CA9001/devices")).json()["devices"] == []
+            assert demo.start_command("SCEN0101", api_base=demo.DEFAULT_API) == "make demo-live SCEN=SCEN0101"
+
+            await confirm_form(run, "CA9001")
+            start = {"scenario_id": "SCEN9001", "card_id": "CA9001"}
+            started = await run.post("/api/dev/runs", json=start, headers={"X-OneGuard-Operator": "op-secret-dry"})
+            assert started.status_code == 200, started.text
+            lines.clear()
+            assert await demo_live(run, "SCEN9002", lines, dry_run=True) == 1
+            assert any(line.startswith(f"  FAIL  no run open: Run {started.json()['run_id']} (SCEN9001)") for line in lines)
+            assert lines[-1] == "Not ready: no run open. Nothing was started."
+            assert len(fake.runs) == 1
+
+            monkeypatch.setattr(demo, "operator_headers", lambda: {"X-OneGuard-Operator": "wrong"})
+            lines.clear()
+            assert await demo_live(run, "SCEN9001", lines, dry_run=True) == 1
+            assert any(line.startswith("  FAIL  operator token: The operator token was not accepted.") for line in lines)
+            assert "op-secret-dry" not in "\n".join(lines)
+
+    asyncio.run(scenario())

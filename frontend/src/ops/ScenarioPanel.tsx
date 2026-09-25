@@ -14,7 +14,14 @@ import { BUTTON_PRIMARY as PRIMARY, BUTTON_SECONDARY as SECONDARY, TEXT_L, TEXT_
  * saying why when not, and warning when the scenario already has a finished live
  * run on record). Also the
  * chaos toggle (D5) and a health refresh.
+ *
+ * While `LIVE_RUNS_FROM_TERMINAL`, the judging run button is hidden: a note says live
+ * runs start from the operator terminal (`make demo-live`), and the console follows
+ * whichever run D7 names; the reasons a live run cannot start stay shown.
  */
+// Set false to bring back "Judging run (live)" (D3 from the console, JudgingRunDialog).
+const LIVE_RUNS_FROM_TERMINAL = true
+
 export function ScenarioPanel({
   scenarios,
   selected,
@@ -134,19 +141,21 @@ export function ScenarioPanel({
             Replay {ms / 1000} s
           </button>
         ))}
-        <button
-          type="button"
-          className={SECONDARY}
-          disabled={!canStart || judgingBlocked !== null}
-          title={judgingBlocked ?? undefined}
-          aria-describedby={
-            [judgingBlocked && 'ops-judging-blocked', judgingWarning && 'ops-judging-warning'].filter(Boolean).join(' ') ||
-            undefined
-          }
-          onClick={onJudgingRun}
-        >
-          Judging run (live)
-        </button>
+        {!LIVE_RUNS_FROM_TERMINAL && (
+          <button
+            type="button"
+            className={SECONDARY}
+            disabled={!canStart || judgingBlocked !== null}
+            title={judgingBlocked ?? undefined}
+            aria-describedby={
+              [judgingBlocked && 'ops-judging-blocked', judgingWarning && 'ops-judging-warning'].filter(Boolean).join(' ') ||
+              undefined
+            }
+            onClick={onJudgingRun}
+          >
+            Judging run (live)
+          </button>
+        )}
 
         <span aria-hidden="true" className="mx-2 h-6 w-px bg-hairline" />
 
@@ -164,6 +173,18 @@ export function ScenarioPanel({
         </button>
       </div>
 
+      {LIVE_RUNS_FROM_TERMINAL && (
+        <p id="ops-live-from-terminal" className={`${TEXT_M} flex items-start gap-2 text-ink-muted`}>
+          <span className="mt-[3px] shrink-0">
+            <InfoIcon size={16} />
+          </span>
+          <span>
+            Live runs are started from the operator terminal (
+            <code className="font-mono text-ink">make demo-live SCEN=&lt;id&gt;</code>); this console follows the run
+            automatically.
+          </span>
+        </p>
+      )}
       {replay.blocked && (
         <p id="ops-replay-blocked" className={`${TEXT_M} text-ink-muted`}>
           {replay.blocked}

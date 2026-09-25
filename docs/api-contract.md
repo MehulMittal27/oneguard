@@ -160,7 +160,9 @@ exit 1, nothing changed; `--force` / `make demo-live FORCE=1` skips this and sen
 `--card`, else the bootstrap profile's) → C2 → D3, prints `Sign in as <name> (<customer_id>, card <card_id>)` from
 D3's reply, then follows D4 and the customer's C6 read-only. **`make demo-offline SCEN=<id>`** calls D2 on the same
 server. Both probe `/healthz` first: when no OneGuard server answers there they say so and exit 1, and start nothing
-(no run, no replay, no worker of their own).
+(no run, no replay, no worker of their own). **`make demo-live SCEN=<id> DRY=1`** (`--dry-run`) only reads: `/healthz`
+(worker polling, runs allowed), D7 (the operator token accepted), D8 (the scenario served, no run open) and the card's
+devices, prints one `ok` / `FAIL` / `info` line each and the `make` line that starts the run; exit 0 when it could start.
 
 ---
 

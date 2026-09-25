@@ -51,9 +51,11 @@ demo-offline:
 	cd backend && . .venv/bin/activate && python -m oneguard.viseca.demo --offline --scenario $(SCEN) $(if $(CARD),--card $(CARD))
 
 # The server at ONEGUARD_API_URL (default the cloud app) decides; this only starts and follows the run.
+# DRY=1 checks what the run needs (server, worker polling, operator token, scenario served, no run
+# open) and prints the command that starts it; it starts nothing.
 demo-live: SCEN ?= SCEN0101
 demo-live:
-	cd backend && . .venv/bin/activate && python -m oneguard.viseca.demo --scenario $(SCEN) $(if $(CARD),--card $(CARD)) $(if $(FORCE),--force)
+	cd backend && . .venv/bin/activate && python -m oneguard.viseca.demo --scenario $(SCEN) $(if $(CARD),--card $(CARD)) $(if $(FORCE),--force) $(if $(DRY),--dry-run)
 
 # The image Fly builds (Dockerfile); runs locally with `docker run -p 8080:8080 --env-file .env oneguard`.
 image:

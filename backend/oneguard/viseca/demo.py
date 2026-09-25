@@ -25,6 +25,10 @@ demo-live:
 6. follow D4 and the customer's decisions (C6) read-only, one line per decision and per
    step-up outcome, until the run is done.
 
+``--dry-run`` (``make demo-live SCEN=<id> DRY=1``) makes the checks of steps 1-3 and reads the
+card's devices, one line each, then prints the command that starts the run: nothing is
+enrolled, compiled, confirmed or started (``check_via_api``).
+
 demo-offline (``--offline``): ``GET /healthz`` the same way, then D2 restarts the offline
 replay of the scenario on the server, ``--speed-ms`` apart, on ``--card`` or else the card D9
 (``GET /api/scenarios``, the store only) names for the scenario.
@@ -34,7 +38,7 @@ Nothing here answers a step-up: the customer does, in the app (CLAUDE.md rule 6)
 Every ``/api/dev/*`` call carries ``X-OneGuard-Operator`` from ``ONEGUARD_OPERATOR_TOKEN``
 when it is set: a production server refuses operator calls without it (``api/operator.py``).
 
-    python -m oneguard.viseca.demo --scenario <scenario id> [--card <card id>] [--api <url>] [--force]
+    python -m oneguard.viseca.demo --scenario <scenario id> [--card <card id>] [--api <url>] [--force] [--dry-run]
     python -m oneguard.viseca.demo --offline --scenario <scenario id> [--card <card id>] [--speed-ms 4000]
 """
 
@@ -61,7 +65,7 @@ from oneguard.api.operator import TOKEN_ENV as OPERATOR_TOKEN_ENV
 from oneguard.api.operator import operator_headers
 from oneguard.engine.types import Rule
 from oneguard.passport.signer import DeviceKey
-from oneguard.viseca.client import RUNS_DISABLED_MESSAGE, runs_allowed
+from oneguard.viseca.client import ALLOW_RUNS_ENV, RUNS_DISABLED_MESSAGE, runs_allowed
 from oneguard.viseca.worker import store_run_id
 
 log = logging.getLogger(__name__)
@@ -162,32 +166,32 @@ def _card_for(scenario: Mapping[str, Any], scenarios: list[Mapping[str, Any]], c
     return str(bootstrap[0]["card_id"]) if bootstrap else None
 
 
-async def _refuse_while_running(
-    http: httpx.AsyncClient, scenario: Mapping[str, Any], base: str, out: Callable[[str], None]
-) -> bool:
-    """True (and says why) when a run is in progress: the newest run (D7) is unfinished, or
-    the scenario has a run still running or with purchases open at the platform (D8)."""
+async def _current_run(http: httpx.AsyncClient) -> dict[str, Any] | None:
+    """D7: the newest run, live or replay; None when none has started."""
     try:
-        current = await _call(http, "GET", "/api/dev/runs/current")
+        return await _call(http, "GET", "/api/dev/runs/current")
     except ApiRefused as exc:
         if exc.status != 404:
             raise
-        current = None
+        return None
+
+
+def _run_in_progress(current: Mapping[str, Any] | None, scenario: Mapping[str, Any], base: str) -> str | None:
+    """Why no run may start now, or None: the newest run (D7) is an unfinished live run, or
+    the scenario has a run still running or with purchases open at the platform (D8)."""
     if current and current.get("run_id") and current.get("state") in ("starting", "running"):
-        out(
+        return (
             f"Run {current['run_id']} ({current['scenario_id']}) is still running at {base}: "
             f"{current['decided']}/{current['total']} decided, {current['pending_human']} waiting for "
             "the customer. Nothing was changed; start the next run when it is done, or pass --force."
         )
-        return True
     if scenario.get("active_run_id"):
-        out(
+        return (
             f"{scenario['scenario_id']} already has run {scenario['active_run_id']} in progress (running, "
             "or purchases still open at the platform). Nothing was changed; pass --force to start "
             "another anyway."
         )
-        return True
-    return False
+    return None
 
 
 def device_key_path(api_base: str) -> Path:
@@ -243,7 +247,8 @@ async def run_via_api(
         if not scenario["served"]:
             out(f"The platform does not serve {scenario_id} now; nothing was started.")
             return 1
-        if not force and await _refuse_while_running(http, scenario, base, out):
+        if not force and (busy := _run_in_progress(await _current_run(http), scenario, base)):
+            out(busy)
             return 1
         card = _card_for(scenario, listed, card_id)
         if card is None:
@@ -299,6 +304,124 @@ async def run_via_api(
         out(f"Sign in as the holder of card {live['card_id']}")
     out(f"Run {run_id} started at {base}")
     return await follow(http, run_id, customer_id, out=out, max_seconds=max_seconds, poll_s=poll_s)
+
+
+def start_command(scenario_id: str, *, api_base: str, card_id: str | None = None, force: bool = False) -> str:
+    """The ``make`` line, run from the repo root, that starts what a dry run checked."""
+    api = "" if api_base == DEFAULT_API else f"{API_ENV}={api_base} "
+    return f"{api}make demo-live SCEN={scenario_id}" + (f" CARD={card_id}" if card_id else "") + (
+        " FORCE=1" if force else ""
+    )
+
+
+async def check_via_api(
+    http: httpx.AsyncClient,
+    health: Mapping[str, Any],
+    scenario_id: str,
+    *,
+    card_id: str | None = None,
+    force: bool = False,
+    out: Callable[[str], None] = print,
+) -> int:
+    """``--dry-run``: every check demo-live makes before it changes anything, one line each,
+    then the command that would start the run. Only reads: ``/healthz``, D7, D8 (which
+    re-reads the platform's bootstrap) and the card's devices; no device key is created or
+    enrolled, nothing is compiled, confirmed or started. 0 when a run could start now."""
+    base = str(http.base_url).rstrip("/")
+    failed: list[str] = []
+
+    def line(ok: bool | None, what: str, text: str) -> None:
+        mark = "info" if ok is None else "ok" if ok else "FAIL"
+        if ok is False:
+            failed.append(what)
+        out(f"  {mark:<5} {what}: {text}")
+
+    out(f"Dry run of make demo-live SCEN={scenario_id} at {base}: nothing is enrolled, compiled, confirmed or started.")
+    line(True, "server", f"OneGuard answers {base}/healthz ({health.get('status')})")
+    worker = health["worker"]
+    if not worker.get("configured"):
+        line(False, "worker", "not connected to the payment platform (no worker)")
+    elif not worker.get("polling"):
+        line(False, "worker", f"not polling the platform (state {worker.get('state')}, last error {worker.get('last_error')})")
+    else:
+        line(True, "worker", f"polling the platform (last poll {worker.get('last_poll_at')})")
+    server_allows = health.get("runs_allowed") is not False
+    if server_allows and runs_allowed():
+        line(True, "runs", "allowed by the server and by this terminal")
+    else:
+        line(False, "runs", "switched off " + ("in this terminal" if server_allows else "on the server")
+             + f" ({ALLOW_RUNS_ENV}=false)")  # fmt: skip
+    try:
+        current = await _current_run(http)
+    except (ApiRefused, httpx.HTTPError) as exc:
+        line(False, "operator token", _refusal(exc))
+        out(f"Not ready: {', '.join(failed)}. Nothing was started.")
+        return 1
+    token = "accepted" if os.environ.get(OPERATOR_TOKEN_ENV, "").strip() else "not set, and not asked for here"
+    line(True, "operator token", f"{OPERATOR_TOKEN_ENV} {token} (D7 read)")
+    try:
+        listed = (await _call(http, "GET", "/api/dev/scenarios"))["scenarios"]
+    except (ApiRefused, httpx.HTTPError) as exc:
+        line(False, "scenario", f"D8 {_refusal(exc)}")
+        out(f"Not ready: {', '.join(failed)}. Nothing was started.")
+        return 1
+    scenario = next((s for s in listed if s["scenario_id"] == scenario_id), None)
+    if scenario is None:
+        line(False, "scenario", f"no scenario {scenario_id} at {base}")
+    else:
+        served = bool(scenario["served"])
+        line(served, "scenario", f"{scenario_id} \"{scenario['scenario_name']}\" is "
+             + ("served by the platform now" if served else "not served by the platform now"))  # fmt: skip
+        busy = _run_in_progress(current, scenario, base)
+        if busy is None:
+            line(True, "no run open", "no live run running, none of this scenario in progress (D7, D8)")
+        else:
+            line(force, "no run open", busy + (" --force starts another anyway." if force else ""))
+        if current and current.get("running"):
+            line(None, "replay", f"an offline replay of {current['scenario_id']} is running; a live run does not wait for it")
+        card = _card_for(scenario, listed, card_id)
+        profile = scenario.get("profile")
+        if card is None:
+            line(False, "card", f"nobody knows yet which card {scenario_id} runs on; pass CARD=<card id>")
+        else:
+            holder = f" ({profile['name']}, {profile['customer_id']})" if profile and profile["card_id"] == card else ""
+            line(None, "card", f"the policy is confirmed on {card}{holder}")
+            line(None, "device", await _device_note(http, card, base))
+        line(None, "instruction", f"C1 compiles and C2 registers it verbatim: {scenario['cardholder_instruction']}")
+    if failed:
+        out(f"Not ready: {', '.join(failed)}. Nothing was started.")
+        return 1
+    out("Ready. Nothing was started. To start it, from the repo root with the token exported:")
+    out(f"  {start_command(scenario_id, api_base=base, card_id=card_id, force=force)}")
+    return 0
+
+
+def _refusal(exc: ApiRefused | httpx.HTTPError) -> str:
+    return f"{exc.message} ({exc.code})" if isinstance(exc, ApiRefused) else f"did not answer: {type(exc).__name__}"
+
+
+async def _device_note(http: httpx.AsyncClient, card: str, base: str) -> str:
+    """Whether this terminal will be allowed to sign the policy on ``card`` (read only: its
+    key is neither created nor enrolled). Devices are matched by label, the key is not sent."""
+    label = f"demo-live on {socket.gethostname()}"
+    key = device_key_path(base)
+    try:
+        devices = (await _call(http, "GET", f"/api/cards/{card}/devices"))["devices"]
+    except (ApiRefused, httpx.HTTPError) as exc:
+        return f"could not read the card's devices ({exc})"
+    mine = [d["status"] for d in devices if d["label"] == label and d["status"] != "removed"]
+    enrolled = [d for d in devices if d["status"] == "enrolled"]
+    have = f"key {key}" if key.exists() else f"no key yet at {key} (created on the real run)"
+    if "enrolled" in mine:
+        return f'"{label}" is enrolled on {card}; {have}'
+    if not enrolled:
+        return f'{card} has no device yet, so "{label}" is enrolled at once on the real run; {have}'
+    if "pending" in mine:
+        return f'"{label}" is pending on {card}: approve it from the card\'s controller (Passport, Approve) first'
+    return (
+        f'{card} has {len(enrolled)} enrolled device(s) and none is "{label}": the real run asks for it, '
+        "then stops until the card's controller approves it (Passport, Approve)"
+    )
 
 
 async def follow(
@@ -383,6 +506,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--offline", action="store_true", help="restart the server's offline replay (D2) instead")
     parser.add_argument("--speed-ms", type=int, default=OFFLINE_SPEED_MS, help="--offline: time between purchases")
     parser.add_argument("--max-seconds", type=float, default=900.0)
+    parser.add_argument(
+        "--dry-run", action="store_true", help="check everything a run needs and print the command; start nothing"
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -390,11 +516,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.offline:
         return asyncio.run(offline(args.scenario, api_base=api_base, card_id=args.card, speed_ms=args.speed_ms))
-    if not runs_allowed():
+    if not runs_allowed() and not args.dry_run:
         print(RUNS_DISABLED_MESSAGE, file=sys.stderr)
         return 2
     return asyncio.run(
-        live(args.scenario, api_base=api_base, card_id=args.card, force=args.force, max_seconds=args.max_seconds)
+        live(
+            args.scenario,
+            api_base=api_base,
+            card_id=args.card,
+            force=args.force,
+            max_seconds=args.max_seconds,
+            dry_run=args.dry_run,
+        )
     )
 
 
@@ -408,13 +541,17 @@ async def live(
     out: Callable[[str], None] = print,
     transport: httpx.AsyncBaseTransport | None = None,
     device: DeviceKey | None = None,
+    dry_run: bool = False,
 ) -> int:
-    """The server at ``api_base`` decides; with none answering, nothing starts (exit 1)."""
+    """The server at ``api_base`` decides; with none answering, nothing starts (exit 1).
+    ``dry_run``: only the checks and the command (``check_via_api``)."""
     async with httpx.AsyncClient(base_url=api_base, timeout=API_TIMEOUT_S, transport=transport) as http:
         health = await server_health(http)
         if health is None:
             out(no_server(api_base))
             return 1
+        if dry_run:
+            return await check_via_api(http, health, scenario_id, card_id=card_id, force=force, out=out)
         if not health["worker"].get("configured"):
             out(
                 f"OneGuard at {api_base} is not connected to the payment platform (no worker), "
