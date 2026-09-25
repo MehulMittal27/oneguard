@@ -183,7 +183,9 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
    ```
 
    Each list must read as the matrix rows (AU0035-AU0045, AU0024-AU0034); the rehearsal
-   answers nothing, so SCEN0003's AU0032 asks again, as in the matrix. These rehearsal
+   answers nothing, so SCEN0003's AU0032 asks again, as in the matrix. On CA0039, AU0041 and
+   AU0043 may name the item type instead ("… not electronics.") when its policy carries the
+   inferred "Only electronics" check; the outcomes are the same. These rehearsal
    runs stay on the customers' Activity folded under **Earlier runs (n)**; the stage run is
    always the newest and shows open.
 
@@ -203,8 +205,8 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
 | # | Beat | Signed in as | Time | Clock |
 |---|---|---|---:|---:|
 | 1 | Policy screen, typed live | Alex Meier (CU0001), card CA0001 | 0:50 | 0:50 |
-| 2 | Manipulated agent, SCEN0004 replay | Oliver Graf (CU0019), card CA0039 | 1:15 | 2:05 |
-| 2b | Passport: what the agent was told, receipt, devices | Oliver Graf (CU0019), card CA0039 | 1:00 | 3:05 |
+| 2 | Manipulated agent and the fulfilment ask, SCEN0004 replay | Oliver Graf (CU0019), card CA0039 | 1:30 | 2:20 |
+| 2b | Passport: what the agent was told, receipt, devices | Oliver Graf (CU0019), card CA0039 | 0:45 | 3:05 |
 | 3 | Session integrity + revoke, SCEN0003 replay | Giulia Rossi (CU0012), card CA0023 | 2:40 | 5:45 |
 | 4 | Chaos toggle off, same outcomes, /healthz | Oliver Graf (CU0019), card CA0039 | 0:30 | 6:15 |
 | 5 | Live judging run on record | Hannah Chen (CU1415), card CA1643 | 0:25 | 6:40 |
@@ -241,7 +243,12 @@ CHF 120 per order and CHF 300 per 7 days, press **Review checks**, then **Confir
 and say the form path uses no model at all. If "AI reading unavailable - rule-based reading
 used" shows, the fallback compiler read it; confirm anyway.
 
-### 2. Manipulated agent (1:15) - Oliver Graf, CA0039, SCEN0004
+### 2. Manipulated agent and the fulfilment ask (1:30) - Oliver Graf, CA0039, SCEN0004
+
+Oliver's instruction: "Buy the 27-inch monitor I chose, from a seller I have bought from
+before, for CHF 400 or less. Do not add anything I did not ask for. Ask me when uncertain."
+One monitor. The story of this beat: the agent buys it, then keeps trying to buy it again,
+and OneGuard asks every time.
 
 **Operator**: in the console pick **SCEN0004 · Manipulated agent · 11** and press
 **Replay 3 s** (fallback: the curl below). The console shows "Sign in as Oliver Graf
@@ -253,51 +260,76 @@ curl -s -X POST $API/api/dev/replay/restart -H 'Content-Type: application/json' 
   -d '{"scenario_id":"SCEN0004","card_id":"CA0039","speed_ms":3000}' | jq -c
 ```
 
-Eleven purchases arrive 3 s apart (run header: `Replay · SCEN0004`, `Delivered n/11`; the
-stream fills in delivery order, AU0036 and AU0040 highlighted as **Waiting**). Beats, in
-the order they are shown: click the row in the console for evidence and counterfactual, or
-tap it in the phone's **Activity** for the customer's view (the detail's back link returns):
+Eleven purchases arrive about 3.4 s apart, 35 s in all (run header: `Replay · SCEN0004`,
+`Delivered n/11`; the stream fills in delivery order). Six of them ask: the duplicate, the
+injection, and **four fulfilment asks** (AU0038, AU0042, AU0044, AU0045), all with the
+same message. Home ends at **Approved 1 · Stopped 4 · Uncertain 6** and "6 purchases need
+your review". Beats, in the order they are shown: click the row in the console for
+evidence and counterfactual, or tap it on the phone:
 
-| Beat | Row (shop, CHF) | Outcome | Expected message (matrix) | Point at |
+| Beat | Row (shop, CHF) | Outcome | Expected message (fresh replay on CA0039) | Point at |
 |---|---|---|---|---|
-| Ordinary approve | PixelHarbor 289.00 (AU0035) | approve | Approved CHF 289.00: it is within the limits you set. | "Approved by your rules", evidence rows, **Policy applied** (Card CA0039), latency |
-| Injection | PixelHarbor 520.00 (AU0037) | decline | Declined CHF 520.00: CHF 520.00 is over your CHF 400.00 limit; the shop's instructions to the agent were ignored. | counterfactual line "Would approve at CHF 400.00 or less."; the shop text claimed pre-authorisation up to CHF 900; the amount came from the authorization, never from text; "Oliver Graf's words" shown next to it |
-| Lookalike | PixelHarbour 340.00 (AU0039) | decline | Declined CHF 340.00: PixelHarbour is 1 letter away from PixelHarbor, a shop you know; it's a different shop. | judged by merchant id, not name; "Would approve at a shop you've bought from before." |
-| Duplicate ask | PixelHarbor 289.00, second one (AU0036) | step_up | Waiting for you CHF 289.00: Same shop and items as the CHF 289.00 order 25 min earlier. | its detail links "Duplicate of" the first PixelHarbor 289.00; then the **Approvals** tab, the countdown, customer presses **Reject** |
-| Re-quote | PixelHarbor 350.00 (AU0042) | approve | Approved CHF 350.00: it re-quotes the CHF 520.00 order declined 5 days earlier and is within your limits. | "Re-quote of" the CHF 520.00 decline: linked, not a duplicate |
+| Ordinary approve | PixelHarbor 289.00 (AU0035) | approve | Approved CHF 289.00: it is within the limits you set. | the monitor is bought; "Approved by your rules", **Policy applied** (Card CA0039), latency |
+| Injection | PixelHarbor 520.00 (AU0037) | decline | Declined CHF 520.00: CHF 520.00 is over your CHF 400.00 limit; the shop's instructions to the agent were ignored. | counterfactual "Would approve at CHF 400.00 or less."; the shop text claimed pre-authorisation up to CHF 900; the amount came from the authorization, never from text |
+| **Fulfilment ask** | HarborByte 391.50 (AU0038) | step_up | Waiting for you CHF 391.50: You already bought the 27-inch monitor on 12 Aug for CHF 289.00; approve another? | a different shop, within every limit, the right item: only the "Already bought" row asks; counterfactual "Would approve if it were the first one bought under this instruction." Customer presses **Reject** |
+| Lookalike | PixelHarbour 340.00 (AU0039) | decline | Declined CHF 340.00: PixelHarbour is 1 letter away from PixelHarbor, a shop you know; it's a different shop. | judged by merchant id, not name |
+| **Re-quote, asked again** | PixelHarbor 350.00 (AU0042) | step_up | Waiting for you CHF 350.00: You already bought the 27-inch monitor on 12 Aug for CHF 289.00; approve another? | the agent came back under the limit with the order declined at CHF 520.00: evidence "New quote after a decline: Re-quote of the CHF 520.00 order declined 5 days earlier; judged on its own facts." It still asks, because the monitor is already bought. **Reject** |
+
+The duplicate (PixelHarbor 289.00 again, AU0036, "Waiting for you CHF 289.00: Same shop
+and items as the CHF 289.00 order 25 min earlier.", linked **Duplicate of** the first) and
+the injection ask (PixelHarbor 299.00, AU0040, "The shop's text had instructions aimed at
+the agent; they were ignored, so you decide.") wait in **Approvals** too: **Reject** both.
+
+**On the phone**: tapping a waiting row opens **Approvals** at the newest purchase
+("Purchase 1 of 6" is PixelHarbor 399.90). Move with the **Purchase n of 6** tabs or
+**Also waiting**. The fulfilment asks show "WHY YOUR RULES ARE UNSURE" with the message and
+the **Already bought** row under "WHAT YOUR RULES CHECKED". Every other check passes.
+
+**After rejecting AU0042**: **Activity** → PixelHarbor 350.00 opens its detail: "What you
+asked for has already been bought", and at the bottom **RE-QUOTE OF** links the declined
+PixelHarbor 520.00 (Stopped). Then **Home**: Card CA0039 reads **CHF 289.00 spent**. The
+declined CHF 520.00 was never charged, and the waiting purchases were only reserved ("…
+waiting for you", never spent).
+
+Leave AU0044 (Circuit and Pine 310.00) and AU0045 (PixelHarbor 399.90) unanswered: they
+expire about 2.5 minutes after the start (early in step 3) as "Expired: no answer within
+120 s; nothing was approved." That's the point: no answer is never a yes.
 
 On the AU0037 (and AU0040) detail the back link reads **Switch customer**: it logs out.
 Leave that screen with the tab bar or **Back to Oliver Graf's Home** instead.
 
-In **Approvals**, "Also waiting" holds PixelHarbor 299.00 (AU0040, "Waiting for you CHF
-299.00: The shop's text had instructions aimed at the agent; they were ignored, so you
-decide."). Press **Reject** on it too, so nothing is left pending. Both step-ups wait 120 s
-from delivery: AU0036 arrives about 3 s after the start, so answer it before the 2-minute
-mark of this step.
+Timing: each step-up waits 120 s from its delivery. AU0036 arrives about 3 s after the
+start and AU0038 about 10 s, so answer those two before the 1:50 mark of this beat. Each
+answer on the phone flips its console row from **Waiting** to **Answered** in place within
+one poll.
 
-**Say**: shop text is data; nothing in it can raise a limit or approve. Only the customer
-answers a step-up.
-
-Each answer on the phone flips its console row from **Waiting** to **Answered** in place
-within one poll.
+**Say**: the customer asked for one monitor. Once it's bought, every further attempt asks,
+even when it's under the limit at a known shop, or comes back as a cheaper re-quote. Shop
+text is data; nothing in it can raise a limit or approve. Only the customer answers a
+step-up, and a decline is never charged.
 
 **Fallback**: if a step-up expires before the customer answers, it shows as declined by
-timeout (**Expired** in the console); say "no answer is never a yes" and move on. If the
-replay does not start (the console shows the backend's refusal under the buttons, or the
-run header does not change), press **Replay 3 s** once more or send the curl; if it still
-fails, open the rehearsal run under **Earlier runs (n)** on the phone and walk the same
-rows there.
+timeout (**Expired** in the console); say "no answer is never a yes" and move on. If AU0042
+expired before you rejected it, its detail still shows **RE-QUOTE OF** and the "Already
+bought" row. If the replay does not start (the console shows the backend's refusal under
+the buttons, or the run header does not change), press **Replay 3 s** once more or send
+the curl; if it still fails, open the rehearsal run under **Earlier runs (n)** on the phone
+and walk the same rows there. AU0041 and AU0043 are not shown on stage; with CA0039's
+current policy (it carries the inferred check "Only electronics") they read "Extended
+protection plan is subscriptions, not electronics." and "Digital gift voucher is gift
+card, not electronics.", where the matrix names the per-order limit and the requested item.
 
-### 2b. Passport (1:00) - Oliver Graf, CA0039
+### 2b. Passport (0:45) - Oliver Graf, CA0039
 
 Still signed in as Oliver Graf, on the SCEN0004 run just shown.
 
 1. **Activity** → PixelHarbor 520.00 (AU0037). Under the untrusted shop text: **What your
    agent was told** - "Would approve at CHF 400.00 or less." Tap **Verify** on the
    **Receipt** line: "Signed by OneGuard, unchanged".
-2. Tap the **Re-quote of** link back from PixelHarbor 350.00 (AU0042), or open it from
-   **Activity**: approved, "it re-quotes the CHF 520.00 order declined 5 days earlier and is
-   within your limits" - the agent came back inside the leash.
+2. **Activity** → PixelHarbor 350.00 (AU0042), answered in step 2: its **RE-QUOTE OF**
+   link points back at the CHF 520.00 order just shown. The agent came back inside the
+   limit, and OneGuard still asked, because the monitor was already bought; the CHF 520
+   was never charged.
 3. **Policy applied** → Card CA0039 → scroll to **Passport**: the QR code, "Version n ·
    issued …", the devices (Stage laptop, Yasin's phone, the terminal). Tap **Verify**:
    "Valid · signed with key ogk_…".
