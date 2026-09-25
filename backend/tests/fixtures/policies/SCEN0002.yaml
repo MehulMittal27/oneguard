@@ -8,6 +8,7 @@ blocked_item_categories: null
 requires_known_shop: false
 nothing_extra: false
 shop_type: sporting_goods
+single_item: true
 rules:
   - {id: C6, field: "items[].size_eu", operator: "=", value: 43, currency: null, scope: null, period_days: null, text: "Size 43", source: exact, kind: item}
   - {id: C8, field: merchant.merchant_category, operator: "=", value: sporting_goods, currency: null, scope: null, period_days: null, text: "Only from a specialist sports retailer", source: exact, kind: merchant}

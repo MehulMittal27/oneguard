@@ -18,6 +18,12 @@
    limit: SCEN0113 compiled on both paths declines a second dinner the same simulated day.
 7. "Weeknight dinners" is the evening as well (local_hour >= 17 and < 23, inferred), on both
    paths: the live run's Tue 01:15 and Wed 15:35 deliveries now decline.
+8. A per-night price times the stated nights is the per-order cap (inferred, the per-night
+   rule kept), on both paths: SCEN0124 compiles with no open question and C2 accepts it.
+9. "I need new hiking boots" is one requested item (single_item), on both paths: SCEN0130's
+   first pair approves and the next steps up with already_fulfilled (A8).
+10. A period limit with no per-order limit is the per-order cap as well (inferred, the period
+   rule kept), on both paths: SCEN0136 compiles with no open question and C2 accepts it.
 """
 
 from __future__ import annotations
@@ -49,11 +55,9 @@ ALCOHOL = "items[].contains_alcohol"
 HOUR = "authorization.local_hour"
 WEEK = ["mon", "tue", "wed", "thu", "fri"]
 
-# Open questions a correct reading keeps, and why (no per-order limit is stated; T5).
-QUESTION_WHY = {
-    "SCEN0124": "only a per-night price is stated: is the order limit CHF 600 (3 nights)?",
-    "SCEN0136": "only a monthly total is stated: what is the most one payment may cost?",
-}
+# Open questions a correct reading keeps, and why (no per-order limit is stated; T5). None of the
+# 10: SCEN0136's monthly limit is its per-payment cap as well (parser.period_cap).
+QUESTION_WHY: dict[str, str] = {}
 
 # (field, operator, value, currency, scope, period_days, on_fail) per served scenario.
 EXPECTED: dict[str, dict[str, Any]] = {
@@ -92,7 +96,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
         (ALCOHOL, "=", "false", None, None, None, "decline"),  # "No alcohol": wine is "groceries"
         (KNOWN, "=", "true", None, None, None, "decline"),
     ]},
-    "SCEN0122": {"item": "camera lens", "extra": True, "rules": [
+    "SCEN0122": {"item": "camera lens", "extra": True, "single": True, "rules": [
         (BILL, "<=", 900, "CHF", "purchase", None, "decline"),
         (KNOWN, "=", "true", None, None, None, "decline"),
         (CAT, "in", ("photography",), None, None, None, "decline"),  # the catalogue's camera lens
@@ -102,10 +106,11 @@ EXPECTED: dict[str, dict[str, Any]] = {
         (CAT, "in", ("hotel",), None, None, None, "decline"),
         (CAT, "not_in", ("travel",), None, None, None, "decline"),      # "No flights, no insurance"
         ("order.order_cancellable", "=", "true", None, None, None, "decline"),  # "refundable rate only"
-        ("unverifiable", "=", "a hotel in Munich", None, None, None, "decline"),
+        ("merchant.merchant_city", "=", "Munich", None, None, None, "decline"),  # "a hotel in Munich"
         ("unverifiable", "=", "for 3 nights from 10 September to 13 September", None, None, None, "decline"),
+        (BILL, "<=", 600, "CHF", "purchase", None, "decline"),  # 3 nights at CHF 200: the order cap
     ]},
-    "SCEN0130": {"item": "hiking boots", "extra": True, "rules": [
+    "SCEN0130": {"item": "hiking boots", "extra": True, "single": True, "rules": [  # "I need new hiking boots"
         (BILL, "<=", 180, "CHF", "purchase", None, "decline"),
         ("items[].size_eu", "=", 42, None, None, None, "decline"),
         ("order.return_window_days", ">=", 14, None, None, None, "decline"),
@@ -121,6 +126,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
     ]},
     "SCEN0136": {"rules": [
         (BILL, "<", 80, "CHF", "period", 30, "decline"),
+        (BILL, "<", 80, "CHF", "purchase", None, "decline"),             # each payment, from the monthly limit
         (CAT, "in", ("subscriptions",), None, None, None, "decline"),
         (KNOWN, "=", "true", None, None, None, "decline"),               # "current subscriptions", "no new services"
         ("unverifiable", "=", "no premium tiers", None, None, None, "decline"),
@@ -155,6 +161,7 @@ def test_the_parser_reads_every_restriction(scenario, history):
     assert sorted(map(_key, draft.rules), key=repr) == sorted(expected["rules"], key=repr)
     assert draft.requested_item == expected.get("item")
     assert draft.nothing_extra is expected.get("extra", False)
+    assert draft.single_item is expected.get("single", False)
     assert draft.uncertainty_policy == "ask"
     assert bool(draft.open_questions) is (scenario in QUESTION_WHY), draft.open_questions
 
@@ -195,6 +202,9 @@ def test_the_recorded_response_ships_llm(entry, history):
     scenario, instruction = entry["scenario"], SERVED[entry["scenario"]]
     draft = compile_instruction(instruction, history, "", Scripted(entry["response"]), today=TODAY)
     assert draft.compiler == "llm"
+    # The parser's one-item reading; SCEN0101's model also names "ordinary grocery item" (one),
+    # where the parser reads only the groceries type (the requested_item variance noted in the file).
+    assert draft.single_item is (scenario == "SCEN0101" or EXPECTED[scenario].get("single", False))
     floor = parse(instruction, history, "", TODAY)
     shipped = floor.model_copy(update={"rules": draft.rules, "requested_item": draft.requested_item,
                                        "nothing_extra": draft.nothing_extra,
@@ -355,7 +365,8 @@ def test_a_models_unverifiable_item_type_is_the_excluded_type(history):
         _raw(CAT, "not_in", "No flights, no insurance", value_list=["travel"]),
         _raw("unverifiable", "=", "no insurance", value_text="no insurance"),
     )), history, "", TODAY)
-    assert [(r.field, r.operator, r.value) for r in read.rules] == [(CAT, "not_in", ["travel"])]
+    assert [(r.field, r.operator, r.value) for r in read.rules] == [
+        (CAT, "not_in", ["travel"]), ("merchant.merchant_city", "=", "Munich")]  # the place: parser.places
 
 
 def test_a_per_item_amount_is_per_item_only_where_the_parser_reads_it_so(history):
@@ -375,7 +386,8 @@ def test_a_per_item_amount_is_per_item_only_where_the_parser_reads_it_so(history
     nights = _raw("items[].unit_price_chf", "<=", "at most CHF 200 per night", value_number=200, currency="CHF",
                   scope="purchase")
     read = read_with_llm(SERVED["SCEN0124"], Scripted(_response(nights)), history, "", TODAY)
-    assert [r.field for r in read.rules] == ["items[].unit_price_chf"]
+    assert [r.field for r in read.rules] == [  # the place and the stay's cap come from the parser
+        "items[].unit_price_chf", "merchant.merchant_city", BILL]
 
 
 COUNT_PHRASES = [
@@ -506,6 +518,54 @@ def test_scen0113_declines_a_dinner_outside_the_evening(path):
     assert evening.outcome == "approve", evening
 
 
+def _boots(item: str, minutes: int, amount: float) -> dict:
+    """Hiking boots, size 42, 30-day returns, at the customer's usual sports shop."""
+    from tests.test_c9_no_history import event
+
+    ev = event("ME_SPORT", item, minutes=minutes, amount=amount)
+    ev["authorization"]["merchant"].update(merchant_category="sporting_goods", merchant_mcc="5941")
+    ev["authorization"]["purchase_description"] = "Hiking boots order"
+    ev["authorization"]["items"][0].update(item_category="sporting_goods", item_name="Hiking boots",
+                                           item_details="Hiking boot, size 42; returns accepted within 30 days")
+    return ev
+
+
+@pytest.mark.parametrize("path", ["fallback", "llm"])
+def test_scen0130_asks_before_a_second_pair_of_boots(path):
+    """The live run approved SCEN0130's hiking boots five times: "I need new hiking boots" is
+    one requested item, so the first pair approves and the next one asks (A8), on either path."""
+    from oneguard.engine.ledger_base import InMemoryLedger
+    from oneguard.engine.types import HistoryRow, Policy
+    from oneguard.llm.provider import NullProvider
+    from oneguard.pipeline import PipelineContext, decide_event
+    from tests.test_c9_no_history import CARD, NEW, T0
+
+    shop = StoreHistoryIndex(rows=[HistoryRow(
+        authorization_id="H_SPORT", customer_id=NEW, card_id=CARD, initiator_type="human",
+        timestamp=T0 - timedelta(days=20), transaction_type="purchase", status="approved", amount=60.0,
+        currency="CHF", billing_amount_chf=60.0, merchant_id="ME_SPORT", merchant_name="Sport Shop",
+        merchant_category="sporting_goods", merchant_country="CH", channel="ecommerce", recurring=False,
+        customer_device_id="DVC-NEW", description="",
+    )])  # fmt: skip
+    instruction = SERVED["SCEN0130"]
+    response = next(e["response"] for e in RECORDED if e["scenario"] == "SCEN0130")
+    draft = compile_instruction(instruction, shop, "", NullProvider() if path == "fallback" else Scripted(response),
+                                today=TODAY)
+    assert (draft.compiler, draft.requested_item, draft.single_item) == (path, "hiking boots", True)
+    policy = Policy(mandate_id="TM_NEW", status="active", instruction=instruction,
+                    uncertainty_policy=draft.uncertainty_policy, rules=draft.rules,
+                    requested_item=draft.requested_item, allowed_item_categories=draft.allowed_item_categories,
+                    nothing_extra=draft.nothing_extra, shop_type=draft.shop_type, single_item=draft.single_item)
+    ctx = PipelineContext(policy=policy, ledger=InMemoryLedger(history=shop), history=shop, run_id=f"run-130-{path}",
+                          now=lambda: datetime(2026, 9, 25, 12, 0, tzinfo=UTC))
+    first, _, _ = decide_event(_boots("IT_BOOTS_1", 0, 150.0), ctx)
+    assert first.outcome == "approve", first
+    second, explanation, _ = decide_event(_boots("IT_BOOTS_2", 3 * 60, 140.0), ctx)
+    assert (second.outcome, second.reason_codes, second.deciding_ids) == ("step_up", ["already_fulfilled"], ["A8"])
+    assert explanation.message == ("Waiting for you CHF 140.00: You already bought the hiking boots on 10 Aug "
+                                   "for CHF 150.00; approve another?")
+
+
 def test_the_evening_window_is_inferred_and_no_cap(history):
     """"Weeknight dinners" gives local_hour >= 17 and < 23 (source inferred) with plain texts;
     a stated hour wins on its side; lunch and an excluded dinner name no hours. The window is
@@ -544,3 +604,83 @@ def test_one_item_reads_in_the_singular():
     """SCEN0101 on the LLM path adds "one ordinary grocery item" as cart.quantity = 1."""
     spec = RuleSpec(field="cart.quantity", operator="=", value=1, words="one ordinary grocery item")
     assert rule_text(spec) == "Exactly 1 item"
+
+
+# --- 8. per-night price x nights = the order cap (SCEN0124) -------------------------------
+def test_scen0124_has_the_order_cap_and_no_question_on_both_paths(history):
+    from oneguard.compiler import lint_accepted_ids
+
+    instruction = SERVED["SCEN0124"]
+    response = next(e["response"] for e in RECORDED if e["scenario"] == "SCEN0124")
+    for draft in (parse(instruction, history, "", TODAY),
+                  compile_instruction(instruction, history, "", Scripted(response), today=TODAY)):
+        cap = [r for r in draft.rules if r.field == BILL]
+        assert [(r.id, r.operator, r.value, r.scope, r.source) for r in cap] == [("C1", "<=", 600, "purchase", "inferred")]
+        assert cap[0].text == "Total at or below CHF 600 per order (3 nights at CHF 200 each)"
+        assert any(r.field == "items[].unit_price_chf" and r.value == 200 for r in draft.rules)  # kept
+        assert draft.open_questions == []
+        assert lint_accepted_ids(draft.rules, [r.id for r in draft.rules]) == ([], [])  # C2 accepts it
+
+
+def test_the_models_order_limit_question_is_settled_by_the_cap(history):
+    nights = _raw("items[].unit_price_chf", "<=", "at most CHF 200 per night", value_number=200, currency="CHF",
+                  scope="purchase")
+    asked = _response(nights) | {"open_questions": [
+        "No per-order limit stated: is the order limit CHF 600 (3 nights at CHF 200 each)?", "Which hotel?"]}
+    read = read_with_llm(SERVED["SCEN0124"], Scripted(asked), history, "", TODAY)
+    assert read.open_questions == ["Which hotel?"]
+    assert [(r.field, r.value) for r in read.rules if r.field == BILL] == [(BILL, 600)]
+
+
+@pytest.mark.parametrize(("instruction", "cap"), [
+    ("Book a hotel for 2 nights, under CHF 150 per night", ("<", 300, "CHF")),
+    ("Book a hotel for two nights, max EUR 120 per night", ("<=", 240, "EUR")),
+    ("Book a hotel for 3 nights, at most CHF 200 per night, max CHF 500 per order", ("<=", 500, "CHF")),
+    ("Book a hotel from 3 May to 5 May, at most CHF 150 per night", None),  # no count of nights stated
+    ("Buy two concert tickets, max CHF 90 each", None),  # counted items keep their question
+], ids=["under", "euro", "stated-cap-wins", "dates-only", "counted-items"])
+def test_the_cap_is_the_per_night_price_times_the_stated_nights(instruction, cap, history):
+    draft = parse(instruction, history, "", TODAY)
+    caps = [(r.operator, r.value, r.currency) for r in draft.rules if r.field == BILL and r.scope == "purchase"]
+    assert caps == ([cap] if cap else [])
+
+
+def test_scen0136_has_the_payment_cap_and_no_question_on_both_paths(history):
+    """"Total per month must stay under CHF 80": one payment of CHF 80 or more breaks it on its
+    own, so each payment is under CHF 80 too (inferred, the monthly rule kept), and the
+    customer is no longer asked what one payment may cost."""
+    from oneguard.compiler import lint_accepted_ids
+
+    instruction = SERVED["SCEN0136"]
+    response = next(e["response"] for e in RECORDED if e["scenario"] == "SCEN0136")
+    for draft in (parse(instruction, history, "", TODAY),
+                  compile_instruction(instruction, history, "", Scripted(response), today=TODAY)):
+        cap = [r for r in draft.rules if r.field == BILL and r.scope == "purchase" and r.value == 80]
+        assert [(r.id, r.operator, r.source, r.text) for r in cap] == [
+            ("C1", "<", "inferred", "Each payment under CHF 80 (from your monthly limit)")]
+        assert any(r.field == BILL and r.scope == "period" and r.period_days == 30 for r in draft.rules)  # kept
+        assert draft.open_questions == []
+        assert lint_accepted_ids(draft.rules, [r.id for r in draft.rules]) == ([], [])  # C2 accepts it
+
+
+def test_the_models_payment_question_is_settled_by_the_period_cap(history):
+    month = _raw(BILL, "<", "Total per month must stay under CHF 80", value_number=80, currency="CHF",
+                 scope="period", period_days=30)
+    asked = _response(month) | {"open_questions": [
+        "No amount stated: what is the most one purchase may cost?", "Which services are current?"]}
+    read = read_with_llm(SERVED["SCEN0136"], Scripted(asked), history, "", TODAY)
+    assert read.open_questions == ["Which services are current?"]
+    assert sorted((r.scope, r.value) for r in read.rules if r.field == BILL) == [("period", 80), ("purchase", 80)]
+
+
+@pytest.mark.parametrize(("instruction", "cap"), [
+    ("Never spend more than CHF 250 in any 7-day window", ("<=", 250, "CHF", "Each payment at or below CHF 250 (from your weekly limit)")),
+    ("Books up to EUR 100 a month", ("<=", 100, "EUR", "Each payment at or below CHF 95 (EUR 100 at 0.95) (from your monthly limit)")),
+    ("Groceries, at most CHF 300 a week and CHF 1000 a month", ("<=", 300, "CHF", "Each payment at or below CHF 300 (from your weekly limit)")),
+    ("Groceries, max CHF 100 per order and CHF 250 a week", ("<=", 100, "CHF", "Total at or below CHF 100 per order")),
+    ("Buy two concert tickets, max CHF 90 each, CHF 400 a month", None),  # counted items keep their question
+], ids=["weekly", "euro", "tightest", "stated-cap-wins", "counted-items"])
+def test_the_payment_cap_is_the_tightest_period_limit(instruction, cap, history):
+    draft = parse(instruction, history, "", TODAY)
+    caps = [(r.operator, r.value, r.currency, r.text) for r in draft.rules if r.field == BILL and r.scope == "purchase"]
+    assert caps == ([cap] if cap else [])

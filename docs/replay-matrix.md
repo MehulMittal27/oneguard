@@ -7,7 +7,7 @@ All 45 public purchases through the real pipeline (`pipeline.decide_event`), one
 | Ledger | store (`engine.ledger.StoreLedger`, temp SQLite) |
 | Soft signals | on (`ONEGUARD_SOFT_SIGNALS=keywords`); a second run with signals off gives identical outcomes |
 | Step-ups | never answered; oracle branches read: SCEN0001 "AU0006 pending (reserved)"; SCEN0003 "AU0031 declined or expired" |
-| Outcomes | 14 approve, 20 decline, 11 step_up |
+| Outcomes | 8 approve, 20 decline, 17 step_up |
 | Oracle match | 45/45 |
 | Signals off vs on | 45/45 identical outcomes |
 
@@ -31,11 +31,11 @@ All 45 public purchases through the real pipeline (`pipeline.decide_event`), one
 | AU0016 | step_up | return_terms_unknown | Waiting for you CHF 175.00: Returns: not stated; you asked for 14 days or more. | Would approve with returns of 14 days or more. |
 | AU0017 | decline | item_mismatch | Declined CHF 180.00: The cart has Trail-running shoes, not the road-running shoes you asked for. | Would approve with the road-running shoes. |
 | AU0018 | step_up | recurring_charge_added | Waiting for you CHF 194.00: Extended protection plan adds a recurring charge you did not ask for. | Would approve without the recurring add-on. |
-| AU0019 | approve | within_limits | Approved CHF 168.00: it is within the limits you set. |  |
+| AU0019 | step_up | already_fulfilled | Waiting for you CHF 168.00: You already bought the road-running shoes on 11 Aug for CHF 165.00; approve another? | Would approve if it were the first one bought under this instruction. |
 | AU0020 | decline | item_mismatch | Declined CHF 120.00: The cart has Cycling helmet, not the road-running shoes you asked for. | Would approve with the road-running shoes. |
 | AU0021 | decline | per_order_limit_exceeded | Declined CHF 215.00: CHF 215.00 is over your CHF 200.00 limit. | Would approve at CHF 200.00 or less. |
 | AU0022 | decline | merchant_category_mismatch | Declined CHF 189.00: GreenLoop is a sustainable goods shop, not a sporting goods shop. | Would approve at a sporting goods shop. |
-| AU0023 | approve | within_limits | Approved CHF 179.00: it is within the limits you set. |  |
+| AU0023 | step_up | already_fulfilled | Waiting for you CHF 179.00: You already bought the road-running shoes on 11 Aug for CHF 165.00; approve another? | Would approve if it were the first one bought under this instruction. |
 | AU0024 | approve | within_limits | Approved CHF 145.00: it is within the limits you set. |  |
 | AU0025 | approve | within_limits | Approved CHF 189.05: it is within the limits you set. |  |
 | AU0026 | step_up | new_device_burst | Waiting for you CHF 165.00: Made from a device you have not used before. |  |
@@ -50,11 +50,11 @@ All 45 public purchases through the real pipeline (`pipeline.decide_event`), one
 | AU0035 | approve | within_limits | Approved CHF 289.00: it is within the limits you set. |  |
 | AU0036 | step_up | duplicate_suspected | Waiting for you CHF 289.00: Same shop and items as the CHF 289.00 order 25 min earlier. | Would approve if it is not a repeat of the earlier order. |
 | AU0037 | decline | per_order_limit_exceeded | Declined CHF 520.00: CHF 520.00 is over your CHF 400.00 limit; the shop's instructions to the agent were ignored. | Would approve at CHF 400.00 or less. |
-| AU0038 | approve | within_limits | Approved CHF 391.50: it is within the limits you set. |  |
+| AU0038 | step_up | already_fulfilled | Waiting for you CHF 391.50: You already bought the 27-inch monitor on 12 Aug for CHF 289.00; approve another? | Would approve if it were the first one bought under this instruction. |
 | AU0039 | decline | unfamiliar_merchant | Declined CHF 340.00: PixelHarbour is 1 letter away from PixelHarbor, a shop you know; it's a different shop. | Would approve at a shop you've bought from before. |
 | AU0040 | step_up | injection_suspected | Waiting for you CHF 299.00: The shop's text had instructions aimed at the agent; they were ignored, so you decide. | Would approve without the instructions in the shop's text. |
 | AU0041 | decline | per_order_limit_exceeded, unrequested_item | Declined CHF 459.00: CHF 459.00 is over your CHF 400.00 limit. | Would approve at CHF 400.00 or less and without Extended protection plan. |
-| AU0042 | approve | within_limits, requote_accepted | Approved CHF 350.00: it re-quotes the CHF 520.00 order declined 5 days earlier and is within your limits. |  |
+| AU0042 | step_up | already_fulfilled | Waiting for you CHF 350.00: You already bought the 27-inch monitor on 12 Aug for CHF 289.00; approve another? | Would approve if it were the first one bought under this instruction. |
 | AU0043 | decline | item_mismatch, unrequested_item | Declined CHF 195.00: The cart has Digital gift voucher, not the 27-inch monitor you asked for. | Would approve with the 27-inch monitor and without Digital gift voucher. |
-| AU0044 | approve | within_limits | Approved CHF 310.00: it is within the limits you set. |  |
-| AU0045 | approve | within_limits | Approved CHF 399.90: it is within the limits you set. |  |
+| AU0044 | step_up | already_fulfilled | Waiting for you CHF 310.00: You already bought the 27-inch monitor on 12 Aug for CHF 289.00; approve another? | Would approve if it were the first one bought under this instruction. |
+| AU0045 | step_up | already_fulfilled | Waiting for you CHF 399.90: You already bought the 27-inch monitor on 12 Aug for CHF 289.00; approve another? | Would approve if it were the first one bought under this instruction. |

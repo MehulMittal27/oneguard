@@ -41,7 +41,7 @@ Weekday = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 RuleOperator = Literal["<", "<=", "=", "!=", ">", ">=", "in", "not_in"]
 RuleKind = Literal["amount", "period", "merchant", "item", "terms", "session", "other"]
 SignalId = Literal[
-    "A1", "A2", "A3", "A4", "A5", "A6", "A7",
+    "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8",
     "W1", "W2", "W3", "W4", "W5", "W6",
     "S_agent_directed",
 ]
@@ -151,6 +151,7 @@ class Facts(_Model):
     merchant_name: str
     merchant_category: str
     merchant_country: str
+    merchant_city: str | None = None  # trusted catalogue city; None is unknown, never a pass
     merchant_mcc: str
     merchant_recurring_capable: bool
     merchant_known: bool = False
@@ -201,7 +202,9 @@ class Policy(_Model):
     ``False`` means the customer did not state that rule, never "anything goes"
     (C3 ``allowed_item_categories``, C4 ``blocked_item_categories``, C5
     ``requested_item``, C8 ``shop_type``, C9 ``requires_known_shop``, C10
-    ``nothing_extra``).
+    ``nothing_extra``). ``single_item`` is True when the instruction asks for the
+    requested item once ("the monitor I chose", "one lens", "a bag"): its first final
+    approval fulfils the mandate and a later purchase of it asks (A8).
     """
 
     mandate_id: str
@@ -215,6 +218,7 @@ class Policy(_Model):
     requires_known_shop: bool = False
     nothing_extra: bool = False
     shop_type: str | None = None
+    single_item: bool = False
 
 
 class PriorDecision(_Model):
@@ -237,8 +241,23 @@ class PriorDecision(_Model):
     reserved: bool
 
 
+class Fulfilment(_Model):
+    """A final approval that bought a single-item mandate's requested item (A8).
+
+    Recorded by ``Ledger.mark_requested_item`` when the purchase was decided; it fulfils
+    only once it is a final approval (an approval, or a step-up the customer approved).
+    ``item`` is the mandate's ``requested_item`` (the customer's words, never shop text).
+    """
+
+    authorization_id: str
+    mandate_id: str
+    timestamp: AwareDatetime
+    billing_amount_chf: float
+    item: str
+
+
 class LedgerView(_Model):
-    """The ledger's state as of one purchase (C2, C9, M4, M5, M7, A1, A3, A4, A7, W1, W3, W4).
+    """The ledger's state as of one purchase (C2, C9, M4, M5, M7, A1, A3, A4, A7, A8, W1, W3, W4).
 
     Built by ``Ledger.view`` from the ``decisions`` table (this run) and HistoryIndex
     (history). ``period_spent_chf`` counts final approvals only; pending step-ups are
@@ -254,6 +273,10 @@ class LedgerView(_Model):
     ``last_price``, replaced by this run's latest final approval there; a shop the
     customer never paid is absent, never zero (P3).
     ``flagged_merchant_ids`` carries A1 info evidence to later purchases.
+    ``fulfilments`` are the final approvals that bought a single-item mandate's
+    requested item (A8), this run's before this purchase plus, for a live run, earlier
+    live runs under the same mandate, oldest first; ``None`` means not tracked, which is
+    never "not bought" (P3).
     ``confirmed_keys`` are remembered customer confirmations: ``rule|merchant|item``
     (read only for restrictions no data can check) and ``rule|merchant|*`` (read only
     for a known-shop check, C9).
@@ -284,6 +307,7 @@ class LedgerView(_Model):
     flagged_merchant_ids: set[str]
     frozen: bool
     confirmed_keys: set[str] = Field(default_factory=set)
+    fulfilments: list[Fulfilment] | None = None
 
 
 CounterfactualBound = dict[str, Any]
@@ -310,7 +334,7 @@ class RuleResult(_Model):
 
 
 class Signal(_Model):
-    """One protection or warning sign (A1–A7, W1–W6) or the agent_directed soft signal.
+    """One protection or warning sign (A1–A8, W1–W6) or the agent_directed soft signal.
 
     ``strength`` is ``protection`` for A-ids, ``strong`` / ``weak`` for W-ids (§8
     W-rules). ``outcome_if_triggered`` is what the signal asks of decide. ``related``
@@ -390,6 +414,7 @@ class CompiledDraft(_Model):
     requires_known_shop: bool = False
     nothing_extra: bool = False
     shop_type: str | None = None
+    single_item: bool = False
 
 
 class HistoryRow(_Model):
@@ -416,6 +441,7 @@ class HistoryRow(_Model):
     recurring: bool
     customer_device_id: str | None
     description: str
+    merchant_city: str | None = None  # catalogue city; None where the source has none
 
 
 @runtime_checkable

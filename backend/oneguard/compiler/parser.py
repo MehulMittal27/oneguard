@@ -15,9 +15,12 @@ from decimal import Decimal
 
 from oneguard.compiler.draft import (
     ALCOHOL_FIELD,
+    CITY_FIELD,
+    CITY_NAMES,
     COUNT_FIELD,
-    COUNTRY_NAMES,
+    COUNTRY_FIELD,
     EVENING_HOURS,
+    FROM_PERIOD_LIMIT,
     HOUR_FIELD,
     KNOWN_SHOP_FIELD,
     MONEY_FIELDS,
@@ -234,7 +237,6 @@ class _Reading:
     uncertainty: str = "ask"
     count: int | None = None
     item_noun: str | None = None
-    nights: int | None = None
 
 
 def _clauses(text: str) -> list[str]:
@@ -582,11 +584,76 @@ def _shops(reading: _Reading, text: str) -> None:
     if m and not any(s.field == "merchant.merchant_category" for s in reading.specs):
         reading.specs.append(RuleSpec(field="merchant.merchant_category", operator="=", value="groceries",
                                       words=m.group(0), source="inferred"))
-    for m in re.finditer(r"\b(?:shops?|sellers?|stores?)\s+in\s+(?P<c>[A-Z][a-z]+)", text):
-        country = COUNTRY_WORDS.get(m.group("c").lower())
-        if country and country in COUNTRY_NAMES:
-            reading.specs.append(RuleSpec(field="merchant.merchant_country", operator="=", value=country,
-                                          words=m.group(0)))
+    reading.specs += places(text, reading.specs)
+
+
+# "in Munich", "shops in Switzerland": where the shop is, a check on the event's trusted
+# merchant_city / merchant_country. Only names the catalogue holds (draft.CITY_NAMES and
+# the countries of draft.COUNTRY_NAMES), capitalised as a place is; "the UK" / "the US" only with "the" and in
+# capitals ("in US dollars" is a currency).
+_COUNTRY_PLACES: dict[str, str] = {
+    "switzerland": "CH", "germany": "DE", "france": "FR", "italy": "IT", "austria": "AT",
+    "netherlands": "NL", "holland": "NL", "united kingdom": "GB", "great britain": "GB", "britain": "GB",
+    "uk": "GB", "united states": "US", "usa": "US", "us": "US",
+}
+_PLACE = re.compile(
+    r"\b(?P<not>not\s+)?in\s+(?P<the>the\s+)?(?P<place>"
+    + "|".join(re.escape(n) for n in sorted({*CITY_NAMES, *_COUNTRY_PLACES}, key=len, reverse=True))
+    + r")(?![\w-])",
+    re.IGNORECASE,
+)
+# Only a negation that governs the place itself: "no shops in Italy", "never in Germany".
+# "a hotel with no breakfast in Munich" still wants Munich.
+_PLACE_NEGATED = re.compile(
+    r"\b(?:(?:no|never)\s+(?:shops?|stores?|sellers?|merchants?|retailers?|hotels?)|never|except)\s*$", re.IGNORECASE)
+_DELIVERY = re.compile(r"\b(?:deliver\w*|ship\w*|send|sent|live|living|based)\s+(?:\w+\s+){0,3}$", re.IGNORECASE)
+
+
+def place_of(name: str) -> tuple[str, str] | None:
+    """A place name -> (field, value): ("merchant.merchant_city", "Munich") or
+    ("merchant.merchant_country", "CH"); None for a place the catalogue does not hold."""
+    key = " ".join(name.lower().split())
+    if key in CITY_NAMES:
+        return CITY_FIELD, CITY_NAMES[key]
+    if key in _COUNTRY_PLACES:
+        return COUNTRY_FIELD, _COUNTRY_PLACES[key]
+    return None
+
+
+def places(text: str, specs: list[RuleSpec]) -> list[RuleSpec]:
+    """Each "in <city or country>" the shop must be in: ``merchant.merchant_city`` (the
+    catalogue's spelling) or ``merchant.merchant_country`` (ISO alpha-2), ``=``, or ``!=``
+    for "not in", "no shops in", "never in"; source exact. Where the customer receives the
+    order ("delivered in Zurich") is not the shop's place. A rule already read (the
+    "German retailer" adjective) is not repeated. Both compiler paths take places from
+    here, so they read the same."""
+    out: list[RuleSpec] = []
+    for m in _PLACE.finditer(text):
+        name = m.group("place")
+        if not name[0].isupper() or (len(name) <= 3 and not (name.isupper() and m.group("the"))):
+            continue  # "in bern", "in us", "in US dollars": not written as a place name
+        found = place_of(name)
+        if found is None or _DELIVERY.search(text[: m.start()]):
+            continue
+        field, value = found
+        op = "!=" if m.group("not") or _PLACE_NEGATED.search(text[: m.start()]) else "="
+        words = m.group(0)
+        if any(s.field == field and s.value == value and s.operator == op for s in [*specs, *out]):
+            continue
+        out.append(RuleSpec(field=field, operator=op, value=value, words=words))
+    return out
+
+
+def covered_by_place(words: str, specs: list[RuleSpec]) -> bool:
+    """An unverifiable phrase that only names a place a rule now checks ("in Munich", "a
+    hotel in Munich"): the model's reading of it, dropped for the place rule."""
+    rest = words
+    for s in specs:
+        if s.field in (CITY_FIELD, COUNTRY_FIELD):
+            rest = re.sub(re.escape(s.words), " ", rest, flags=re.IGNORECASE)
+    if rest == words:
+        return False
+    return not re.sub(r"\b(?:a|an|the|hotels?|shops?|stores?|sellers?|only|stay)\b|\W", "", rest, flags=re.IGNORECASE)
 
 
 # --- Uncertainty (C11) ---------------------------------------------------------------
@@ -724,20 +791,80 @@ _MONTHS = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
 
 def _stay(reading: _Reading, text: str) -> None:
     """A booking's place and dates ("a hotel in Munich for 3 nights from 10 September to
-    13 September"): no field holds them, so each is an unverifiable rule the customer
-    confirms. The nights also size the per-order question."""
+    13 September"): a place the catalogue holds is a city check (``places``); a place it
+    does not, and the dates, are each an unverifiable rule the customer confirms. The
+    nights also size the per-order cap (``stay_cap``)."""
     if not any(s.field == "items[].item_category" and "hotel" in s.value for s in reading.specs):
         return
-    if m := re.search(r"\bhotels?\s+in\s+(?P<city>[A-Z][\w-]+)", text):
+    if (m := re.search(r"\bhotels?\s+in\s+(?P<city>[A-Z][\w-]+)", text)) and place_of(m.group("city")) is None:
         said = f"in {m.group('city')}"
         reading.specs.append(RuleSpec(field="unverifiable", operator="=", value=f"a hotel {said}", words=said))
-    nights = re.search(rf"\bfor\s+(?P<n>{_NUM})\s+nights?\b", text, re.IGNORECASE)
+    nights = _NIGHTS.search(text)
     dates = re.search(rf"\bfrom\s+\d{{1,2}}\s+{_MONTHS}\s+to\s+\d{{1,2}}\s+{_MONTHS}\b", text, re.IGNORECASE)
     if nights or dates:
         said = " ".join(x.group(0) for x in (nights, dates) if x)
         reading.specs.append(RuleSpec(field="unverifiable", operator="=", value=said, words=said))
-    if nights:
-        reading.nights = _num(nights.group("n"))
+
+
+_NIGHTS = re.compile(rf"\bfor\s+(?P<n>{_NUM})\s+nights?\b", re.IGNORECASE)
+ORDER_LIMIT_QUESTION = re.compile(r"\blimit\b|\bthe most\b.*\bcost\b", re.IGNORECASE)
+"""An open question about the per-order amount: settled once ``stay_cap`` gives the cap."""
+
+
+def stay_cap(text: str, specs: list[RuleSpec]) -> list[RuleSpec]:
+    """A per-unit limit times the stated count of units is the per-order cap: "at most CHF
+    200 per night" for "3 nights" -> total at or below CHF 600 per order, source inferred.
+    The per-unit rule stays beside it. Nothing when a per-order cap is stated, no count of
+    nights is, or the items are counted instead ("two tickets, max CHF 90 each": the cart
+    quantity and the per-item limit, and the question). Both compiler paths add it from
+    here, so they read the same (docs/decisions.md)."""
+    nights = _NIGHTS.search(text)
+    count = _num(nights.group("n")) if nights else None
+    if not count or any(
+        (s.field == "authorization.billing_amount_chf" and s.scope == "purchase" and is_amount(s))
+        or s.field in ("cart.quantity", "items[].quantity")
+        for s in specs
+    ):
+        return []
+    per_unit = [s for s in specs if s.field == "items[].unit_price_chf" and s.operator in ("<", "<=") and is_amount(s)]
+    if not per_unit:
+        return []
+    unit = min(per_unit, key=lambda s: (to_chf(s.value, s.currency), s.operator == "<="))
+    each = fmt_amount(to_chf(unit.value, unit.currency))
+    return [RuleSpec(
+        field="authorization.billing_amount_chf", operator=unit.operator, value=number(Decimal(str(unit.value)) * count),
+        currency=unit.currency, scope="purchase", words=f"{unit.words}, {nights.group(0)}", source="inferred",
+        note=f"{count} nights at CHF {each} each", value_from=f"{count} nights x the price per night")]
+
+
+_PERIOD_NAMES = {7: "weekly", 14: "fortnightly", 30: "monthly"}
+
+
+def period_cap(specs: list[RuleSpec]) -> list[RuleSpec]:
+    """A period limit with no per-order limit is also the per-order cap: "under CHF 80 per
+    month" -> each payment under CHF 80 (same operator, scope purchase, source inferred), as
+    one payment above the whole period's limit breaks it on its own. The period rule stays
+    beside it. The tightest period limit when there are several. Nothing when a per-order cap
+    is stated or derived (``stay_cap``), or when the items are priced or counted instead ("two
+    tickets, max CHF 90 each": that order limit is asked). Both compiler paths add it from
+    here, so they read the same (docs/decisions.md)."""
+    if any(
+        (s.field == "authorization.billing_amount_chf" and s.scope == "purchase" and is_amount(s))
+        or s.field in ("cart.quantity", "items[].quantity", "items[].unit_price_chf")
+        for s in specs
+    ):
+        return []
+    period = [s for s in specs if s.field == "authorization.billing_amount_chf" and s.scope == "period"
+              and s.operator in ("<", "<=") and is_amount(s)]
+    if not period:
+        return []
+    limit = min(period, key=lambda s: (to_chf(s.value, s.currency), s.operator == "<="))
+    days = limit.period_days or 7
+    name = _PERIOD_NAMES.get(days, f"{days}-day")
+    return [RuleSpec(
+        field="authorization.billing_amount_chf", operator=limit.operator, value=limit.value,
+        currency=limit.currency, scope="purchase", words=limit.words, source="inferred",
+        note=f"from your {name} limit", value_from=FROM_PERIOD_LIMIT)]
 
 
 def _price_change(reading: _Reading, text: str) -> None:
@@ -761,12 +888,6 @@ def _amount_question(reading: _Reading) -> None:
     if has_cap:
         return
     per_item = next((s for s in reading.specs if s.field == "items[].unit_price_chf" and s.operator in ("<=", "<")), None)
-    if per_item and reading.nights and not reading.count:
-        total = to_chf(per_item.value, per_item.currency) * reading.nights
-        reading.questions.insert(0, (
-            f"No per-order limit stated: is the order limit CHF {fmt_amount(total)} "
-            f"({reading.nights} nights at CHF {fmt_amount(to_chf(per_item.value, per_item.currency))} each)?"))
-        return
     if per_item and reading.count:
         total = to_chf(per_item.value, per_item.currency) * reading.count
         noun = reading.item_noun or "items"
@@ -804,6 +925,8 @@ def parse(instruction: str, history=None, card_id: str = "", today: date | None 
     _count_per_period(reading, money)
     _shops(reading, text)
     _stay(reading, text)
+    reading.specs += stay_cap(text, reading.specs)
+    reading.specs += period_cap(reading.specs)
     if history is not None:
         _same_price(reading, text, history, card_id)
     _renew(reading, text)

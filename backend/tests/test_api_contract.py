@@ -1619,7 +1619,7 @@ def test_the_worker_polls_while_the_model_loads_and_signals_switch_once_it_has(
 ) -> None:
     """ONEGUARD_SOFT_SIGNALS=laya: the worker polls at once; keywords answer until the model is in."""
     from oneguard.engine import signals
-    from tests.test_protections_signals import CLEAN, DIRTY
+    from tests.test_protections_signals import CLEAN, DIRTY, LONG
 
     started, release = threading.Event(), threading.Event()
 
@@ -1646,7 +1646,7 @@ def test_the_worker_polls_while_the_model_loads_and_signals_switch_once_it_has(
                 await until(lambda: run.services.model_loaded)
                 health = (await run.get("/healthz")).json()
                 assert _signals(health) == ("laya", "laya", False, True, True)
-                [switched] = signals.soft_signals(CLEAN[0], 0.5)
+                [switched] = signals.soft_signals(LONG, 0.5)
                 assert (switched.triggered, switched.source) == (True, "model")
         finally:
             release.set()

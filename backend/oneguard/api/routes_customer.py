@@ -328,9 +328,15 @@ async def _passport_summary(s: Services, row: Mandate) -> api.PassportSummary | 
 
 
 async def _with_usage(s: Services, row: Mandate) -> api.Mandate:
-    rules, _ = policies.load_rules(row.rules, row.checks)
+    rules, flags = policies.load_rules(row.rules, row.checks)
     entries = await s.db(queries.latest_run_decisions, s.db_engine, card_id=row.card_id)
-    return _mandate(row, policies.usage(rules, entries, row.confirmed_at), await _passport_summary(s, row))
+    marked = await s.db(queries.requested_item_marks, s.db_engine, [e.live_authorization_id for e in entries]) \
+        if flags.get("single_item") else {}
+    return _mandate(
+        row,
+        policies.usage(rules, entries, row.confirmed_at, policies.fulfilment(flags, entries, marked)),
+        await _passport_summary(s, row),
+    )
 
 
 async def reissue_passport(s: Services, card_id: str, reason: str = "confirmed") -> None:

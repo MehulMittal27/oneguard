@@ -106,6 +106,7 @@ def build_facts(event: dict, history: HistoryIndex) -> Facts:
         merchant_name=merchant["merchant_name"],
         merchant_category=merchant["merchant_category"],
         merchant_country=merchant["merchant_country"],
+        merchant_city=merchant.get("merchant_city") or None,
         merchant_mcc=merchant["merchant_mcc"],
         merchant_recurring_capable=merchant["recurring_capable"] == "true",
         device_id=auth["customer_device_id"],

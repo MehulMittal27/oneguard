@@ -263,11 +263,12 @@ def test_the_store_ledger_run_is_durable(pack, history, tmp_path):
     assert all(entry is not None for entry in stored) and len(stored) == 10
 
 
-MESSAGE = re.compile(r"^(Approved|Declined|Waiting for you) CHF \d+\.\d{2}: (?P<clause>[^—]+)\.$")
+MESSAGE = re.compile(r"^(Approved|Declined|Waiting for you) CHF \d+\.\d{2}: (?P<clause>[^—]+?)[.?]$")
 
 
 def test_every_message_is_one_clause_and_never_the_counterfactual(pack, history, tmp_path):
-    """rules.md §9: "{Outcome} CHF {amount}: {clause}." for all 45 purchases; the clause is
+    """rules.md §9: "{Outcome} CHF {amount}: {clause}." (or "?" when the clause asks, A8) for
+    all 45 purchases; the clause is
     at most 15 words (an amount is one word) and "Would approve …" is only ever the
     counterfactual, which every decline has. No authorization id reaches the customer, and a
     lookalike shop is named whenever A7 fired."""

@@ -144,8 +144,8 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
   (for `bench_engine.py --laya` on the machine) and `frontend/dist` copied in, run as a
   non-root user; `uvicorn oneguard.api.app:app` listens on `$PORT` (8080);
   `ONEGUARD_SOFT_SIGNALS=laya` and `ONEGUARD_ENV=prod` are the image defaults.
-- `fly.toml`: region `lhr` (nearest Supabase in eu-west-1), one `shared-cpu-1x` machine with
-  1 GB (keyword soft signals only; Laya needs 4 GB, docs/benchmark.md §3), never auto-stopped
+- `fly.toml`: region `lhr` (nearest Supabase in eu-west-1), one `performance-2x` machine with
+  4 GB (Laya soft signals; the model is ~2 GB resident, docs/benchmark.md §3), never auto-stopped
   (the worker polls from inside the app), no volume: state lives in Supabase via
   `ONEGUARD_DATABASE_URL`. Health check `GET /healthz`, 120 s grace. Deploy strategy
   `immediate`: with one machine a rolling deploy only waits on the health check, and the
@@ -154,10 +154,11 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
 - Fly secrets: `VISECA_API_KEY`, `OPENAI_API_KEY`, `ONEGUARD_DATABASE_URL`,
   `ONEGUARD_LLM_PROVIDER`; temporarily `ONEGUARD_ALLOW_RUNS=false`
   (D3 and `make demo-live` refuse to start a run while it is set). Set with `fly secrets`, never in files.
-  `ONEGUARD_SOFT_SIGNALS=keywords` is set as a secret and overrides the image default (`laya`):
-  on Fly's CPUs Laya does not answer a purchase inside its budget (docs/benchmark.md §3).
-  Turning the model back on: scale to 4 GB, then `fly secrets unset ONEGUARD_SOFT_SIGNALS`
-  (no rebuild).
+  `ONEGUARD_SOFT_SIGNALS=laya` and `ONEGUARD_SIGNAL_BUDGET_MS=1500` are set as secrets
+  (decisions.md 2026-09-25: keywords missed two live injections; at 975 ms Laya went over
+  budget on nearly every SCEN0135 decision, so the model now reads only the lines the keywords
+  did not flag that have at least 6 words, and the budget is 1500 ms). Past the budget the
+  keyword answer stands. Back to keywords: `fly secrets set ONEGUARD_SOFT_SIGNALS=keywords` (no rebuild).
 - Rollback: every deploy is tagged in `registry.fly.io/oneguard`; `fly image show -a oneguard`
   before a deploy names the running one, and `fly deploy -a oneguard --image <that ref>` puts
   it back.

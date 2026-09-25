@@ -5,7 +5,8 @@ the decision and writes, for the customer:
 
 - ``message``: "{Outcome} CHF {amount}: {clause}." ("Approved" / "Declined" / "Waiting
   for you"), the clause from the deciding rule's field template or the deciding signal
-  (E1, E2, E4); never the counterfactual;
+  (E1, E2, E4), ending in "?" instead when the clause asks ("approve another?", A8);
+  never the counterfactual;
 - ``counterfactual``: "Would approve …", from the failing rules or the deciding signal (E3);
 - ``evidence``: every rule result and every triggered signal, plus info rows (E7);
 - ``injection_flag``: set when shop text tried to instruct the agent (E5);
@@ -113,7 +114,8 @@ REASON_TEMPLATES: dict[str, str] = {
 SIGNAL_LABELS = {
     "A1": "Instructions in shop text", "A2": "Amount from the payment request",
     "A3": "Repeat order", "A4": "Split order", "A5": "New quote after a decline",
-    "A6": "Recurring charge", "A7": "Lookalike shop", "W1": "New device", "W2": "Many attempts",
+    "A6": "Recurring charge", "A7": "Lookalike shop", "A8": "Already bought",
+    "W1": "New device", "W2": "Many attempts",
     "W3": "New country", "W4": "Unusually large amount", "W5": "Night-time",
     "W6": "Unusual price", "S_agent_directed": "Shop text addressed to the agent",
 }  # fmt: skip
@@ -129,6 +131,7 @@ SIGNAL_COUNTERFACTUALS = {
     "A4": "Would approve if the two orders together stay within your per-order limit.",
     "A6": "Would approve without the recurring add-on.",
     "A7": "Would approve at the shop you know.",
+    "A8": "Would approve if it were the first one bought under this instruction.",
 }
 _RULE_OUTCOME = {"pass": "pass", "fail": "fail", "unknown": "uncertain"}
 _SIGNAL_OUTCOME = {"decline": "fail", "ask": "uncertain", "info": "info"}
@@ -398,7 +401,7 @@ def _message(
         clause = f"{clause} and {_lower_first(clause_of(signs[1]))}"
     elif _injection_found(signals) and not (led_by_sign and signs[0].id in _INJECTION_IDS):
         clause = f"{clause}; {INJECTION_ALSO}"
-    return f"{lead} {amount}: {clause}."
+    return f"{lead} {amount}: {clause}{'' if clause.endswith('?') else '.'}"
 
 
 # --- the counterfactual: "Would approve …", on its own ------------------------------------

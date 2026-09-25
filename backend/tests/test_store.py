@@ -87,7 +87,7 @@ def test_every_table_in_database_md_exists(engine: Engine) -> None:
         "customers", "accounts", "cards", "merchants", "items", "fx_rates",
         "authorization_history", "scenario_catalogue", "scenario_authorities",
         "policy_drafts", "mandates", "runs", "events_raw", "decisions",
-        "merchant_flags", "worker_state", "scenario_profiles", "viseca_calls",
+        "merchant_flags", "requested_item_orders", "worker_state", "scenario_profiles", "viseca_calls",
         "signing_keys", "devices", "device_nonces", "passports", "receipts",
     }  # fmt: skip
     assert set(Base.metadata.tables) == expected

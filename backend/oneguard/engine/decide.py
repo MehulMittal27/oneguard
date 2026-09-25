@@ -10,6 +10,7 @@ rules.md §4, in order; the first step that applies decides:
   4  a customer rule is unknown -> the uncertainty setting (C11)
      (ask / decline; "approve" lets steps 5-6 still ask, D2)
   5  a protection that asks is triggered                        -> ask
+     (A8 already bought decides only when no other one asks)
   6  warning signs (W-rules 1-2), a soft signal, or the session
      watch after an attack (PM decision, api-contract §3.6)      -> ask
   7  everything passes, nothing triggered                       -> approve
@@ -29,6 +30,7 @@ from __future__ import annotations
 from oneguard.engine.facts import CONTRADICTORY
 from oneguard.engine.interfaces import register
 from oneguard.engine.policy import CONFIRMED, COUNT_FIELD, NO_HISTORY, RESERVATION_ONLY
+from oneguard.engine.protections import FULFILMENT_UNKNOWN
 from oneguard.engine.types import (
     STEP1_RULE_IDS,
     EngineDecision,
@@ -76,6 +78,7 @@ _SIGNAL_CODE = {
     "A5": "requote_accepted",
     "A6": "recurring_charge_added",
     "A7": "lookalike_merchant",
+    "A8": "already_fulfilled",
     "W1": "new_device_burst",
     "W2": "new_device_burst",
     "S_agent_directed": "injection_suspected",
@@ -108,6 +111,8 @@ def _unknown_code(result: RuleResult, rule: Rule | None) -> str:
 
 
 def _signal_code(signal: Signal) -> str:
+    if signal.id == "A8" and signal.detail == FULFILMENT_UNKNOWN:
+        return "unevaluable"  # the ledger could not tell whether it was bought (P3)
     return _SIGNAL_CODE.get(signal.id, "unusual_activity")
 
 
@@ -198,8 +203,10 @@ def decide(
         return result("step_up", 4, codes, [r.rule_id for r in reserved_only] + unsure_ids)
     approved_despite_unknown = bool(unknown)  # setting "approve": steps 5-6 may still ask (D2)
 
-    # Step 5: protections that ask.
+    # Step 5: protections that ask; "already bought" (A8) only when no other one does, so a
+    # repeat, a split or an injection is named first (the A8 row is in the evidence).
     asking = [s for s in protections_ if s.triggered and s.outcome_if_triggered == "ask"]
+    asking = [s for s in asking if s.id != "A8"] or asking
     if asking:
         return result("step_up", 5, [_signal_code(s) for s in asking], [s.id for s in asking], asking)
 

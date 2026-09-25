@@ -99,6 +99,7 @@ _LABELS = {
     "order.order_cancellable": "cancellable",
     "merchant.merchant_category": "shop type",
     "merchant.merchant_country": "shop country",
+    "merchant.merchant_city": "shop city",
     "merchant.familiar_on_card": "shop you have bought from before",
     "merchant.known_shop": "shop you have bought from before",
     "cart.recurring": "recurring billing",
@@ -209,6 +210,7 @@ def _facts_for(field: str, facts: Facts, policy: Policy) -> tuple[list[FactValue
         "authorization.billing_amount_chf": _fv(facts.billing_amount_chf),
         "merchant.merchant_category": _fv(facts.merchant_category),
         "merchant.merchant_country": _fv(facts.merchant_country),
+        "merchant.merchant_city": _fv(facts.merchant_city, detail="" if facts.merchant_city else "shop city not stated"),
         # api-contract §3.3: customer level (Q7); familiar_on_card is an alias.
         "merchant.known_shop": known_shop,
         "merchant.familiar_on_card": known_shop,
@@ -356,6 +358,11 @@ def _fail_text(rule: Rule, target: Any, failing: list[tuple[FactValue, ItemFacts
         if op in ("=", "in"):
             return f"{facts.merchant_name} is in {where}, not {_either(listed)}", f"Would approve at a shop in {_either(listed)}"
         return f"{facts.merchant_name} is in {where}, which you excluded", f"Would approve at a shop outside {_both(listed)}"
+    if field == "merchant.merchant_city" and op in ("=", "in", "!=", "not_in"):
+        listed = [str(v) for v in _values_of(rule)]
+        if op in ("=", "in"):
+            return f"{facts.merchant_name} is in {fv.value}, not {_either(listed)}", f"Would approve at a shop in {_either(listed)}"
+        return f"{facts.merchant_name} is in {fv.value}, which you excluded", f"Would approve at a shop outside {_both(listed)}"
     if field == "authorization.weekday" and op in ("=", "in", "!=", "not_in"):
         day, listed = _day(fv.value), [_day(v) for v in _values_of(rule)]
         if op in ("=", "in"):
@@ -438,8 +445,7 @@ def evaluate_typed_rule(rule: Rule, facts: Facts, policy: Policy) -> RuleResult:
     Any fail -> fail. Otherwise any unknown -> unknown. Otherwise pass."""
     label = _LABELS.get(rule.field or "", rule.text or "this restriction")
     if not rule.field or rule.operator is None or rule.value is None:
-        return RuleResult(rule_id=rule.id, outcome="unknown", source="event",
-                          detail=f'No data to check "{rule.text or rule.id}"')
+        return RuleResult(rule_id=rule.id, outcome="unknown", source="event", detail=unverifiable_detail(rule))
     if (shared := _shared_check(rule, facts)) is not None:
         return _asked_if_broken(rule, shared)
     if is_last_price_rule(rule):  # add_ledger_results replaces this with the ledger's price
@@ -447,8 +453,7 @@ def evaluate_typed_rule(rule: Rule, facts: Facts, policy: Policy) -> RuleResult:
                           detail=f"Couldn't look up your last price at {facts.merchant_name}")
     looked_up = _facts_for(rule.field, facts, policy)
     if looked_up is None:
-        return RuleResult(rule_id=rule.id, outcome="unknown", source="event",
-                          detail=f'No data to check "{rule.text or rule.field}"')
+        return RuleResult(rule_id=rule.id, outcome="unknown", source="event", detail=unverifiable_detail(rule))
     values, lines = looked_up
     target = _rule_value_chf(rule)
 
@@ -729,6 +734,20 @@ def evaluate_count_rule(rule: Rule, facts: Facts, ledger: LedgerView) -> RuleRes
                       detail=f"{stated}; {done}", counterfactual=counterfactual)
 
 
+def unverifiable_phrase(rule: Rule) -> str:
+    """The customer's words for a restriction no data can check: an ``unverifiable`` rule's
+    value (the phrase the compiler kept), else its text, else its id."""
+    if rule.field == "unverifiable" and isinstance(rule.value, str) and rule.value.strip():
+        return rule.value.strip()
+    return (rule.text or rule.field or rule.id).strip()
+
+
+def unverifiable_detail(rule: Rule) -> str:
+    """'Can't check "official ticket seller" from the data; you decide': the phrase once, in
+    one pair of quotes (the message adds the full stop)."""
+    return f'Can\'t check "{unverifiable_phrase(rule)}" from the data; you decide'
+
+
 def is_unverifiable(rule: Rule, facts: Facts, policy: Policy) -> bool:
     """A restriction no data can check ("official ticket seller"): no field, or a field
     outside the vocabulary. Only these can be passed from a remembered answer."""
@@ -807,7 +826,7 @@ def add_ledger_results(
                 and all(confirmation_key(rule.id, facts.merchant_id, ln.item_id) in confirmed
                         for ln in facts.items)):
             res = RuleResult(rule_id=res.rule_id, outcome="pass", source="history",
-                             detail=f'{CONFIRMED} for this shop and item earlier: "{rule.text or rule.id}"')
+                             detail=f'{CONFIRMED} for this shop and item earlier: "{unverifiable_phrase(rule)}"')
         out.append(res)
 
     view_days = (facts.timestamp - ledger.period_window_start).total_seconds() / 86400

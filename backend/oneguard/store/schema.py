@@ -376,6 +376,19 @@ class Decision(Base):
     receipt_id: Mapped[str | None]
 
 
+class RequestedItemOrder(Base):
+    """A decision whose cart held a single-item mandate's requested item (A8).
+
+    Written by the ledger (``mark_requested_item``) for every such decision, whatever its
+    outcome; the ledger reads the rows that are final approvals as fulfilments.
+    """
+
+    __tablename__ = "requested_item_orders"
+
+    live_authorization_id: Mapped[str] = mapped_column(primary_key=True)
+    item: Mapped[str] = mapped_column(Text)
+
+
 class MerchantFlag(Base):
     """A1 info evidence for later purchases at a shop in the same run."""
 
