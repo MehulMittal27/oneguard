@@ -36,6 +36,7 @@ import { HealthPanel } from './HealthPanel'
 import { JudgingRunDialog } from './JudgingRunDialog'
 import { OpsFooter, OpsHeader } from './OpsHeader'
 import { OpsTabs, type OpsTab } from './OpsTabs'
+import { OperatorTokenDialog } from './OperatorTokenDialog'
 import { RawDrawer } from './RawDrawer'
 import { RecentDecisions } from './RecentDecisions'
 import { RunHeader, type PassportLine } from './RunHeader'
@@ -439,6 +440,7 @@ export default function OpsConsole() {
         />
       )}
       {raw && <RawDrawer decision={raw.decision} verification={raw.verification} onClose={closeRaw} />}
+      <OperatorTokenDialog />
       <OpsFooter />
     </div>
   )

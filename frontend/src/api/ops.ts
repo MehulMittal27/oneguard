@@ -1,4 +1,5 @@
 import type { CatalogueScenario, ReplayStatus, LiveRun, ScenarioSummary } from './types'
+import { operatorFetch } from './operatorFetch'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 
@@ -90,14 +91,14 @@ export async function getScenarios(): Promise<ScenarioSummary[]> {
 export async function getCatalogue(): Promise<CatalogueScenario[]> {
   if (import.meta.env.VITE_USE_MOCKS === 'true') return []
 
-  const response = await fetch(`${API_BASE_URL}/dev/scenarios`)
+  const response = await operatorFetch(`${API_BASE_URL}/dev/scenarios`)
   if (!response.ok) throw await refusal(response, 'Could not read the served scenarios')
   return ((await response.json()) as { scenarios: CatalogueScenario[] }).scenarios
 }
 
 /** D4: one live run by the platform's run id, as the worker or the store last saw it. */
 export async function getLiveRun(runId: string): Promise<LiveRun> {
-  const response = await fetch(`${API_BASE_URL}/dev/runs/${encodeURIComponent(runId)}`)
+  const response = await operatorFetch(`${API_BASE_URL}/dev/runs/${encodeURIComponent(runId)}`)
   if (!response.ok) throw await refusal(response, `Could not read run ${runId}`)
   return (await response.json()) as LiveRun
 }
@@ -108,7 +109,7 @@ export async function restartReplay(scenarioId: string, cardId: string, speedMs:
     throw new ApiRefusal(0, null, 'Mock mode: nothing can be replayed.')
   }
 
-  const response = await fetch(`${API_BASE_URL}/dev/replay/restart`, {
+  const response = await operatorFetch(`${API_BASE_URL}/dev/replay/restart`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ scenario_id: scenarioId, card_id: cardId, speed_ms: speedMs }),
@@ -127,7 +128,7 @@ export async function startJudgingRun(scenarioId: string, cardId: string): Promi
     throw new ApiRefusal(0, null, 'Mock mode: no judging run can start.')
   }
 
-  const response = await fetch(`${API_BASE_URL}/dev/runs`, {
+  const response = await operatorFetch(`${API_BASE_URL}/dev/runs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ scenario_id: scenarioId, card_id: cardId }),

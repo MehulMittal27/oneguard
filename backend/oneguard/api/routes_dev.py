@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 from functools import cache
 from typing import Literal
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
@@ -36,6 +36,7 @@ from oneguard.api import models as api
 from oneguard.api import policies, queries
 from oneguard.api.errors import ApiError, not_found
 from oneguard.api.offline import RecordRun, live_ids, record_fields
+from oneguard.api.operator import require_operator
 from oneguard.api.routes_customer import (
     reissue_passport,
     reply,
@@ -56,7 +57,8 @@ from oneguard.viseca.worker import PLATFORM_PENDING, first_value, run_finished
 
 log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/dev")
+router = APIRouter(prefix="/api/dev", dependencies=[Depends(require_operator)])
+"""Every route here is behind the operator gate (``operator.require_operator``) in production."""
 catalogue_router = APIRouter(prefix="/api")
 """D9 (``GET /api/scenarios``): operator data outside ``/api/dev``, kept in this module."""
 

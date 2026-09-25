@@ -1,14 +1,20 @@
 import { ClockIcon } from '../../components/icons/lucide'
 import { NewPolicyShell } from './NewPolicyShell'
 
-/** DESIGN.md #16: step-1 timeout state. */
+/**
+ * DESIGN.md #16: step-1 timeout state. Also C1's `429 rate_limited`
+ * (`rateLimited`, the server's sentence): the same screen, since the fix is the
+ * same (try again, or use the form), but it does not blame the AI.
+ */
 export function NewPolicyTimeout({
   instruction,
+  rateLimited = null,
   onCancel,
   onRetry,
   onUseForm,
 }: {
   instruction: string
+  rateLimited?: string | null
   onCancel: () => void
   onRetry: () => void
   onUseForm: () => void
@@ -42,11 +48,22 @@ export function NewPolicyTimeout({
         <span className="flex size-14 items-center justify-center rounded-full bg-surface-sunken text-ink-muted">
           <ClockIcon size={26} strokeWidth={1.8} />
         </span>
-        <p className="text-[17px] font-semibold text-ink">The AI took too long</p>
-        <p className="text-[13px] text-ink-muted">
-          We stopped reading and saved nothing. Nothing was approved while we were offline. No
-          rule is active. Your words are still here.
-        </p>
+        {rateLimited ? (
+          <>
+            <p className="text-[17px] font-semibold text-ink">Too many drafts</p>
+            <p className="text-[13px] text-ink-muted">
+              {rateLimited} We saved nothing. No rule is active. Your words are still here.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="text-[17px] font-semibold text-ink">The AI took too long</p>
+            <p className="text-[13px] text-ink-muted">
+              We stopped reading and saved nothing. Nothing was approved while we were offline. No
+              rule is active. Your words are still here.
+            </p>
+          </>
+        )}
       </div>
 
       <div className="rounded-card border border-hairline bg-surface p-4">

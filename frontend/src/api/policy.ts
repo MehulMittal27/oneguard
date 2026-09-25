@@ -3,6 +3,16 @@ import { signedFetch } from '../lib/deviceKey'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 
+/** C1 refuses a longer instruction (422, docs/api-contract.md §3.2); the textarea stops here. */
+export const MAX_INSTRUCTION_CHARS = 1000
+
+/**
+ * C1's `429 rate_limited` (more than 10 drafts a minute), with the server's
+ * sentence ("At most 10 drafts a minute. Try again in 42 seconds.") for the
+ * screen to show as is.
+ */
+export class DraftRateLimited extends Error {}
+
 // Mock mode's stand-in for the backend's mandate store: C2 writes it, C5 flips
 // it, C3 reads it. The UI only ever learns a card's policy from C3, so mock mode
 // needs something for C3 to read, or every refresh would erase the policy just
@@ -141,6 +151,10 @@ export async function compilePolicy(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
+  if (response.status === 429) {
+    const body = (await response.json().catch(() => null)) as { error?: { message?: string } } | null
+    throw new DraftRateLimited(body?.error?.message ?? 'At most 10 drafts a minute. Try again shortly.')
+  }
   if (!response.ok) {
     throw new Error(`Failed to compile policy (${response.status})`)
   }

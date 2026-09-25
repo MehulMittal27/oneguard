@@ -546,7 +546,9 @@ def test_the_operator_reset_works_only_outside_prod(db_url: str, monkeypatch: py
         async with running(db_url, **NO_SWEEP) as run:
             await confirm_form(run, "CA0001")
             monkeypatch.setenv("ONEGUARD_ENV", "prod")
-            r = await run.post("/api/dev/devices/reset/CA0001")
+            monkeypatch.setenv("ONEGUARD_OPERATOR_TOKEN", "op-token")
+            assert (await run.post("/api/dev/devices/reset/CA0001")).status_code == 401  # the operator gate first
+            r = await run.http.post("/api/dev/devices/reset/CA0001", headers={"X-OneGuard-Operator": "op-token"})
             assert r.status_code == 403 and r.json()["error"]["code"] == "forbidden"
             assert len((await passport(run))["document"]["devices"]) == 1
             monkeypatch.setenv("ONEGUARD_ENV", "dev")

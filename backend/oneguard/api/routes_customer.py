@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import secrets
 from collections import defaultdict
 from typing import Any
@@ -241,6 +242,22 @@ async def create_draft(card_id: str, body: api.PolicyDraftRequest, request: Requ
     """C1: an instruction through the compiler, or a form with rules built directly."""
     s = services(request)
     customer_id = await _card_customer(s, card_id)
+    if body.instruction is not None and len(body.instruction) > api.MAX_INSTRUCTION_CHARS:
+        raise ApiError(
+            422,
+            "validation",
+            f"The instruction is longer than {api.MAX_INSTRUCTION_CHARS:,} characters.",
+            {"max_chars": api.MAX_INSTRUCTION_CHARS, "chars": len(body.instruction)},
+        )
+    if (wait_s := s.draft_limiter.acquire(customer_id)) is not None:
+        retry_after = max(1, math.ceil(wait_s))
+        raise ApiError(
+            429,
+            "rate_limited",
+            f"At most {s.draft_limiter.limit} drafts a minute. Try again in {retry_after} second{'' if retry_after == 1 else 's'}.",
+            {"limit": s.draft_limiter.limit, "window_s": int(s.draft_limiter.window_s), "retry_after_s": retry_after},
+            headers={"Retry-After": str(retry_after)},
+        )
     if body.form is not None:
         rules, flags = policies.form_rules(body.form)
         uncertainty = body.form.uncertainty_policy

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getAccounts } from '../../api/accounts'
-import { compilePolicy, confirmPolicy } from '../../api/policy'
+import { compilePolicy, confirmPolicy, DraftRateLimited } from '../../api/policy'
 import type { Account, FormInput, Mandate, PolicyDraft } from '../../api/types'
 import { useCustomer } from '../../state/CustomerContext'
 import { DeviceGateCancelled, useDevice } from '../../state/DeviceContext'
@@ -55,6 +55,9 @@ export function NewPolicyFlow({
   // too long" (NewPolicyTimeout's copy) — a separate inline error instead.
   const [confirmError, setConfirmError] = useState(false)
   const [formError, setFormError] = useState(false)
+  // C1's 429 in the server's words; shown in place of "The AI took too long" or
+  // the form's generic error, since waiting is the fix, not the form.
+  const [rateLimited, setRateLimited] = useState<string | null>(null)
   // Which card the policy applies to — starts at whichever card this flow
   // was opened for (Home/Accounts/Card detail), but the customer can pick a
   // sibling card on the same account before compiling (D-050). Only fetched
@@ -90,19 +93,22 @@ export function NewPolicyFlow({
       setDraft(result)
       setUncertaintyPolicy(result.uncertainty_policy)
       setStep('check')
-    } catch {
+    } catch (caught) {
+      setRateLimited(caught instanceof DraftRateLimited ? caught.message : null)
       setStep('timeout')
     }
   }
 
   async function submitForm() {
     setFormError(false)
+    setRateLimited(null)
     try {
       const result = await compilePolicy(selectedCardId, { form })
       setDraft(result)
       setUncertaintyPolicy(result.uncertainty_policy)
       setStep('check')
-    } catch {
+    } catch (caught) {
+      if (caught instanceof DraftRateLimited) setRateLimited(caught.message)
       setFormError(true)
     }
   }
@@ -151,6 +157,7 @@ export function NewPolicyFlow({
     return (
       <NewPolicyTimeout
         instruction={instruction}
+        rateLimited={rateLimited}
         onCancel={onClose}
         onRetry={readWithAi}
         onUseForm={() => {
@@ -192,6 +199,7 @@ export function NewPolicyFlow({
       onSubmitForm={submitForm}
       onCancel={onClose}
       formError={formError}
+      formRateLimited={rateLimited}
       accountStatus={accountStatus}
       onRetryAccounts={() => {
         setAccountStatus('loading')

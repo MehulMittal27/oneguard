@@ -299,7 +299,17 @@ nothing (`tests/test_passport_backfill.py` runs the same on SQLite, and on Postg
   the private key is a PEM row.
 - **Issuer-side floors**: limits the bank sets that no passport can exceed, stated in the
   passport and enforced before the customer's rules.
-- **Stronger first-device binding**: tie the first enrolment to the customer's bank login
-  instead of trust on first use.
+- **Trust on first use (TOFU)**: the first device to enrol on a card with none enrolled
+  becomes its controller with no out-of-band proof that it belongs to the cardholder: no bank
+  login, no one-time code from the issuer, no card-present check. Whoever reaches P7 first for
+  a fresh card (or after an operator reset) holds it until the controller is removed. The fix
+  is to tie that first enrolment to the customer's bank login (or an issuer-sent code) before
+  P7 answers `enrolled`.
+- **Device key storage**: a device key is a non-extractable WebCrypto P-256 key in the
+  browser's IndexedDB. Script on the page cannot read the private key, but anything running
+  as that origin in that browser can ask it to sign, clearing site data loses it, and nothing
+  proves it lives in hardware: there is no attestation (no WebAuthn/passkey attestation, no
+  Secure Enclave or TPM statement), so the server cannot tell a phone's key from one in a
+  script. Passkeys (above) with attestation would close this.
 - **Agent-presented passports**: the agent sending the passport with each purchase and the
   issuer checking its version against the latest (today the issuer reads its own store).
