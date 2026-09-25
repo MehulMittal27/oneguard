@@ -11,7 +11,7 @@ const PHONE_H = SCREEN_H + 2 * BEZEL
 
 /**
  * The customer's phone UI, same origin, in an iframe at 390×844, signed in as
- * the run's customer (`/?customer=<id>&embed=1`, api-contract §6 item 19). It is
+ * the run's customer (`/?customer=<id>&embed=1`, api-contract §6 item 20). It is
  * the real app: step-ups are answered and policies revoked there, by the
  * customer, never by the console. A new customer reloads it (`key`).
  *

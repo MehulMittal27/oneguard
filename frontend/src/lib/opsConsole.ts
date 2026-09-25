@@ -211,6 +211,24 @@ export function healthChips(health: Health): HealthChip[] {
   ]
 }
 
+/**
+ * Why "Judging run (live)" cannot start, or `null` when it can: D3 hands the run
+ * to the Viseca worker, so it needs `/healthz` to show that worker configured and
+ * polling. A health read that has not arrived, failed, or is mock mode shows
+ * nothing about the worker, so the button waits for it rather than guessing.
+ */
+export function judgingRunBlocked(health: Health | null | undefined, failed = false): string | null {
+  if (failed) return 'Judging run needs the worker polling: /healthz did not answer.'
+  if (health === undefined) return 'Judging run needs the worker polling: reading /healthz…'
+  if (health === null) return 'Judging run needs the worker: mock mode has none.'
+  const worker = health.worker
+  if (!worker?.configured) return 'Judging run needs the worker: it is off on this server (not configured).'
+  const state = worker.state ?? 'unknown'
+  if (state === 'polling') return null
+  const error = worker.last_error ? ` Last error: ${worker.last_error}` : ''
+  return `Judging run needs the worker polling: it is ${state}.${error}`
+}
+
 // Scenario picker (D9) ------------------------------------------------------------------
 
 export interface ScenarioGroup {

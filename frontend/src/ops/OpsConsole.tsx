@@ -8,6 +8,7 @@ import {
   arrivalOrder,
   consoleRun,
   isWaiting,
+  judgingRunBlocked,
   passportSummary,
   readVerification,
   runDecisions,
@@ -35,7 +36,7 @@ function refusalText(error: unknown): string {
 }
 
 /**
- * The operator console (`/ops`, docs/api-contract.md §6 item 18), for the
+ * The operator console (`/ops`, docs/api-contract.md §6 item 19), for the
  * projector: pick a scenario, start it, and watch the engine decide while the
  * customer answers on the phone beside it.
  *
@@ -225,6 +226,8 @@ export default function OpsConsole() {
   const phoneCustomer = run ? customerId : (selected?.customer_id ?? null)
   const phoneName = run ? run.customerName : (selected?.customer_name ?? null)
   const offline = healthFailed || runFailed
+  // D3 needs the worker polling (/healthz); the button and the dialog both say why not.
+  const judgingBlocked = judgingRunBlocked(health, healthFailed)
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-ground">
@@ -249,6 +252,7 @@ export default function OpsConsole() {
             busy={busy}
             onReplay={replay}
             onJudgingRun={() => setJudgingOpen(true)}
+            judgingBlocked={judgingBlocked}
             signIn={signIn}
             refusal={refusal}
             signals={signals}
@@ -272,8 +276,8 @@ export default function OpsConsole() {
       {judgingOpen && selected && (
         <JudgingRunDialog
           scenario={selected}
-          busy={busy}
-          refusal={judgingRefusal}
+          busy={busy || judgingBlocked !== null}
+          refusal={judgingRefusal ?? judgingBlocked}
           onStart={judgingRun}
           onClose={closeJudging}
         />

@@ -1,5 +1,5 @@
 /**
- * The phone UI's two deep links (`../../docs/api-contract.md` §6 item 19), read
+ * The phone UI's two deep links (`../../docs/api-contract.md` §6 item 20), read
  * once at load, never written back:
  *
  * - `?customer=<customer_id>` signs in as that customer and skips the picker.

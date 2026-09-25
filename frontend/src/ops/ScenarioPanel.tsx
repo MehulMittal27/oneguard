@@ -11,7 +11,8 @@ const SECONDARY = `${BUTTON} border border-border-quiet bg-surface text-ink enab
 /**
  * Which scenario to start and how: the picker (D9, grouped by customer, the
  * current run's scenario marked), its instruction verbatim, and the start
- * buttons (D2 replay at two speeds, D3 behind a typed confirmation). Also the
+ * buttons (D2 replay at two speeds, D3 behind a typed confirmation and only while
+ * `/healthz` shows the worker polling, saying why when not). Also the
  * chaos toggle (D5) and a health refresh.
  */
 export function ScenarioPanel({
@@ -22,6 +23,7 @@ export function ScenarioPanel({
   busy,
   onReplay,
   onJudgingRun,
+  judgingBlocked,
   signIn,
   refusal,
   signals,
@@ -37,6 +39,8 @@ export function ScenarioPanel({
   busy: boolean
   onReplay: (speedMs: number) => void
   onJudgingRun: () => void
+  // Why a judging run cannot start (the worker is off or not polling), or null.
+  judgingBlocked: string | null
   // Whom to sign in as for the current run; the backend's refusal of a start, verbatim.
   signIn: string | null
   refusal: string | null
@@ -110,7 +114,14 @@ export function ScenarioPanel({
         <button type="button" className={PRIMARY} disabled={!canStart} onClick={() => onReplay(15000)}>
           Replay 15 s
         </button>
-        <button type="button" className={SECONDARY} disabled={!canStart} onClick={onJudgingRun}>
+        <button
+          type="button"
+          className={SECONDARY}
+          disabled={!canStart || judgingBlocked !== null}
+          title={judgingBlocked ?? undefined}
+          aria-describedby={judgingBlocked ? 'ops-judging-blocked' : undefined}
+          onClick={onJudgingRun}
+        >
           Judging run (live)
         </button>
 
@@ -130,6 +141,11 @@ export function ScenarioPanel({
         </button>
       </div>
 
+      {judgingBlocked && (
+        <p id="ops-judging-blocked" className={`${TEXT_M} text-ink-muted`}>
+          {judgingBlocked}
+        </p>
+      )}
       {signIn && (
         <p role="status" className={`${TEXT_M} flex items-center gap-2 font-semibold text-approved`}>
           <CheckIcon size={16} />

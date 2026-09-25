@@ -8,6 +8,7 @@ import {
   formatLatency,
   groupScenarios,
   healthChips,
+  judgingRunBlocked,
   outcomeBadge,
   passportSummary,
   readVerification,
@@ -199,4 +200,28 @@ test('the stream fills in delivery order: what arrives goes on top, whatever its
   order = arrivalOrder(order, [d('b'), d('late'), d('a'), d('earliest'), d('early')])
   assert.deepEqual(order, ['b', 'a', 'earliest', 'late', 'early'])
   assert.deepEqual(arrivalOrder(order, [d('a')]), order)
+})
+
+test('a judging run waits for /healthz to show the worker polling, and says why not', () => {
+  assert.equal(judgingRunBlocked({ worker: { configured: true, state: 'polling', ok: true } }), null)
+  assert.equal(
+    judgingRunBlocked({ worker: { configured: false } }),
+    'Judging run needs the worker: it is off on this server (not configured).',
+  )
+  assert.equal(judgingRunBlocked({}), 'Judging run needs the worker: it is off on this server (not configured).')
+  assert.equal(
+    judgingRunBlocked({ worker: { configured: true, state: 'standby' } }),
+    'Judging run needs the worker polling: it is standby.',
+  )
+  assert.equal(
+    judgingRunBlocked({ worker: { configured: true, state: 'degraded', last_error: 'events: 401' } }),
+    'Judging run needs the worker polling: it is degraded. Last error: events: 401',
+  )
+  assert.equal(judgingRunBlocked({ worker: { configured: true } }), 'Judging run needs the worker polling: it is unknown.')
+  assert.equal(judgingRunBlocked(undefined), 'Judging run needs the worker polling: reading /healthz…')
+  assert.equal(judgingRunBlocked(null), 'Judging run needs the worker: mock mode has none.')
+  assert.equal(
+    judgingRunBlocked({ worker: { configured: true, state: 'polling' } }, true),
+    'Judging run needs the worker polling: /healthz did not answer.',
+  )
 })
