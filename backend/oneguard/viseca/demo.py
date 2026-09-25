@@ -22,7 +22,8 @@ demo-live:
    step-up outcome, until the run is done.
 
 demo-offline (``--offline``): ``GET /healthz`` the same way, then D2 restarts the offline
-replay of the scenario on the server, ``--speed-ms`` apart.
+replay of the scenario on the server, ``--speed-ms`` apart, on ``--card`` or else the card D9
+(``GET /api/scenarios``, the store only) names for the scenario.
 
 Nothing here answers a step-up: the customer does, in the app (CLAUDE.md rule 6).
 
@@ -380,8 +381,14 @@ async def offline(
         if await server_health(http) is None:
             out(no_server(api_base))
             return 1
-        body = {"scenario_id": scenario_id, "card_id": card_id or "", "speed_ms": speed_ms}
         try:
+            if not card_id:
+                listed = (await _call(http, "GET", "/api/scenarios"))["scenarios"]
+                card_id = next((s["card_id"] for s in listed if s["scenario_id"] == scenario_id), None)
+                if not card_id:
+                    out(f"Nobody knows yet which card {scenario_id} runs on; pass --card <card id>.")
+                    return 1
+            body = {"scenario_id": scenario_id, "card_id": card_id, "speed_ms": speed_ms}
             status = await _call(http, "POST", "/api/dev/replay/restart", body)
         except ApiRefused as exc:
             out(f"{api_base} refused: {exc.message} ({exc.code})")

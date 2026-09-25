@@ -414,6 +414,14 @@ def test_demo_offline_restarts_the_servers_replay(db_url: str, no_local_worker: 
             assert code == 0, lines
             assert lines == [f"Replay of SCEN0000 on card CA0001 started at {API}: 1 purchase, 0 ms apart."]
             assert (await run.get("/api/dev/replay")).json()["scenario_id"] == "SCEN0000"
+
+            # no --card (`make demo-offline SCEN=…`): the scenario's own card, from D9
+            lines.clear()
+            code = await demo.offline(
+                "SCEN0001", api_base=API, speed_ms=0, transport=httpx.ASGITransport(app=run.app), out=lines.append
+            )
+            assert code == 0, lines
+            assert lines == [f"Replay of SCEN0001 on card CA0001 started at {API}: 10 purchases, 0 ms apart."]
         assert no_local_worker == []
 
     asyncio.run(scenario())
