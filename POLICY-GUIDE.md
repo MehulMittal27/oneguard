@@ -5,8 +5,8 @@ Every check OneGuard runs on a purchase, what it does today, and how often it de
 
 ## Summary: what OneGuard protects
 
-**Of 45 test purchases, 33 needed a stop or a question. A plain spending limit catches 6 of
-them. OneGuard catches all 33 and still lets the 8 ordinary ones straight through.**
+**Of 45 test purchases, we identified that 33 needed a stop or a question. A plain spending limit catches 6 of
+them only. OneGuard catches all 33 and still lets the 8 ordinary ones straight through.**
 
 | | Outcome | Purchases | CHF | Meaning |
 |---|---|---:|---:|---|
