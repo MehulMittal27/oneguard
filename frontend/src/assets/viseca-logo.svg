@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Ebene_2" data-name="Ebene 2" xmlns="http://www.w3.org/2000/svg" width="62.36mm" height="14.16mm" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 176.76 40.13">
+  <defs>
+    <style>
+      .cls-1 {
+        clip-path: url(#clippath);
+      }
+
+      .cls-1, .cls-2 {
+        fill: none;
+      }
+
+      .cls-1, .cls-2, .cls-3 {
+        stroke-width: 0px;
+      }
+
+      .cls-3 {
+        fill: #000913;
+      }
+
+      .cls-4 {
+        clip-path: url(#clippath-1);
+      }
+
+      .cls-5 {
+        clip-path: url(#clippath-2);
+      }
+    </style>
+    <clipPath id="clippath">
+      <rect class="cls-2" x="128.95" y="3.6" width="26.91" height="33.04" transform="translate(74.79 147.05) rotate(-70)"/>
+    </clipPath>
+    <clipPath id="clippath-1">
+      <path class="cls-1" d="M130.32,10.99c-1.2,0-2.17.97-2.17,2.16v13.95c0,1.19.97,2.16,2.17,2.16h18.12c1.19,0,3.05-1.29,3.05-2.48l5.17-13.47c0-1.19-.51-2.31-1.71-2.31h-24.63Z"/>
+    </clipPath>
+    <clipPath id="clippath-2">
+      <rect class="cls-2" x="128.12" y="10.86" width="28.67" height="18.43"/>
+    </clipPath>
+  </defs>
+  <g id="Ebene_1-2" data-name="Ebene 1">
+    <g>
+      <g class="cls-4">
+        <g class="cls-5">
+          <image width="40" height="26" transform="translate(126.27 31.12) scale(.82 -.82)" xlink:href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACkAAAAbCAYAAADh0qZQAAAACXBIWXMAAA2IAAANiAGC02DBAAACEUlEQVRYhd1X0Y7bMAwjZQP7vH32fmS4T7hrHhLvwZIt2ckBdTrcbQWMxK0T06QooiylFHzjD0lmm5S3X8C+tVGODTh0fmzA/gCODeV4tHnZN2B/r9/vG3B8AMcD5fio9+VR31P2p8H9+Pm73UuHLACTDhmuCRCdI9XHmEAmgFnX2dpcr7YOaZ3GCSTSCdCs4FLfmCmsoeQI2IDpelLiNrdANjYEENtU5+hMMRwkAu4MZ2VUWSVfBFJGiY0B6Sx6yW0dxIHxkrvnbko+Mym95tpG4thirgdy0rNdHVjkBvCu5BJunWR9c6lyOZk5HmI0HEZTGfC7IE1KY9Nq0OSiMuNlDCDN1YPL9Tnab7dABrY4sOOHsimuFOAlH8sg9wNizUANZPESYgY1sQarO3+gFFRozDbWb4I8Y2uuQRuM0ooDHxq5tSFRtjNWJD8BSZxKHIylDTy4XuocelVw9OAX2Qwgm+RyJfVnMWnGuohJn0arIDm2muBe2/izmDQ2h5hkQq1dk/z5nnlhnEFykfWYhESXL8TkVJNR8rsx6Q21HpMBJE1u8SyuxKSX/Cwmn3N5NI6+sMBJ+ldiUp9/HiQBUNsIF2PSN/PXxeTgbm+axZgMzL0mJmfjKHNzTI5yDjHZeubrYzLybb3ulK2zGvTGuI7JLu1aTIYVs+RXY4xJk/wsJiPbKzHJf+F/91dj+H8+fwCPyU+DXlxRxQAAAABJRU5ErkJggg=="/>
+        </g>
+      </g>
+      <polygon class="cls-3" points="14.53 39.48 14.53 39.39 14.61 39.36 14.53 39.39 14.53 39.48 14.46 39.48 0 .65 5.24 .65 16.94 33.37 29.06 .65 34.04 .65 19.45 39.09 19.29 39.48 14.53 39.48"/>
+      <polygon class="cls-3" points="162.24 .65 162.24 .74 162.16 .77 162.24 .74 162.24 .65 162.31 .65 176.76 39.48 171.53 39.48 159.82 6.76 147.7 39.48 142.72 39.48 157.32 1.04 157.47 .65 162.24 .65"/>
+      <polygon class="cls-3" points="40.36 39.48 40.36 39.39 40.45 39.39 40.36 39.39 40.36 39.48 40.27 39.48 40.27 1.26 40.27 .65 45.21 .65 45.21 39.48 40.36 39.48"/>
+      <path class="cls-3" d="M54.05,38.47l-.41-.18.42-4.27.1-.99.13.08.71.46c2.12,1.33,4.56,2.1,7.97,2.11,4.46-.07,7.81-2.11,7.85-7.09,0-.03,0-.07,0-.1.02-3.07-3.96-5.17-8.31-7.52-4.29-2.38-8.91-5.18-8.93-10.55.01-6.45,5.69-10.41,12.52-10.42,1.89,0,4.91.28,7.6,1.28l.48.17-.83,4.74-.11-.06-.64-.35c-1.51-.84-4.07-1.33-6.51-1.33h-.04c-3.78.05-7.52,1.48-7.53,5.86v.09c-.02,3.14,3.95,5.06,8.3,7.37,4.3,2.32,8.93,5.24,8.94,11.12,0,8.04-6.97,11.23-12.95,11.23-3.75,0-6.69-.78-8.76-1.67"/>
+      <polygon class="cls-3" points="84.19 39.48 84.19 39.39 84.27 39.39 84.19 39.39 84.19 39.48 84.09 39.48 84.09 1.26 84.09 .65 103.74 .65 103.74 5.1 89.03 5.1 89.03 17.3 102.99 17.3 102.99 21.75 89.03 21.75 89.03 35.03 104.39 35.03 104.39 39.48 84.19 39.48"/>
+      <path class="cls-3" d="M116.22,34.45h0l-.07.06-.06.06c-3.39-3.54-5.21-8.57-5.21-14.51s1.88-10.88,5.29-14.44c3.41-3.57,8.33-5.63,14.29-5.63h0c2.29.02,6.72.35,8.9,1.47l.35.19-.24,3.84-.06.94-.12-.06-.71-.37c-2.2-1.16-5.52-1.55-8.1-1.55h-.02c-9.43.04-14.59,6.52-14.64,15.61.06,9.26,5.04,15.57,14.64,15.61h.1c2.42,0,6.08-.37,7.99-1.53l.86-.51.31,4.6-.05.03-.27.17c-2.3,1.37-6.5,1.69-8.94,1.71h0c-6.06,0-10.98-2.02-14.36-5.56l.06-.06.07-.06"/>
+    </g>
+  </g>
+</svg>

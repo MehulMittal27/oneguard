@@ -1,0 +1,88 @@
+@import 'tailwindcss';
+@import './styles/tokens.css';
+
+/* Maps tokens into Tailwind's theme namespace by reference, same approach as
+   frontend/src/index.css, trimmed to what the console actually uses. */
+@theme {
+  --color-ground: var(--ground);
+  --color-surface: var(--surface);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-surface-active: var(--surface-active);
+  --color-surface-expired: var(--surface-expired);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-muted: var(--ink-muted);
+  --color-hairline: var(--hairline);
+  --color-border-quiet: var(--border-quiet);
+  --color-border-dashed: var(--border-dashed);
+  --color-on-ink: var(--on-ink);
+  --color-on-ink-soft: var(--on-ink-soft);
+  --color-on-ink-muted: var(--on-ink-muted);
+  --color-on-ink-rule: var(--on-ink-rule);
+  --color-approved: var(--approved);
+  --color-approved-tint: var(--approved-tint);
+  --color-stopped: var(--stopped);
+  --color-stopped-tint: var(--stopped-tint);
+  --color-stopped-border: var(--stopped-border);
+  --color-asked: var(--asked);
+  --color-asked-ink: var(--asked-ink);
+  --color-asked-tint: var(--asked-tint);
+  --color-asked-border: var(--asked-border);
+  --color-leash-fill: var(--leash-fill);
+  --color-leash-limit: var(--leash-limit);
+  --color-cord-accent: var(--cord-accent);
+  --color-cord-accent-tint: var(--cord-accent-tint);
+  --color-alert-badge: var(--alert-badge);
+  --color-destructive: var(--destructive);
+  --color-destructive-border: var(--destructive-border);
+  --color-scrim: var(--scrim);
+
+  --spacing-1: var(--space-1);
+  --spacing-2: var(--space-2);
+  --spacing-3: var(--space-3);
+  --spacing-4: var(--space-4);
+  --spacing-5: var(--space-5);
+  --spacing-6: var(--space-6);
+  --spacing-7: var(--space-7);
+  --spacing-8: var(--space-8);
+  --spacing-9: var(--space-9);
+
+  --radius-stamp: var(--corner-stamp);
+  --radius-meter: var(--corner-meter);
+  --radius-quote: var(--corner-quote);
+  --radius-tile: var(--corner-tile);
+  --radius-button: var(--corner-button);
+  --radius-row: var(--corner-row);
+  --radius-card: var(--corner-card);
+  --radius-sheet: var(--corner-sheet);
+  --radius-pill: var(--corner-pill);
+
+  --font-display: var(--typeface-display);
+  --font-sans: var(--typeface-body);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-ground);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
