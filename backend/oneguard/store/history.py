@@ -69,6 +69,7 @@ class StoreHistoryIndex:
         rows: Iterable[HistoryRow] = (),
         merchant_names: Mapping[str, str] | None = None,
         item_prices: Mapping[str, tuple[float, float, float]] | None = None,
+        item_texts: Mapping[str, str] | None = None,
     ) -> None:
         self._rows = sorted(rows, key=lambda r: (r.timestamp, r.authorization_id))
         self._names = dict(merchant_names or {})
@@ -76,6 +77,7 @@ class StoreHistoryIndex:
             {m: normalise_merchant_name(name) for m, name in self._names.items()}
         )
         self._prices = dict(item_prices or {})
+        self._item_texts = dict(item_texts or {})
         self._end = self._rows[-1].timestamp if self._rows else None
 
         by_customer: dict[str, dict[str, int]] = defaultdict(dict)
@@ -117,7 +119,7 @@ class StoreHistoryIndex:
 
     @classmethod
     def load(cls, session: Session) -> StoreHistoryIndex:
-        """Read history, merchant names and item prices from the store."""
+        """Read history, merchant names, item prices and item texts from the store."""
         history = session.scalars(select(AuthorizationHistory)).all()
         names = session.execute(select(Merchant.merchant_id, Merchant.merchant_name)).all()
         items = session.scalars(select(Item)).all()
@@ -132,6 +134,7 @@ class StoreHistoryIndex:
                 )
                 for i in items
             },
+            item_texts={i.item_id: f"{i.item_name}. {i.item_description}" for i in items},
         )
 
     def known_merchants(self, customer_id: str) -> Mapping[str, int]:
@@ -172,6 +175,9 @@ class StoreHistoryIndex:
 
     def item_price_range(self, item_id: str) -> tuple[float, float, float] | None:
         return self._prices.get(item_id)
+
+    def catalogue_item_text(self, item_id: str) -> str | None:
+        return self._item_texts.get(item_id)
 
 
 class ReloadableHistory:
@@ -222,3 +228,6 @@ class ReloadableHistory:
 
     def item_price_range(self, item_id: str) -> tuple[float, float, float] | None:
         return self.current.item_price_range(item_id)
+
+    def catalogue_item_text(self, item_id: str) -> str | None:
+        return self.current.catalogue_item_text(item_id)

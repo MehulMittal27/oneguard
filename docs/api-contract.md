@@ -307,6 +307,7 @@ expire — that is a broken state, not a degraded one.
 | `merchant.merchant_category` | trusted catalogue category |
 | `merchant.known_shop` | `"true"` if ≥1 approved purchase by this customer at this `merchant_id` on any of their cards (history + this run's finals); customer-level per rules.md Q7. `merchant.familiar_on_card` is accepted as an alias for the same check |
 | `items[].item_category` | every cart line must satisfy `in` / `not_in` |
+| `items[].contains_alcohol` | `"false"` ("no alcohol"): every cart line must be known not to be an alcoholic drink. `"true"` when the catalogue's text for the `item_id` or the shop's `item_name` / `item_details` names alcohol (allowlisted lexicon: wine, beer, spirits, Wein, Bier, vin, birra…); `"false"` for a line whose category cannot be a drink (household, electronics, …), or whose texts name no alcohol and no bare drinks word, or say "alcohol-free" / "soft drinks"; `unknown` when drinks are named without saying which, or alcohol and alcohol-free together. The catalogue naming alcohol wins over the shop's text. Fail: `item_mismatch`, "Wine and spirits is alcohol, which you excluded" |
 | `items[].size_eu` | regex-extracted from `item_details`; `unknown` if absent |
 | `items[].size_letter` | regex-extracted letter size (XS–XXXL, small/medium/large) from `item_details`; `unknown` if absent (C6, clothing) |
 | `order.return_window_days` | regex-extracted from `item_details`; `unknown` if absent; `order_returnable == "false"` ⇒ 0 |

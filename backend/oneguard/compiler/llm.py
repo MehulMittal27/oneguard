@@ -17,6 +17,7 @@ from decimal import Decimal
 from typing import Any
 
 from oneguard.compiler.draft import (
+    ALCOHOL_FIELD,
     COUNT_FIELD,
     COUNTRY_NAMES,
     FIELDS,
@@ -33,6 +34,7 @@ from oneguard.compiler.draft import (
 )
 from oneguard.compiler.lint import stated_boundary
 from oneguard.compiler.parser import (
+    NO_ALCOHOL,
     each_is_per_purchase,
     is_product_question,
     product_categories,
@@ -137,10 +139,10 @@ EXAMPLES: list[tuple[str, dict[str, Any]]] = [
         },
     ),
     (
-        # per-order vs period amounts, "never spend more than", item types, known shop, shop type
+        # per-order vs period amounts, "never spend more than", item types, known shop, shop type, alcohol
         (
-            "Buy groceries and household basics at supermarkets I already use. Never spend more than "
-            "CHF 80 per order or CHF 200 in any 14-day window."
+            "Buy groceries and household basics at supermarkets I already use. No alcohol. Never spend "
+            "more than CHF 80 per order or CHF 200 in any 14-day window."
         ),
         {
             "uncertainty_policy": "ask",
@@ -152,6 +154,7 @@ EXAMPLES: list[tuple[str, dict[str, Any]]] = [
                 _example_rule("merchant.merchant_category", "=", "at supermarkets", value_text="groceries",
                               source="inferred"),
                 _example_rule(KNOWN_SHOP_FIELD, "=", "supermarkets I already use", value_text="true"),
+                _example_rule(ALCOHOL_FIELD, "=", "No alcohol", value_text="false"),
                 _example_rule("authorization.billing_amount_chf", "<=", "Never spend more than CHF 80 per order",
                               value_number=80, currency="CHF", scope="purchase"),
                 _example_rule("authorization.billing_amount_chf", "<=", "CHF 200 in any 14-day window",
@@ -290,6 +293,7 @@ Use ONLY these fields (docs/api-contract.md §3.3):
 | merchant.merchant_category | trusted shop type, one of: {", ".join(MERCHANT_CATEGORIES)} |
 | {KNOWN_SHOP_FIELD} | "true": the customer has bought at this shop before ("shops I use regularly", "a seller I have bought from before") |
 | items[].item_category | every cart line must satisfy in / not_in; values: {", ".join(ITEM_CATEGORIES)} |
+| {ALCOHOL_FIELD} | "false": no alcoholic drink on any cart line ("no alcohol", "no wine or beer"); read from the item and the catalogue |
 | items[].size_eu | EU size read from the product text (number) |
 | items[].size_letter | letter size: {", ".join(SIZE_LETTERS)} |
 | order.return_window_days | return window in days; ">=" N for "returnable within N days or more" |
@@ -350,9 +354,10 @@ Rules:
   dinners" is the item types and the weekdays; "one lunch delivery a day" is the item types and
   the count.
 - Excluded types ("no gift cards, no cosmetics"; flights and insurance are "travel") are one
-  "not_in" rule; list values come only from the item_category values above. A thing no category
-  holds ("no alcohol": wine is groceries; "no premium tiers"; "no annual prepayments") is one
-  unverifiable rule each.
+  "not_in" rule; list values come only from the item_category values above. Alcohol is no
+  category (wine is groceries): "no alcohol" / "no wine" is one {ALCOHOL_FIELD} "=" "false" rule.
+  A thing no field holds ("no premium tiers"; "no annual prepayments") is one unverifiable rule
+  each.
 - Known shop: "shops I use", "supermarkets I already use", "my usual services", "my current
   subscriptions", "no new services" all mean {KNOWN_SHOP_FIELD} "true".
 - Shop type words: "outdoor" / "sports" -> sporting_goods; "at supermarkets" ->
@@ -386,10 +391,23 @@ def _norm(text: str) -> str:
     return " ".join(text.lower().split())
 
 
+_EXCLUDED = r"\b(?:no|never|without|except|excluding)\s+(?:any\s+)?"
+
+
+def _no_alcohol(raw: dict[str, Any], words: str) -> dict[str, Any]:
+    return raw | {"field": ALCOHOL_FIELD, "operator": "=", "value_number": None, "value_list": None,
+                  "value_text": "false", "value_from": "literal", "words": words}
+
+
 def _split_exclusions(raw: dict[str, Any], instruction: str) -> list[dict[str, Any]]:
     """An excluded-types rule naming things no item category holds ("no alcohol, no gift
-    cards"): the categories stay one not_in rule, each other thing becomes an unverifiable
-    rule in the customer's words. Tighter, never looser: nothing excluded is dropped."""
+    cards"): the categories stay one not_in rule, alcohol becomes the per-line alcohol
+    rule, each other thing an unverifiable rule in the customer's words. A model's
+    unverifiable "no alcohol" is the alcohol rule too. Tighter, never looser: nothing
+    excluded is dropped."""
+    said = re.fullmatch(rf"{_EXCLUDED}(?P<what>.+?)\W*", (raw["words"] or "").strip(), re.IGNORECASE)
+    if raw["field"] == "unverifiable" and said and NO_ALCOHOL.fullmatch(said.group("what")):
+        return [_no_alcohol(raw, raw["words"].strip())]
     values = [v.strip().lower() for v in raw["value_list"] or []]
     if raw["field"] != "items[].item_category" or raw["operator"] != "not_in" \
             or all(v in ITEM_CATEGORIES for v in values):
@@ -399,9 +417,11 @@ def _split_exclusions(raw: dict[str, Any], instruction: str) -> list[dict[str, A
     for v in values:
         if v in ITEM_CATEGORIES:
             continue
-        said = re.search(rf"\b(?:no|never|without|except|excluding)\s+(?:any\s+)?{re.escape(v.replace('_', ' '))}\w*",
-                         instruction, re.IGNORECASE)
+        said = re.search(rf"{_EXCLUDED}{re.escape(v.replace('_', ' '))}\w*", instruction, re.IGNORECASE)
         words = said.group(0) if said else f"no {v.replace('_', ' ')}"
+        if NO_ALCOHOL.fullmatch(v.replace("_", " ")):
+            out.append(_no_alcohol(raw, words))
+            continue
         out.append(raw | {"field": "unverifiable", "operator": "=", "value_list": None, "value_text": words,
                           "words": words})
     return out
@@ -488,6 +508,7 @@ def _convert(
         "merchant.merchant_country": tuple(COUNTRY_NAMES),
         "items[].size_letter": SIZE_LETTERS,
         KNOWN_SHOP_FIELD: ("true",),
+        ALCOHOL_FIELD: ("false",),
         "order.order_returnable": ("true",),
         "order.order_cancellable": ("true",),
         "cart.recurring": ("true", "false"),
