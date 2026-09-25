@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { approveDevice, getDevices, getPassport, passportQrUrl, removeDevice, thisDevice, verifyDocument } from '../api/passport'
 import type { Device, Passport, VerifyResult } from '../api/types'
 import { formatShortDate } from '../lib/datetime'
+import { REVEAL_MS, prefersReducedMotion, takeReveal } from '../lib/passportReveal'
 import { DeviceGateCancelled, useDevice } from '../state/DeviceContext'
 import { CheckIcon, CrossIcon, DeviceIcon, ShieldIcon } from './icons/lucide'
 
@@ -36,6 +37,12 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
   // earlier check says nothing about it.
   const [checked, setChecked] = useState<{ version: number; result: VerifyResult | 'checking' | 'error' } | null>(null)
   const [refresh, setRefresh] = useState(0)
+  // The first-passport animation (lib/passportReveal.ts): on for REVEAL_MS once, then static.
+  const [revealing, setRevealing] = useState(false)
+  const revealTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => {
+    if (revealTimer.current) clearTimeout(revealTimer.current)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -44,6 +51,10 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
         const [nextPassport, nextDevices] = await Promise.all([getPassport(cardId), getDevices(cardId)])
         const nextMine = await thisDevice(cardId, nextDevices)
         if (cancelled) return
+        if (nextPassport && !prefersReducedMotion() && takeReveal(cardId, nextPassport.passport_id, 'card')) {
+          setRevealing(true)
+          revealTimer.current = setTimeout(() => setRevealing(false), REVEAL_MS)
+        }
         setPassport(nextPassport)
         setDevices(nextDevices)
         setMine(nextMine)
@@ -134,16 +145,21 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
   return (
     <div>
       {heading}
-      <div className="rounded-card bg-surface p-5">
+      <div className={`og-reveal rounded-card bg-surface p-5 ${revealing ? 'is-playing' : ''}`}>
         {passport ? (
           <div className="flex items-start gap-4">
-            <img
-              src={passportQrUrl(cardId, passport.version)}
-              alt={`QR code to verify version ${passport.version} of this card's passport`}
-              width={112}
-              height={112}
-              className="size-28 shrink-0 rounded-row border border-hairline bg-white p-1"
-            />
+            <div className="relative shrink-0">
+              <img
+                src={passportQrUrl(cardId, passport.version)}
+                alt={`QR code to verify version ${passport.version} of this card's passport`}
+                width={112}
+                height={112}
+                className="og-qr size-28 rounded-row border border-hairline bg-white p-1"
+              />
+              <span className="og-stamp" aria-hidden="true">
+                Sealed
+              </span>
+            </div>
             <div className="min-w-0 flex-1">
               <p className="flex items-center gap-1.5 text-[15px] font-semibold text-ink">
                 <span className="text-approved">
@@ -154,6 +170,11 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
               <p className="mt-1 text-[13px] text-ink-muted">
                 Version {passport.version}
                 {issuedAt && ` · issued ${formatShortDate(issuedAt)}`}
+              </p>
+              <p className="mt-0.5 flex items-baseline text-[12px] text-ink-muted">
+                <span className="shrink-0">Key&nbsp;</span>
+                <span className="og-key font-mono text-ink">{passport.key_id}</span>
+                <span className="og-caret text-ink" aria-hidden="true" />
               </p>
               {revoked && (
                 <span className="mt-2 inline-flex rounded-pill bg-stopped-tint px-2.5 py-0.5 text-[11px] font-semibold text-stopped">

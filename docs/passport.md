@@ -240,6 +240,19 @@ rejects the body). AU0042, the re-quote at CHF 350, is approved.
   "demo-live on <host>". On a card that already has an enrolled device it stops before
   changing anything and asks for that device's approval.
 
+### 4.1 The first passport
+
+When C2 issues a card's very first passport (the response has `passport.version == 1` and the
+card had no passport before), the new-policy flow shows step 3, "Your passport is issued": the
+passport as a document, sealed by a short animation (the card settles in, a "Sealed" stamp
+lands over the QR code and fades, the QR fades in, the signing key types out). It ends by
+800 ms and is static after; nothing moves under `prefers-reduced-motion`. The card's Passport
+section plays the same once, within a minute. Later versions, and a new policy on a card that
+already had a passport, never animate (`frontend/src/lib/passportReveal.ts`, CSS in
+`frontend/src/index.css`).
+
+![The first passport, final frame](img/passport-first-final-frame.png)
+
 ## 5. Backfill
 
 The deploy adds five tables and three nullable columns (`decisions.would_approve_if`,

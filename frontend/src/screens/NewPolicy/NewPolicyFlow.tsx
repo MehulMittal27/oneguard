@@ -4,6 +4,9 @@ import { compilePolicy, confirmPolicy } from '../../api/policy'
 import type { Account, FormInput, Mandate, PolicyDraft } from '../../api/types'
 import { useCustomer } from '../../state/CustomerContext'
 import { DeviceGateCancelled, useDevice } from '../../state/DeviceContext'
+import { usePolicy } from '../../state/PolicyContext'
+import { isFirstPassport, markReveal } from '../../lib/passportReveal'
+import { NewPolicyConfirmed } from './NewPolicyConfirmed'
 import { NewPolicyCheck } from './NewPolicyCheck'
 import { NewPolicyDescribe } from './NewPolicyDescribe'
 import { NewPolicyReading } from './NewPolicyReading'
@@ -18,7 +21,7 @@ const EMPTY_FORM: FormInput = {
   uncertainty_policy: 'ask',
 }
 
-type Step = 'describe' | 'reading' | 'timeout' | 'check'
+type Step = 'describe' | 'reading' | 'timeout' | 'check' | 'confirmed'
 type AccountStatus = 'loading' | 'error' | 'ready'
 
 /**
@@ -37,6 +40,9 @@ export function NewPolicyFlow({
 }) {
   const { signedInAs } = useCustomer()
   const { withDevice } = useDevice()
+  const { policiesByCard } = usePolicy()
+  // The confirmed policy, held for step 3 when it issued the card's first passport.
+  const [confirmed, setConfirmed] = useState<Mandate | null>(null)
   const [step, setStep] = useState<Step>('describe')
   const [aiOn, setAiOn] = useState(true)
   const [instruction, setInstruction] = useState('')
@@ -108,15 +114,33 @@ export function NewPolicyFlow({
     try {
       // C2 is signed by this device on the draft's card: enrolled silently when
       // it is the card's first, else approved first by one that controls it.
+      const before = policiesByCard[draft.card_id]
       const mandate = await withDevice(draft.card_id, () =>
         confirmPolicy({ ...draft, uncertainty_policy: uncertaintyPolicy }),
       )
-      onConfirmed(mandate)
+      if (isFirstPassport(before, mandate) && mandate.passport) {
+        // The card's first passport: seal it on step 3, and once on its Passport section.
+        markReveal(mandate.card_id, mandate.passport.passport_id)
+        setConfirmed(mandate)
+        setStep('confirmed')
+      } else {
+        onConfirmed(mandate)
+      }
     } catch (caught) {
       if (!(caught instanceof DeviceGateCancelled)) setConfirmError(true)
     } finally {
       setConfirming(false)
     }
+  }
+
+  if (step === 'confirmed' && confirmed) {
+    return (
+      <NewPolicyConfirmed
+        mandate={confirmed}
+        holderName={signedInAs?.name ?? ''}
+        onDone={() => onConfirmed(confirmed)}
+      />
+    )
   }
 
   if (step === 'reading') {
