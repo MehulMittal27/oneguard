@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react'
+import { phoneEmbedSrc } from '../lib/opsConsole'
 import { LINK, TEXT_M } from './style'
 
 const SCREEN_W = 390
@@ -13,7 +14,8 @@ const PHONE_H = SCREEN_H + 2 * BEZEL
  * The customer's phone UI, same origin, in an iframe at 390×844, signed in as
  * the run's customer (`/?customer=<id>&embed=1`, api-contract §6 item 20). It is
  * the real app: step-ups are answered and policies revoked there, by the
- * customer, never by the console. A new customer reloads it (`key`).
+ * customer, never by the console. A new customer is a new iframe (keyed on its
+ * URL), so nothing of the previous customer's app stays on screen.
  *
  * The phone scales down, never up, to fit its column.
  */
@@ -32,7 +34,7 @@ export function CustomerPhone({ customerId, customerLabel }: { customerId: strin
   }, [])
 
   const query = customerId ? `?customer=${encodeURIComponent(customerId)}` : ''
-  const embedSrc = `/${query}${query ? '&' : '?'}embed=1`
+  const embedSrc = phoneEmbedSrc(customerId)
 
   return (
     <aside aria-label="Customer phone" className="flex min-h-0 min-w-0 flex-col items-center gap-4">
@@ -54,7 +56,7 @@ export function CustomerPhone({ customerId, customerLabel }: { customerId: strin
             style={{ width: PHONE_W, height: PHONE_H, padding: BEZEL, transform: `scale(${scale})` }}
           >
             <iframe
-              key={customerId ?? 'picker'}
+              key={embedSrc}
               title="Customer phone"
               src={embedSrc}
               width={SCREEN_W}

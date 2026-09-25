@@ -49,7 +49,8 @@ were checked with the same pipeline and the scenario's policy fixture.
   D2 on `ONEGUARD_API_URL` (default the cloud app; without `CARD` it takes the scenario's
   card from D9) and starts nothing when it does not answer. The `?demo=1` **Operator**
   strip still exists for a phone-only setup.
-- Signing in: the embedded phone signs in as the run's customer by itself. By hand (another
+- Signing in: the embedded phone signs in by itself as the customer of the run in progress,
+  else of the selected scenario. By hand (another
   customer, or a phone without a link): the sign-in screen lists the live customers first
   (Elias Egli, Hannah Chen, Omar Chen, each with a **Live** badge; up to four). The public
   customers are behind **+ 27 more customers** (27 today; the count moves as live customers

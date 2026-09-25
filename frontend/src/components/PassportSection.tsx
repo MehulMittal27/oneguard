@@ -11,13 +11,20 @@ import {
   verifyDocument,
 } from '../api/passport'
 import type { Device, Passport, VerifyResult } from '../api/types'
+import { settle, viewFor, type CardRead } from '../lib/cardRead'
 import { formatShortDate } from '../lib/datetime'
 import { controllerLine, controllerOf, deviceOffer, isController, waitingLine } from '../lib/passportDevices'
 import { REVEAL_MS, prefersReducedMotion, takeReveal } from '../lib/passportReveal'
 import { DeviceGateCancelled, useDevice } from '../state/DeviceContext'
 import { CheckIcon, CrossIcon, DeviceIcon, ShieldIcon } from './icons/lucide'
 
-type Load = 'loading' | 'error' | 'ready'
+// Everything read for one card, held with that card's id (lib/cardRead.ts).
+interface Read {
+  passport: Passport | null
+  devices: Device[]
+  // This browser's device on the card: "Controller · this device", Approve, Remove.
+  mine: Device | null
+}
 
 const STATUS: Record<Device['status'], { label: string; className: string }> = {
   enrolled: { label: 'Enrolled', className: 'bg-approved-tint text-approved' },
@@ -42,21 +49,28 @@ const POLL_MS = 4000
  * `../../docs/api-contract.md` §6 item 22): the signed policy as a QR code to
  * the verify page, its version, the devices that control the card, and a
  * Verify that asks OneGuard to check the latest version's signature.
+ *
+ * Every read is held with the card it was read for: on another card nothing of
+ * the previous one shows, not even for a frame, and a late answer is dropped.
+ * Card detail also keys this section on the card, so its local state (a verify
+ * result, a handover being confirmed, an error) starts over with it.
  */
 export function PassportSection({ cardId, policyVersion }: { cardId: string; policyVersion?: number }) {
   const { withDevice, requestEnrol, version: deviceVersion } = useDevice()
-  const [passport, setPassport] = useState<Passport | null>(null)
-  const [devices, setDevices] = useState<Device[]>([])
-  const [mine, setMine] = useState<Device | null>(null)
-  const [load, setLoad] = useState<Load>('loading')
+  const [held, setHeld] = useState<CardRead<Read> | null>(null)
+  const view = viewFor(held, cardId)
   const [attempt, setAttempt] = useState(0)
   const [busy, setBusy] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   // The enrolled device the controller is about to hand control to (asked once more first).
   const [handover, setHandover] = useState<string | null>(null)
-  // Kept with the version it checked: a new version is a new document, and an
-  // earlier check says nothing about it.
-  const [checked, setChecked] = useState<{ version: number; result: VerifyResult | 'checking' | 'error' } | null>(null)
+  // Kept with the card and version it checked: a new version, or another card's
+  // passport at the same version, is a new document, and an earlier check says nothing about it.
+  const [checked, setChecked] = useState<{
+    cardId: string
+    version: number
+    result: VerifyResult | 'checking' | 'error'
+  } | null>(null)
   const [refresh, setRefresh] = useState(0)
   // The first-passport animation (lib/passportReveal.ts): on for REVEAL_MS once, then static.
   const [revealing, setRevealing] = useState(false)
@@ -69,19 +83,17 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
     let cancelled = false
     async function read() {
       try {
-        const [nextPassport, nextDevices] = await Promise.all([getPassport(cardId), getDevices(cardId)])
-        const nextMine = await thisDevice(cardId, nextDevices)
+        const [passport, devices] = await Promise.all([getPassport(cardId), getDevices(cardId)])
+        const mine = await thisDevice(cardId, devices)
         if (cancelled) return
-        if (nextPassport && !prefersReducedMotion() && takeReveal(cardId, nextPassport.passport_id, 'card')) {
+        if (passport && !prefersReducedMotion() && takeReveal(cardId, passport.passport_id, 'card')) {
           setRevealing(true)
           revealTimer.current = setTimeout(() => setRevealing(false), REVEAL_MS)
         }
-        setPassport(nextPassport)
-        setDevices(nextDevices)
-        setMine(nextMine)
-        setLoad('ready')
+        const arrived: CardRead<Read> = { cardId, status: 'ready', value: { passport, devices, mine } }
+        setHeld((current) => settle(current, arrived, cardId))
       } catch {
-        if (!cancelled) setLoad((current) => (current === 'ready' ? current : 'error'))
+        if (!cancelled) setHeld((current) => settle(current, { cardId, status: 'error' }, cardId))
       }
     }
     void read()
@@ -126,25 +138,9 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
     }
   }
 
-  async function check() {
-    if (!passport) return
-    const { version } = passport
-    setChecked({ version, result: 'checking' })
-    try {
-      const result = await verifyDocument({
-        document: passport.document,
-        signature: passport.signature,
-        key_id: passport.key_id,
-      })
-      setChecked({ version, result })
-    } catch {
-      setChecked({ version, result: 'error' })
-    }
-  }
-
   const heading = <p className="mb-3 font-display text-[20px] font-bold text-ink">Passport</p>
 
-  if (load === 'loading') {
+  if (view.status === 'loading') {
     return (
       <div>
         {heading}
@@ -153,7 +149,7 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
     )
   }
 
-  if (load === 'error') {
+  if (view.status === 'error') {
     return (
       <div>
         {heading}
@@ -162,7 +158,7 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
           <button
             type="button"
             onClick={() => {
-              setLoad('loading')
+              setHeld(null)
               setAttempt((n) => n + 1)
             }}
             className="h-11.5 rounded-button border-2 border-ink px-5 text-[15px] font-semibold text-ink"
@@ -174,10 +170,28 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
     )
   }
 
+  const { passport, devices, mine } = view.value
+
+  async function check() {
+    if (!passport) return
+    const { version } = passport
+    setChecked({ cardId, version, result: 'checking' })
+    try {
+      const result = await verifyDocument({
+        document: passport.document,
+        signature: passport.signature,
+        key_id: passport.key_id,
+      })
+      setChecked({ cardId, version, result })
+    } catch {
+      setChecked({ cardId, version, result: 'error' })
+    }
+  }
+
   const document = passport?.document ?? {}
   const revoked = Boolean(document.revoked_at)
   const issuedAt = typeof document.issued_at === 'string' ? document.issued_at : null
-  const verify = checked && checked.version === passport?.version ? checked.result : null
+  const verify = checked && checked.cardId === cardId && checked.version === passport?.version ? checked.result : null
   // Only the controller approves, removes and hands over control; every enrolled device signs changes.
   const iManage = isController(devices, mine)
   const controller = controllerOf(devices)

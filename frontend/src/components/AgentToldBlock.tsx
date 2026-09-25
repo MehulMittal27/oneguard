@@ -11,7 +11,14 @@ import { CheckIcon, CrossIcon } from './icons/lucide'
  */
 export function AgentToldBlock({ decision }: { decision: Decision }) {
   const told = decision.would_approve_if && decision.would_approve_if.length > 0 ? decision.counterfactual : null
-  const [result, setResult] = useState<VerifyResult | 'checking' | 'missing' | 'error' | null>(null)
+  // Held with the purchase it checked: another decision's receipt says nothing about this one.
+  const [checked, setChecked] = useState<{
+    authorizationId: string
+    result: VerifyResult | 'checking' | 'missing' | 'error'
+  } | null>(null)
+  const id = decision.authorization_id
+  const result = checked?.authorizationId === id ? checked.result : null
+  const setResult = (next: VerifyResult | 'checking' | 'missing' | 'error') => setChecked({ authorizationId: id, result: next })
   const hasReceipt = Boolean(decision.receipt_id)
 
   if (!told && !hasReceipt) return null
@@ -19,7 +26,7 @@ export function AgentToldBlock({ decision }: { decision: Decision }) {
   async function check() {
     setResult('checking')
     try {
-      const receipt = await getReceipt(decision.authorization_id)
+      const receipt = await getReceipt(id)
       if (!receipt) {
         setResult('missing')
         return
