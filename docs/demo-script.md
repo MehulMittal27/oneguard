@@ -32,7 +32,11 @@ were checked with the same pipeline and the scenario's policy fixture.
   on top; click a row for its evidence, counterfactual and receipt. Right: the customer's
   phone, embedded (`/?customer=<id>&embed=1`), signed in as the current run's customer.
   The console follows whichever run started last, from its own buttons, curl or `make`,
-  within one poll (1.5 s); the phone follows it too.
+  within one poll (1.5 s); the phone follows it too. Under the buttons, "Sign in as …"
+  names the selected scenario's customer and "Last run: …" the run on screen. A served
+  scenario (SCEN01xx) replays from record: the stored events of its latest judging run
+  through the current engine, locally, marked "Replay from record"; before any judging run
+  of it the Replay buttons say "Not run yet".
 - **Customer / presenter**: answers step-ups and revokes on the embedded phone (the
   projected one), or on a real phone in hand: **Open in new tab** above the embedded phone
   is the link (`/?customer=<id>`: signed in, no picker); untick **Show customer phone** to

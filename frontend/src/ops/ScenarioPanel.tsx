@@ -1,13 +1,15 @@
 import type { ScenarioSummary, SoftSignalsState } from '../api/types'
 import { CheckIcon, InfoIcon } from '../components/icons/lucide'
-import { groupScenarios, scenarioOptionLabel, type ConsoleRun } from '../lib/opsConsole'
+import { groupScenarios, scenarioOptionLabel, type ConsoleRun, type ReplayGuard } from '../lib/opsConsole'
 import { softSignalsLabel } from '../lib/softSignals'
 import { BUTTON_PRIMARY as PRIMARY, BUTTON_SECONDARY as SECONDARY, TEXT_L, TEXT_M } from './style'
 
 /**
  * Which scenario to start and how: the picker (D9, grouped by customer, the
- * current run's scenario marked), its instruction verbatim, and the start
- * buttons (D2 replay at two speeds, D3 behind a typed confirmation and only for a
+ * current run's scenario marked), its instruction verbatim, whom to sign in as
+ * for it and, on its own line, the run D7 names, and the start buttons (D2
+ * replay at two speeds: the pack's purchases, or a served scenario's stored
+ * events "from record", disabled with the reason before any live run of it; D3 behind a typed confirmation and only for a
  * scenario the platform serves now (D8) while `/healthz` shows the worker polling,
  * saying why when not, and warning when the scenario already has a finished live
  * run on record). Also the
@@ -20,10 +22,12 @@ export function ScenarioPanel({
   run,
   busy,
   onReplay,
+  replay,
   onJudgingRun,
   judgingBlocked,
   judgingWarning,
   signIn,
+  lastRun,
   refusal,
   signals,
   onToggleSignals,
@@ -37,13 +41,17 @@ export function ScenarioPanel({
   run: ConsoleRun | null
   busy: boolean
   onReplay: (speedMs: number) => void
+  // Whether D2 can replay the selected scenario, and what the replay is.
+  replay: ReplayGuard
   onJudgingRun: () => void
   // Why a judging run cannot start (replay only, or the worker is off or not polling), or null.
   judgingBlocked: string | null
   // A served scenario whose finished live run is already on record; never disables the button.
   judgingWarning: string | null
-  // Whom to sign in as for the current run; the backend's refusal of a start, verbatim.
+  // Whom to sign in as for the selected scenario; the run D7 names, on its own
+  // line; the backend's refusal of a start, verbatim.
   signIn: string | null
+  lastRun: string | null
   refusal: string | null
   signals: SoftSignalsState | null
   onToggleSignals: () => void
@@ -53,6 +61,7 @@ export function ScenarioPanel({
 }) {
   const runActive = run !== null && (run.state === 'starting' || run.state === 'running')
   const canStart = selected !== null && selected.card_id !== null && !busy
+  const canReplay = canStart && replay.blocked === null
 
   return (
     <section aria-label="Scenario" className="flex flex-col gap-5 rounded-card border border-hairline bg-surface p-8">
@@ -109,12 +118,22 @@ export function ScenarioPanel({
       )}
 
       <div className="flex flex-wrap items-center gap-3">
-        <button type="button" className={PRIMARY} disabled={!canStart} onClick={() => onReplay(3000)}>
-          Replay 3 s
-        </button>
-        <button type="button" className={PRIMARY} disabled={!canStart} onClick={() => onReplay(15000)}>
-          Replay 15 s
-        </button>
+        {[3000, 15000].map((ms) => (
+          <button
+            key={ms}
+            type="button"
+            className={PRIMARY}
+            disabled={!canReplay}
+            title={replay.blocked ?? undefined}
+            aria-describedby={
+              [replay.blocked && 'ops-replay-blocked', replay.note && 'ops-replay-note'].filter(Boolean).join(' ') ||
+              undefined
+            }
+            onClick={() => onReplay(ms)}
+          >
+            Replay {ms / 1000} s
+          </button>
+        ))}
         <button
           type="button"
           className={SECONDARY}
@@ -145,6 +164,16 @@ export function ScenarioPanel({
         </button>
       </div>
 
+      {replay.blocked && (
+        <p id="ops-replay-blocked" className={`${TEXT_M} text-ink-muted`}>
+          {replay.blocked}
+        </p>
+      )}
+      {replay.note && (
+        <p id="ops-replay-note" className={`${TEXT_M} text-ink-muted`}>
+          {replay.note}
+        </p>
+      )}
       {judgingBlocked && (
         <p id="ops-judging-blocked" className={`${TEXT_M} text-ink-muted`}>
           {judgingBlocked}
@@ -162,6 +191,7 @@ export function ScenarioPanel({
           {signIn}
         </p>
       )}
+      {lastRun && <p className={`${TEXT_M} text-ink-muted tabular-nums`}>{lastRun}</p>}
       {refusal && (
         <p role="alert" className={`${TEXT_M} rounded-row bg-stopped-tint px-4 py-3 text-stopped`}>
           {refusal}

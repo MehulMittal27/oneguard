@@ -239,9 +239,11 @@ def test_d9_lists_every_scenario_grouped_by_customer_with_its_card(db_url: str) 
                 "customer_id": "CU9001",
                 "customer_name": "Test Served",
                 "card_id": "CA9001",
+                "replay_source": None,
             }
             assert (by_id["SCEN0004"]["customer_id"], by_id["SCEN0004"]["card_id"]) == ("CU0019", "CA0039")
             assert by_id["SCEN0004"]["customer_name"] == "Oliver Graf" and by_id["SCEN0004"]["event_count"] == 11
+            assert by_id["SCEN0004"]["replay_source"] == "pack"  # SCEN9001 above: served, not run yet
             d8 = await scenarios(run)
             assert by_id["SCEN0004"]["instruction"] == d8["SCEN0004"]["cardholder_instruction"]
             assert set(by_id) == set(d8)

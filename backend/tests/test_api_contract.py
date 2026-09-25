@@ -1776,7 +1776,9 @@ def test_d7_shows_the_newest_run_live_or_replay(db_url: str, monkeypatch: pytest
                 "customer_name",
                 "mandate_id",
                 "policy_source",
+                "source",
             }
+            assert current["source"] == "pack"
             assert (current["delivered"], current["decided"], current["total"], current["running"]) == (10, 10, 10, False)
             assert (current["policy_source"], current["mandate_id"]) == ("card", mandate["mandate_id"])
 

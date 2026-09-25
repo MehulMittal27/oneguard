@@ -371,6 +371,35 @@ def run_row(db: Engine, run_id: str) -> Run | None:
         return s.get(Run, run_id)
 
 
+def _recorded(scenario_id: str | None = None) -> Any:
+    """Live runs with stored events (``events_raw``), of one scenario when given."""
+    query = select(Run).where(Run.kind == "live", Run.run_id.in_(select(EventRaw.run_id).distinct()))
+    return query if scenario_id is None else query.where(Run.scenario_id == scenario_id)
+
+
+def record_run(db: Engine, scenario_id: str) -> Run | None:
+    """The scenario's newest live run with stored events: what D2 replays from record."""
+    with session(db) as s:
+        return s.scalar(_recorded(scenario_id).order_by(Run.started_at.desc(), Run.run_id.desc()).limit(1))
+
+
+def recorded_scenarios(db: Engine) -> set[str]:
+    """The scenarios with a live run whose events are stored (D9 ``replay_source``)."""
+    with session(db) as s:
+        return {sid for sid in s.scalars(_recorded().with_only_columns(Run.scenario_id).distinct()) if sid}
+
+
+def stored_events(db: Engine, run_id: str) -> list[dict[str, Any]]:
+    """The run's events as received, in the order they arrived."""
+    with session(db) as s:
+        rows = s.scalars(
+            select(EventRaw.event)
+            .where(EventRaw.run_id == run_id)
+            .order_by(EventRaw.received_at, EventRaw.live_authorization_id)
+        )
+        return [dict(event) for event in rows]
+
+
 def unfinished_live_runs(db: Engine) -> list[Run]:
     """Live runs the store last saw starting or running."""
     with session(db) as s:

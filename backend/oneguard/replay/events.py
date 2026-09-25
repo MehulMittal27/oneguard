@@ -1,4 +1,5 @@
-"""Offline replay: turn the data pack's purchase attempts into live-shaped events.
+"""Offline replay: turn the data pack's purchase attempts into live-shaped events, and a
+live run's stored events into a replay from record (``recorded_events``).
 
 Test tooling, not engine code. This is one of two places that may open the pack's CSVs
 (the other is store/seed.py) and one of two places that may name scenario ids (the other
@@ -17,6 +18,7 @@ What the platform would fill in at run time is filled in here:
 
 from __future__ import annotations
 
+import copy
 import csv
 import os
 from collections.abc import Callable, Iterable
@@ -213,6 +215,38 @@ def build_events(
                 },
             }
         )
+    return events
+
+
+def recorded_events(
+    stored: Iterable[dict[str, Any]], *, mandate_id: str, live_id: Callable[[str], str]
+) -> list[dict[str, Any]]:
+    """A live run's stored events (``events_raw``) as templates for a replay from record.
+
+    The purchases are the platform's own, verbatim: amounts, items, shops, simulated
+    timestamps and the platform's statements (``related_authorization_status``). What a
+    new run changes is changed as in ``build_events``: ``live_id`` maps each stored live
+    id to a fresh one, ``related_authorization_id`` is rewritten through the same map (an
+    id from outside the run is kept), the mandate id is ``mandate_id`` and ``context``
+    starts empty for ``with_run_context`` to fill from the replay's own decisions. The
+    runner stamps the real-clock times at delivery.
+    """
+    events = []
+    for event in stored:
+        event = copy.deepcopy(event)
+        auth = event["authorization"]
+        auth["authorization_id"] = live_id(auth["authorization_id"])
+        related = auth.get("related_authorization_id")
+        if related:
+            try:
+                auth["related_authorization_id"] = live_id(related)
+            except KeyError:
+                pass  # an earlier run's purchase: kept as the platform named it
+        auth["mandate_id"] = mandate_id
+        event["mandate"] = {**event["mandate"], "mandate_id": mandate_id}
+        event["request_id"] = f"req_{auth['authorization_id']}"
+        event["context"] = {"approved_spend_in_period_chf": None, "recent_authorizations": []}
+        events.append(event)
     return events
 
 

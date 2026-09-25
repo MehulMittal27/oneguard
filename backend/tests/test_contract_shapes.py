@@ -221,8 +221,11 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
         "ledger_run_id": "replay-1",
         "started_at": "2026-09-24T10:00:00Z",
         "decided": 3,
-        "customer_id": "CU0001",
-        "customer_name": "Alex Meier",
+        "customer_id": "CU1217",
+        "customer_name": "Omar Chen",
+        "source": "record",
+        "record_run_id": "run_1",
+        "record_started_at": "2026-09-24T09:00:00Z",
     },
     api.LiveRun: {
         "run_id": "run_1",
@@ -282,6 +285,7 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
         "customer_id": None,
         "customer_name": None,
         "card_id": None,
+        "replay_source": None,
     },
     api.ScenarioSummariesResponse: {
         "scenarios": [
@@ -293,6 +297,7 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
                 "customer_id": "CU1217",
                 "customer_name": "Omar Chen",
                 "card_id": "CA1331",
+                "replay_source": "record",
             }
         ]
     },

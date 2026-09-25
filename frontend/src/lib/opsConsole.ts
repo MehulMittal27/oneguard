@@ -34,6 +34,9 @@ export interface ConsoleRun {
   // Replays only: which policy decides the run, as the run header words it;
   // null for a live run (always the card's policy) or an older backend.
   policy: string | null
+  // A replay from record: the live run whose stored events it replays (the
+  // platform's run id) and when that run started. Null for a pack replay or a live run.
+  fromRecord: { runId: string; startedAt: string | null } | null
 }
 
 /** D7's answer, live or replay, as one shape. */
@@ -62,6 +65,7 @@ export function consoleRun(current: CurrentRun | null): ConsoleRun | null {
       pendingHuman: live.pending_human,
       lastError: live.last_error,
       policy: null,
+      fromRecord: null,
     }
   }
   const replay = current.run
@@ -75,6 +79,10 @@ export function consoleRun(current: CurrentRun | null): ConsoleRun | null {
     pendingHuman: null,
     lastError: null,
     policy: replayPolicy(replay.policy_source),
+    fromRecord:
+      replay.source === 'record' && replay.record_run_id
+        ? { runId: replay.record_run_id, startedAt: replay.record_started_at ?? null }
+        : null,
   }
 }
 
@@ -84,6 +92,23 @@ export function replayPolicy(source: ReplayStatus['policy_source']): string | nu
   if (source === 'revoked') return 'policy revoked: every purchase declines'
   if (source === 'card') return "the card's active policy"
   return null
+}
+
+/** What the run is, in the console's words. */
+export function runTitle(run: Pick<ConsoleRun, 'kind' | 'fromRecord'>): string {
+  if (run.kind === 'live') return 'Judging run'
+  return run.fromRecord ? 'Replay from record' : 'Replay'
+}
+
+/**
+ * The run D7 names, on its own line beside the selected scenario's sign-in:
+ * "Last run: Replay from record · SCEN0101 · Omar Chen (CU1217, card CA1331) · running".
+ */
+export function lastRunLine(run: ConsoleRun): string {
+  const who = run.customerId
+    ? `${run.customerName ?? run.customerId} (${run.customerId}, card ${run.cardId})`
+    : `card ${run.cardId}`
+  return `Last run: ${runTitle(run)} · ${run.scenarioId} · ${who} · ${run.state}`
 }
 
 /**
@@ -175,6 +200,39 @@ export function formatClock(iso: string): string {
 
 export function signInLine(name: string, customerId: string, cardId: string): string {
   return `Sign in as ${name} (${customerId}, card ${cardId})`
+}
+
+/** Whom to sign in as for the selected scenario: its customer, whatever ran last. */
+export function scenarioSignIn(scenario: ScenarioSummary | null): string | null {
+  if (!scenario?.customer_id || !scenario.card_id) return null
+  return signInLine(scenario.customer_name ?? scenario.customer_id, scenario.customer_id, scenario.card_id)
+}
+
+export interface ReplayGuard {
+  // Why D2 cannot replay the scenario, or null.
+  blocked: string | null
+  // What a replay of it is, when not the pack's purchases.
+  note: string | null
+}
+
+/**
+ * D2 for the selected scenario (D9 `replay_source`): the pack's purchases; a
+ * served scenario's stored events from its newest live run ("replay from
+ * record", run locally through the current engine); or nothing, before any
+ * live run of it. An older backend that does not say is not blocked here: D2
+ * refuses in its own words.
+ */
+export function replayGuard(scenario: ScenarioSummary | null): ReplayGuard {
+  if (!scenario || scenario.replay_source === undefined || scenario.replay_source === 'pack') {
+    return { blocked: null, note: null }
+  }
+  if (scenario.replay_source === null) {
+    return { blocked: 'Not run yet: no stored events to replay.', note: null }
+  }
+  return {
+    blocked: null,
+    note: 'Replay from record: the stored events of its latest judging run, through the current engine and policy. Nothing is sent to the platform.',
+  }
 }
 
 // Health chips --------------------------------------------------------------------------

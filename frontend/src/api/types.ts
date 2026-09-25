@@ -317,6 +317,12 @@ export interface ReplayStatus {
   // ('scenario'). Absent from older backends.
   mandate_id?: string
   policy_source?: 'card' | 'revoked' | 'scenario'
+  // What it replays: the local pack's purchases, or a live run's stored events
+  // (a replay from record), that run named by the platform's run id and its
+  // start (real clock). Absent from older backends (a pack replay).
+  source?: 'pack' | 'record'
+  record_run_id?: string
+  record_started_at?: string
 }
 
 // D5 read: whether the models run now, for live runs and for the offline replay.
@@ -375,6 +381,9 @@ export interface ScenarioSummary {
   customer_id: string | null
   customer_name: string | null
   card_id: string | null
+  // What D2 replays for it: the pack's purchases, the stored events of its newest
+  // live run, or nothing yet (null: not run yet). Absent from older backends.
+  replay_source?: 'pack' | 'record' | null
 }
 
 export interface LedgerSnapshotEntry {

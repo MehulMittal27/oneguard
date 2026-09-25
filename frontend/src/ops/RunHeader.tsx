@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { CheckIcon, CrossIcon } from '../components/icons/lucide'
-import { formatClock, formatElapsed, type ConsoleRun, type PassportSummary, type Verification } from '../lib/opsConsole'
+import { formatClock, formatElapsed, formatRunStart, runTitle, type ConsoleRun, type PassportSummary, type Verification } from '../lib/opsConsole'
 import { TEXT_M, TEXT_S, TONE_CLASS } from './style'
 
 export interface PassportLine {
@@ -56,13 +56,15 @@ export function RunHeader({
       <div className="flex min-w-0 flex-col gap-1">
         <p className={`${TEXT_M} flex flex-wrap items-center gap-3 font-semibold text-ink`}>
           <span className="tabular-nums">
-            {run.kind === 'live' ? 'Judging run' : 'Replay'} · {run.scenarioId}
+            {runTitle(run)} · {run.scenarioId}
           </span>
           <span className={`${TEXT_S} rounded-pill px-3 py-0.5 font-semibold ${TONE_CLASS[state.tone]}`}>{state.label}</span>
         </p>
         <p className={`${TEXT_M} text-ink-muted`}>
           {run.customerName ?? run.customerId ?? 'Unknown customer'}
           {run.customerId && run.customerName ? ` (${run.customerId})` : ''} · card {run.cardId}
+          {run.fromRecord &&
+            ` · events of run ${run.fromRecord.startedAt ? formatRunStart(run.fromRecord.startedAt) : run.fromRecord.runId}`}
           {run.policy ? ` · ${run.policy}` : ''}
         </p>
       </div>

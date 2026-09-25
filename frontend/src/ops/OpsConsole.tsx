@@ -19,11 +19,13 @@ import {
   consoleRun,
   isWaiting,
   judgingRunGuard,
+  lastRunLine,
   liveRunIds,
   passportSummary,
   readVerification,
+  replayGuard,
   runDecisions,
-  signInLine,
+  scenarioSignIn,
   type Verification,
 } from '../lib/opsConsole'
 import { nextSoftSignals } from '../lib/softSignals'
@@ -140,8 +142,8 @@ export default function OpsConsole() {
     setSelectedId(run.scenarioId)
     setRefusal(null)
   }
-  // Whom to sign in as on the phone for the current run, whoever started it.
-  const signIn = run?.customerId ? signInLine(run.customerName ?? run.customerId, run.customerId, run.cardId) : null
+  // The run D7 names, whoever started it; the sign-in line follows the selected scenario.
+  const lastRun = run ? lastRunLine(run) : null
 
   // Scenarios (D9), re-read when a new run starts (it may be one served since).
   const [scenarios, setScenarios] = useState<ScenarioSummary[] | null>(null)
@@ -160,6 +162,9 @@ export default function OpsConsole() {
   }, [runKey])
   const selected =
     scenarios?.find((s) => s.scenario_id === selectedId) ?? (selectedId === null && run === null ? scenarios?.[0] : null) ?? null
+  // Whom to sign in as on the phone for the selected scenario, and whether D2 can replay it.
+  const signIn = scenarioSignIn(selected)
+  const replayable = replayGuard(selected)
 
   // What the platform serves now (D8), re-read with D9. Undefined while reading;
   // null when D8 did not answer, which the judging button treats as "not known".
@@ -269,7 +274,7 @@ export default function OpsConsole() {
   const [judgingRefusal, setJudgingRefusal] = useState<string | null>(null)
 
   async function replay(speedMs: number) {
-    if (!selected?.card_id) return
+    if (!selected?.card_id || replayable.blocked) return
     setBusy(true)
     setRefusal(null)
     try {
@@ -379,10 +384,12 @@ export default function OpsConsole() {
                 run={run ?? null}
                 busy={busy}
                 onReplay={replay}
+                replay={replayable}
                 onJudgingRun={() => setJudgingOpen(true)}
                 judgingBlocked={judgingBlocked}
                 judgingWarning={judging.warning}
                 signIn={signIn}
+                lastRun={lastRun}
                 refusal={refusal}
                 signals={signals}
                 onToggleSignals={toggleSignals}
@@ -402,7 +409,7 @@ export default function OpsConsole() {
                 onToggle={toggleRow}
                 onOpenRaw={openRaw}
                 scenarioId={run?.scenarioId ?? null}
-                runKind={run?.kind ?? null}
+                runKind={run ? (run.fromRecord ? 'replay-from-record' : run.kind) : null}
               />
             </div>
           )}

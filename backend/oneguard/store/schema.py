@@ -292,7 +292,8 @@ class Mandate(Base):
 
 
 class Run(Base):
-    """A live or replay run. ``scenario_id`` is operator metadata only."""
+    """A live or replay run. ``scenario_id`` is operator metadata only. ``record_run_id``:
+    for a replay from record, the live run whose stored events it replays (else null)."""
 
     __tablename__ = "runs"
 
@@ -311,6 +312,7 @@ class Run(Base):
     finished_at: Mapped[datetime | None]
     worker_last_poll_at: Mapped[datetime | None]
     last_error: Mapped[str | None] = mapped_column(Text)
+    record_run_id: Mapped[str | None]
 
 
 class EventRaw(Base):
