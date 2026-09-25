@@ -11,6 +11,8 @@ Two services: `backend/` (FastAPI, deterministic engine, Viseca client) and `fro
 `docs/acceptance-oracle.yaml` (expected outcomes) · `docs/architecture.md` ·
 `docs/team-contract.md` (team working rules) · `docs/database.md` (storage) ·
 `docs/judging-pack.md` (the scenarios the sandbox serves) ·
+`docs/passport.md` (signed passports and receipts; C2, C4, C5, C8 and device changes
+need a device signature, so a plain `curl` gets 401: use `python -m oneguard.passport.cli`) ·
 `frontend/README.md` · `vendor/viseca-2026/technical_details.md`.
 
 ## Non-negotiable rules

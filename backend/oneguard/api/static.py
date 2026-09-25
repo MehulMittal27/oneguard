@@ -1,7 +1,8 @@
 """The built frontend at ``/``, mounted after every API route (Appendix A).
 
 ``frontend/dist`` (or ``ONEGUARD_FRONTEND_DIST``) is served as static files with
-``index.html`` at ``/`` and at ``/ops`` (the operator console, a page of the same app). HTML pages carry ``Cache-Control: no-cache`` so a browser picks up
+``index.html`` at ``/``, at ``/ops`` (the operator console, a page of the same app) and at
+``/verify`` (the passport QR link; the app reads the query). HTML pages carry ``Cache-Control: no-cache`` so a browser picks up
 a new deploy on the next load; the hashed ``/assets`` files stay cacheable. Without a build, ``/`` answers with a one-line placeholder
 page. Unknown ``/api/…`` paths always answer with the JSON error envelope, never HTML.
 """
@@ -21,7 +22,7 @@ from oneguard.api.errors import not_found
 
 DIST_ENV = "ONEGUARD_FRONTEND_DIST"
 DEFAULT_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
-PAGES = ("/ops",)
+PAGES = ("/ops", "/verify")
 """Paths the app renders itself (``frontend/src/main.tsx``); each serves ``index.html``."""
 PLACEHOLDER = (
     "<!doctype html><html lang=en><meta charset=utf-8><title>OneGuard</title>"
@@ -56,7 +57,7 @@ def mount(app: FastAPI, dist: Path | None = None) -> None:
     if index.is_file():
 
         async def page() -> FileResponse:
-            return FileResponse(index, headers={"Cache-Control": "no-cache"})
+            return FileResponse(index, media_type="text/html", headers={"Cache-Control": "no-cache"})
 
         for path in PAGES:
             app.add_api_route(path, page, methods=["GET"], include_in_schema=False)

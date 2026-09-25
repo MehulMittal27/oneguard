@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[1] / "oneguard"
-SCANNED = ("engine", "compiler", "llm", "api")
+SCANNED = ("engine", "compiler", "llm", "api", "passport")
 ALLOWED = {PACKAGE / "api" / "routes_dev.py"}
 FORBIDDEN = re.compile(r"SCEN\d|AU0\d|replay_order")
 

@@ -54,6 +54,7 @@ from oneguard.engine.types import (
     Rule,
     RuleResult,
 )
+from oneguard.passport.signer import DeviceKey
 from oneguard.pipeline import policy_applied
 from oneguard.store import seed as seed_module
 from oneguard.store.db import make_engine, session
@@ -195,6 +196,14 @@ class Faulty(httpx.AsyncBaseTransport):
         return await self.inner.handle_async_request(request)
 
 
+_DEVICE_BOUND = (
+    re.compile(r"^/api/policy-drafts/(?P<draft>[^/]+)/confirm$"),
+    re.compile(r"^/api/cards/(?P<card>[^/]+)/policy/(?:tighten|revoke)$"),
+    re.compile(r"^/api/authorizations/(?P<live>[^/]+)/resolve$"),
+    re.compile(r"^/api/cards/(?P<card>[^/]+)/devices/[^/]+/(?:approve|remove)$"),
+)
+
+
 @dataclass
 class Running:
     app: Any
@@ -202,6 +211,9 @@ class Running:
     fake: FakeViseca | None
     faulty: Faulty | None
     clock: Clock
+    device: DeviceKey = field(default_factory=DeviceKey)
+    """The customer's phone: enrolled on a card the first time a signed call needs it."""
+    device_ids: dict[str, str] = field(default_factory=dict)
     responses: list[httpx.Response] = field(default_factory=list)
     handled: set[str] = field(default_factory=set)
     """Live ids the worker has fully handled (``add_handled_listener``)."""
@@ -228,10 +240,38 @@ class Running:
         self.responses.append(r)
         return r
 
-    async def post(self, path: str, **kw: Any) -> httpx.Response:
+    async def post(self, path: str, *, signed: bool = True, **kw: Any) -> httpx.Response:
+        """POST; a device-bound call (§3.10) is signed by ``device`` unless ``signed=False``."""
+        card = self._card_of(path) if signed else None
+        if card is not None:
+            body = kw.get("json")
+            headers = self.device.headers(await self.device_on(card), "POST", path, body, ts=int(self.clock().timestamp()))
+            kw["headers"] = {**headers, **kw.get("headers", {})}
         r = await self.http.post(path, **kw)
         self.responses.append(r)
         return r
+
+    def _card_of(self, path: str) -> str | None:
+        """The card a device-bound path acts on (None: not device-bound, or unknown id)."""
+        for pattern in _DEVICE_BOUND:
+            if m := pattern.match(path):
+                found = m.groupdict()
+                if "card" in found:
+                    return found["card"]
+                if "draft" in found:
+                    row = queries.draft(self.services.db_engine, found["draft"])
+                    return row.card_id if row else None
+                stored = queries.decision(self.services.db_engine, found["live"])
+                return stored.entry.card_id if stored else None
+        return None
+
+    async def device_on(self, card_id: str) -> str:
+        """``device``'s id on the card, enrolling it (as the card's first device) if needed."""
+        if card_id not in self.device_ids:
+            r = await self.http.post(f"/api/cards/{card_id}/devices", json={"public_key_jwk": self.device.jwk, "label": "Test phone"})
+            assert r.status_code == 200, r.text
+            self.device_ids[card_id] = r.json()["device_id"]
+        return self.device_ids[card_id]
 
     async def decisions(self, customer_id: str = "CU0001") -> list[dict[str, Any]]:
         r = await self.get(f"/api/customers/{customer_id}/decisions")
@@ -383,9 +423,12 @@ DECISION_KEYS = {
     "message", "uncertainty", "occurred_at", "merchant", "amount", "currency", "billing_amount_chf", "items",
     "injection_flag", "evidence", "order_returnable", "delivery_by",
     "counterfactual", "related", "session", "merchant_meta", "engine_version", "latency_ms", "explanation_source",
-    "run_id", "run_started_at",
+    "run_id", "run_started_at", "would_approve_if", "receipt_id",
 }  # fmt: skip
-NULLABLE_DECISION_KEYS = {"uncertain_outcome", "uncertainty", "injection_flag", "delivery_by", "counterfactual", "related", "session"}
+NULLABLE_DECISION_KEYS = {
+    "uncertain_outcome", "uncertainty", "injection_flag", "delivery_by", "counterfactual", "related", "session",
+    "would_approve_if",
+}  # fmt: skip
 MATRIX = {
     ("approved", None, "final"),
     ("stopped", None, "final"),

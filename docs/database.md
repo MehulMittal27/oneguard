@@ -54,10 +54,19 @@ Runtime tables (ours):
 | `requested_item_orders` | P2 ledger (`mark_requested_item`, A8) | `live_authorization_id` PK, `item` (the mandate's `requested_item`, the customer's words). One row per decision whose cart held a single-item mandate's requested item, whatever the outcome; the ledger reads the rows that are final approvals (in `decisions`) as `LedgerView.fulfilments`, and the API as `usage.fulfilment`. A new table, so `init_db` creates it on an existing Supabase database without a reset |
 | `worker_state` | P1 worker | `key` PK, `value` JSON, `updated_at`. Row `events_cursor`: the `next_cursor` of the last `GET /v1/events` page the worker processed, written after the page is checked against the ledger; on start the worker resumes from it and reads the feed from 0 only when no row exists (first boot). A new table, so `init_db` creates it on an existing Supabase database without a reset. After a `POST /v1/team/reset` delete the row so the new feed is read from 0. Row `served_scenarios`: the scenario ids the platform served at the worker's last reference sync (bootstrap `scenarios`, else reference data); C12 `live` and D8 `served` read it |
 | `scenario_profiles` | P1 worker | `scenario_id` PK, `profile_id` nullable, `customer_id`, `card_id`, `source` (bootstrap/run/authorization), `seen_at`. Which customer and card a served scenario runs on: the served catalogue names no card, the platform does in the bootstrap `profile`, a run's `fixture_profiles` and every authorization. The worker upserts each sighting (the newest wins; a row is written only when the binding changes; the customer is the card's holder in the store). Read by C12, D3 and D8 only (api-contract.md §1.2). A new table, so `init_db` creates it on an existing Supabase database without a reset |
+| `signing_keys` | P1 passport (docs/passport.md) | `key_id` PK (`ogk_` + SHA-256 of the raw public key, 16 hex), `algorithm` (`ed25519`), `public_key_pem`, `private_key_pem` (plain PEM for the demo; encrypting it with a key from the environment is a follow-up), `created_at`, `active`. Exactly one active key, created at the first start on a store without one (two processes starting at once: the oldest active key wins, the other is marked inactive). Never deleted, so every document still verifies |
+| `devices` | P1 passport | `device_id` PK (uuid, returned by enrolment), `card_id`, `customer_id`, `label`, `public_key_jwk` (P-256, public members only), `status` (pending/enrolled/removed), `enrolled_at`, `enrolled_by_device_id` (null for the card's first device), `removed_at`, `last_seen_at`. Index `(card_id, status)`. Rows are never deleted; the operator reset marks them removed |
+| `device_nonces` | P1 passport | `(device_id, nonce)` PK, `seen_at`: every accepted signed request's nonce; a second use is a replay. Rows older than 10 min are purged on insert |
+| `passports` | P1 passport | `(passport_id, version)` PK, `mandate_id`, `card_id`, `customer_id`, `document` JSON (the signed body), `signature`, `key_id`, `issued_at`, `reason` (confirmed, backfill, tightened, devices, confirmation, revoked, updated), `superseded_at`, `revoked_at`. `passport_id` is derived from the mandate id (one per mandate); latest = highest version. A new version only when what it says changed; a revoked one never changes again |
+| `receipts` | P1 passport | `receipt_id` PK (derived from the live id), `live_authorization_id` unique, `passport_id`, `passport_version` (the version in force when decided; null for a decision under no stored mandate), `document` JSON, `signature`, `key_id`, `issued_at`, `answered_by_device_id`, `resolved_at` (mirrors `document.resolution`, null while unanswered), `history` JSON (each earlier `{document, signature, key_id, signed_at}`) |
 | `viseca_calls` | P1 client | append-only log of every request/response summary (no key, no bodies over 4 KB), written only when `ONEGUARD_LOG_VISECA_CALLS=true` (off by default, debugging only: one row per long-poll is a Supabase write every few seconds). For debugging the deadline; nothing reads it at runtime (`/healthz` reports the worker's own state) |
 
 `decisions` is the only table two lanes touch: P2 writes it through `ledger.py`; P1's API
-reads it to build `Decision` responses and `Mandate.usage`. Nobody else writes it.
+reads it to build `Decision` responses and `Mandate.usage`. Nobody else writes it, with one
+exception: the passport backfill fills `receipt_id` on rows stored before receipts existed
+(new rows carry it from the pipeline). Passport columns added to existing tables:
+`decisions.would_approve_if` JSON nullable (the explanation's structured counterfactual,
+declines only), `decisions.receipt_id` nullable, `mandates.passport_id` nullable.
 
 ## 3. What each lane gets from the store (no CSVs)
 
@@ -88,8 +97,13 @@ reads it to build `Decision` responses and `Mandate.usage`. Nobody else writes i
 
 - `backend/oneguard/store/schema.py` — SQLAlchemy models (P1).
 - `backend/oneguard/store/db.py` — engine factory, `session()` context manager, `init_db()`
-  (create_all; no Alembic this weekend — the schema is created from the models, and a
-  schema change is a `make reset-db` on Supabase, acceptable for a demo). Data fixes run at app
+  (create_all; no Alembic this weekend — the schema is created from the models). A model
+  column its existing table lacks is added with `ALTER TABLE … ADD COLUMN` when it is nullable
+  with no default (`db.add_missing_columns`, idempotent; anything else is an error, never a
+  guess), so additive changes need no reset; any other schema change is a `make reset-db` on
+  Supabase, acceptable for a demo. The passport tables and columns arrived this way: the first
+  start after that deploy creates them, then the app's passport sweep issues a passport for
+  every active mandate and a receipt for every decision (docs/passport.md, Backfill). Data fixes run at app
   start instead, idempotently: `queries.restore_form_instructions` sets form policies stored
   with their joined check texts as the instruction to "Built from the form".
 - `backend/oneguard/store/seed.py` — idempotent CSV → tables; `make seed` runs it against

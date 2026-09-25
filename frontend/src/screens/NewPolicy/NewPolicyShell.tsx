@@ -15,7 +15,7 @@ export function NewPolicyShell({
   footer,
   children,
 }: {
-  step: 1 | 2
+  step: 1 | 2 | 3
   stepLabel: string
   title: string
   subtitle?: string

@@ -1,14 +1,14 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import { getReceipt } from '../api/passport'
 import type { Decision } from '../api/types'
 import { CheckIcon, CrossIcon } from '../components/icons/lucide'
 import { receiptOf, type Verification } from '../lib/opsConsole'
 import { TEXT_M } from './style'
 
 /**
- * The signed receipt of one decision as JSON, in a drawer from the right. When
- * the backend attaches no receipt (the passport work has not landed), the drawer
- * says so and shows the decision exactly as C6 served it instead: still the raw
- * record, but unsigned, and labelled that way.
+ * The signed receipt of one decision as JSON (P4, read when the drawer opens), in
+ * a drawer from the right. A decision without one (or while it is read) shows as
+ * C6 served it instead: still the raw record, but unsigned, and labelled that way.
  */
 export function RawDrawer({
   decision,
@@ -19,7 +19,26 @@ export function RawDrawer({
   verification: Verification | null
   onClose: () => void
 }) {
-  const receipt = receiptOf(decision)
+  const [fetched, setFetched] = useState<{ id: string; receipt: unknown } | null>(null)
+  const receipt =
+    receiptOf(decision) ?? (fetched?.id === decision.authorization_id ? fetched.receipt : null)
+
+  useEffect(() => {
+    if (!decision.receipt_id || receiptOf(decision) !== null) return
+    let cancelled = false
+    const id = decision.authorization_id
+    getReceipt(id).then(
+      (found) => {
+        if (!cancelled && found) setFetched({ id, receipt: found })
+      },
+      () => {
+        // Unread: the drawer keeps showing the decision, labelled unsigned.
+      },
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [decision])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

@@ -13,6 +13,7 @@ import { formatChf } from '../../lib/money'
 import { limitsFromMandate, spendFromMandate } from '../../lib/spend'
 import { useDecisions } from '../../state/DecisionsContext'
 import { usePolicy } from '../../state/PolicyContext'
+import { DeviceGateCancelled, useDevice } from '../../state/DeviceContext'
 import { DecisionDetail } from '../DecisionDetail/DecisionDetail'
 
 // 'unknown' and 'not_applicable' are both real answers, never blank or "no"
@@ -50,14 +51,16 @@ function PendingCard({
   const [error, setError] = useState(false)
   const [revoking, setRevoking] = useState(false)
   const { revokePolicyForCard } = usePolicy()
+  const { withDevice } = useDevice()
 
   async function handle(answer: 'approve' | 'decline') {
     setResolving(true)
     setError(false)
     try {
       await onResolve(answer)
-    } catch {
-      setError(true)
+    } catch (caught) {
+      // Closing the enrolment sheet sent nothing: not an error to show.
+      if (!(caught instanceof DeviceGateCancelled)) setError(true)
     } finally {
       setResolving(false)
     }
@@ -294,7 +297,15 @@ function PendingCard({
           cardId={decision.card_id}
           onClose={() => setRevoking(false)}
           onConfirm={async () => {
-            await revokePolicy(decision.card_id)
+            try {
+              await withDevice(decision.card_id, () => revokePolicy(decision.card_id))
+            } catch (caught) {
+              if (caught instanceof DeviceGateCancelled) {
+                setRevoking(false)
+                return
+              }
+              throw caught
+            }
             revokePolicyForCard(decision.card_id)
             setRevoking(false)
           }}

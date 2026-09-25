@@ -4,11 +4,13 @@ import { DecisionMark } from '../../components/DecisionMark'
 import { BackChevronIcon, CheckIcon, HelpCircleIcon } from '../../components/icons/lucide'
 import { OrderCapLeashMeter, PeriodLeashMeter } from '../../components/LeashMeter'
 import { NetworkState } from '../../components/NetworkState'
+import { PassportSection } from '../../components/PassportSection'
 import { RevokeSheet } from '../../components/RevokeSheet'
 import { formatShortDate } from '../../lib/datetime'
 import { limitsFromMandate, spendFromMandate } from '../../lib/spend'
 import { usePolicy } from '../../state/PolicyContext'
 import { useDecisions } from '../../state/DecisionsContext'
+import { DeviceGateCancelled, useDevice } from '../../state/DeviceContext'
 import { DecisionDetail } from '../DecisionDetail/DecisionDetail'
 
 /** DESIGN.md #6, "Card activity" — reached from Accounts, or cross-tab from a decision's "Policy" link. */
@@ -32,6 +34,7 @@ export function CardDetail({
     revokePolicyForCard,
   } = usePolicy()
   const { decisions, status: decisionsStatus, retry: retryDecisions } = useDecisions()
+  const { withDevice } = useDevice()
   const [revoking, setRevoking] = useState(false)
   const [viewingId, setViewingId] = useState<string | null>(null)
 
@@ -214,6 +217,9 @@ export function CardDetail({
         )}
       </div>
 
+      {/* The signed policy, and the devices allowed to change it (docs/passport.md). */}
+      <PassportSection cardId={cardId} policyVersion={mandate.passport?.version} />
+
       {/*
         Answers the customer gave once that the engine now remembers, so it stops
         asking (engine/policy.py: only a restriction no data can check can be
@@ -272,7 +278,16 @@ export function CardDetail({
           cardId={cardId}
           onClose={() => setRevoking(false)}
           onConfirm={async () => {
-            await revokePolicy(cardId)
+            try {
+              await withDevice(cardId, () => revokePolicy(cardId))
+            } catch (caught) {
+              // Closing the enrolment sheet sent nothing: close this one too, quietly.
+              if (caught instanceof DeviceGateCancelled) {
+                setRevoking(false)
+                return
+              }
+              throw caught
+            }
             revokePolicyForCard(cardId)
             setRevoking(false)
             // Stays on this screen (was: onBack()) — it now shows the

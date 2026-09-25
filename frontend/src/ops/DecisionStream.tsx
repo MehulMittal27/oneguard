@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ComponentType } from 'react'
-import { verifySigned } from '../api/passport'
+import { getReceipt, verifyDocument } from '../api/passport'
 import type { Decision, EvidenceItem } from '../api/types'
 import {
   CheckIcon,
@@ -14,10 +14,10 @@ import { formatTime } from '../lib/datetime'
 import { formatChf } from '../lib/money'
 import {
   formatLatency,
+  hasReceipt,
   isWaiting,
   outcomeBadge,
   readVerification,
-  receiptOf,
   wouldApproveIf,
   type OutcomeBadge,
   type Verification,
@@ -211,7 +211,7 @@ function RowDetail({
   onOpenRaw: (decision: Decision, receiptCheck: Verification | null) => void
 }) {
   const told = wouldApproveIf(d)
-  const hasReceipt = receiptOf(d) !== null
+  const signed = hasReceipt(d)
   return (
     <div id={id} className={`${TEXT_M} grid gap-x-10 gap-y-5 px-8 pt-1 pb-6 @min-[1000px]:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]`}>
       <div className="flex min-w-0 flex-col gap-3">
@@ -260,13 +260,13 @@ function RowDetail({
 
         <Label>Receipt</Label>
         <div className="flex flex-wrap items-center gap-3">
-          <ReceiptStatus hasReceipt={hasReceipt} receipt={receipt} />
+          <ReceiptStatus hasReceipt={signed} receipt={receipt} />
           <button
             type="button"
             onClick={() => onOpenRaw(d, receipt ?? null)}
             className="min-h-9 rounded-button border border-border-quiet bg-surface px-4 font-semibold text-ink hover:bg-surface-sunken"
           >
-            {hasReceipt ? 'Raw receipt' : 'Raw decision'}
+            {signed ? 'Raw receipt' : 'Raw decision'}
           </button>
         </div>
       </div>
@@ -293,6 +293,19 @@ function Label({ children }: { children: string }) {
   return <p className="font-semibold text-ink-muted">{children}</p>
 }
 
+/** One decision's receipt (P4) through `/api/verify` (P5); null when no verifier answered. */
+async function checkReceipt(d: Decision): Promise<Verification | null> {
+  try {
+    const receipt = await getReceipt(d.authorization_id)
+    if (!receipt) return null
+    return readVerification(
+      await verifyDocument({ document: receipt.document, signature: receipt.signature, key_id: receipt.key_id }),
+    )
+  } catch {
+    return null
+  }
+}
+
 /**
  * Each receipt on screen is sent to `/api/verify` once. Decisions without a
  * receipt are never sent; nothing here changes a decision. Absent from the map:
@@ -304,10 +317,10 @@ function useReceiptChecks(decisions: Decision[] | null): ReadonlyMap<string, Ver
   useEffect(() => {
     for (const d of decisions ?? []) {
       const id = d.authorization_id
-      if (receiptOf(d) === null || asked.current.has(id)) continue
+      if (!hasReceipt(d) || asked.current.has(id)) continue
       asked.current.add(id)
-      verifySigned(receiptOf(d)).then((raw) => {
-        setChecks((prev) => new Map(prev).set(id, raw === null ? null : readVerification(raw)))
+      void checkReceipt(d).then((verification) => {
+        setChecks((prev) => new Map(prev).set(id, verification))
       })
     }
   }, [decisions])

@@ -15,7 +15,10 @@ demo-live:
 3. D7 and D8: while the newest run is unfinished, or the scenario has a run still running
    or with purchases open at the platform, that run is named and nothing is changed
    (exit 1), unless ``--force`` (then D3 gets ``force: true``);
-4. C1 compile the instruction on that card, C2 confirm what it proposes;
+4. enrol this terminal's device key on that card (its first device is enrolled at once;
+   otherwise approve "demo-live on <host>" from a device that controls the card first,
+   docs/passport.md), then C1 compile the instruction on that card, C2 confirm what it
+   proposes, signed by that device;
 5. D3 start the run (409 ``run_active`` → exit 1), then, before the first decision, print
    ``Sign in as <name> (<customer id>, card <card id>)`` from the run's fixture profile;
 6. follow D4 and the customer's decisions (C6) read-only, one line per decision and per
@@ -37,22 +40,28 @@ import argparse
 import asyncio
 import logging
 import os
+import re
+import socket
 import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Mapping
 from datetime import datetime
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
 from oneguard.engine.types import Rule
+from oneguard.passport.signer import DeviceKey
 from oneguard.viseca.client import RUNS_DISABLED_MESSAGE, runs_allowed
 from oneguard.viseca.worker import store_run_id
 
 log = logging.getLogger(__name__)
 
 API_ENV = "ONEGUARD_API_URL"
+DEVICE_KEY_ENV = "ONEGUARD_DEVICE_KEY"
 DEFAULT_API = "https://oneguard.fly.dev"
 API_TIMEOUT_S = 30.0
 """C1 compiles within 10 s and D3 waits up to 15 s on the platform; a slow network on top."""
@@ -105,8 +114,10 @@ class ApiRefused(Exception):
         self.message = message
 
 
-async def _call(http: httpx.AsyncClient, method: str, path: str, body: Any = None) -> Any:
-    reply = await http.request(method, path, json=body)
+async def _call(
+    http: httpx.AsyncClient, method: str, path: str, body: Any = None, headers: dict[str, str] | None = None
+) -> Any:
+    reply = await http.request(method, path, json=body, headers=headers)
     if reply.is_success:
         return reply.json() if reply.content else None
     try:
@@ -168,6 +179,29 @@ async def _refuse_while_running(
     return False
 
 
+def device_key_path(api_base: str) -> Path:
+    """Where this terminal keeps its device key for ``api_base`` (``ONEGUARD_DEVICE_KEY`` overrides)."""
+    override = os.environ.get(DEVICE_KEY_ENV, "").strip()
+    if override:
+        return Path(override).expanduser()
+    host = re.sub(r"[^A-Za-z0-9.-]+", "_", urlsplit(api_base).netloc or "local")
+    return Path.home() / ".config" / "oneguard" / f"device-{host}.pem"
+
+
+async def _enrolled_on(http: httpx.AsyncClient, device: DeviceKey, card: str, out: Callable[[str], None]) -> str | None:
+    """This terminal's device id on ``card``, enrolled when the card has no device yet; None
+    (and why) while it waits for approval from a device that controls the card."""
+    label = f"demo-live on {socket.gethostname()}"
+    enrolled = await _call(http, "POST", f"/api/cards/{card}/devices", {"public_key_jwk": device.jwk, "label": label})
+    if enrolled["status"] == "enrolled":
+        return str(enrolled["device_id"])
+    out(
+        f'This terminal ("{label}") is not approved for card {card} yet. Approve it from a device that '
+        f"controls the card (the card's Passport section, Approve), then run this again. Nothing was changed."
+    )
+    return None
+
+
 async def run_via_api(
     http: httpx.AsyncClient,
     scenario_id: str,
@@ -177,8 +211,13 @@ async def run_via_api(
     out: Callable[[str], None] = print,
     max_seconds: float = 900.0,
     poll_s: float = 1.0,
+    device: DeviceKey | None = None,
 ) -> int:
     """Start one scenario through the server's API and follow it read-only.
+
+    Confirming the policy (C2) is a device-bound write (api-contract §3.10): this terminal
+    signs it with ``device`` (default: its key for this server, ``device_key_path``),
+    enrolled on the card as its first device, or approved by one that controls the card.
 
     0 when the run finished, 1 when it could not start or did not finish in time, 2 when
     the server has runs switched off.
@@ -204,6 +243,10 @@ async def run_via_api(
                 f"{scenario_id} has not run yet, so its card is not known: the policy starts on card "
                 f"{card} and moves to the card the platform names when the run starts."
             )
+        device = device or DeviceKey.load_or_create(device_key_path(base))
+        device_id = await _enrolled_on(http, device, card, out)
+        if device_id is None:
+            return 1
         instruction = scenario["cardholder_instruction"]
         out(f"Instruction: {instruction}")
         draft = await _call(http, "POST", f"/api/cards/{card}/policy-drafts", {"instruction": instruction})
@@ -212,16 +255,14 @@ async def run_via_api(
             out(f"  check {check['id']}: {check['text']} [{check['source']}]")
         for question in draft["open_questions"]:
             out(f"  open question: {question}")
-        mandate = await _call(
-            http,
-            "POST",
-            f"/api/policy-drafts/{draft['draft_id']}/confirm",
-            {
-                "checks": draft["checks"],
-                "uncertainty_policy": draft["uncertainty_policy"],
-                "open_questions": draft["open_questions"],
-            },
-        )
+        confirm_path = f"/api/policy-drafts/{draft['draft_id']}/confirm"
+        confirm = {
+            "checks": draft["checks"],
+            "uncertainty_policy": draft["uncertainty_policy"],
+            "open_questions": draft["open_questions"],
+        }
+        signed = device.headers(device_id, "POST", urlsplit(base).path.rstrip("/") + confirm_path, confirm)
+        mandate = await _call(http, "POST", confirm_path, confirm, headers=signed)
         out(f"Policy {mandate['mandate_id']} confirmed on card {mandate['card_id']}")
         start: dict[str, Any] = {"scenario_id": scenario_id, "card_id": card}
         if force:
@@ -349,6 +390,7 @@ async def live(
     max_seconds: float = 900.0,
     out: Callable[[str], None] = print,
     transport: httpx.AsyncBaseTransport | None = None,
+    device: DeviceKey | None = None,
 ) -> int:
     """The server at ``api_base`` decides; with none answering, nothing starts (exit 1)."""
     async with httpx.AsyncClient(base_url=api_base, timeout=API_TIMEOUT_S, transport=transport) as http:
@@ -363,7 +405,9 @@ async def live(
             )
             return 1
         out(f"OneGuard at {api_base} decides this run; this terminal only starts and follows it.")
-        return await run_via_api(http, scenario_id, card_id=card_id, force=force, out=out, max_seconds=max_seconds)
+        return await run_via_api(
+            http, scenario_id, card_id=card_id, force=force, out=out, max_seconds=max_seconds, device=device
+        )
 
 
 async def offline(

@@ -260,10 +260,9 @@ export function scenarioOptionLabel(s: ScenarioSummary): string {
 
 // Passport and receipts ------------------------------------------------------------------
 //
-// The passport endpoints arrive with the passport work and their shapes may still
-// move, so each reader accepts the plausible spellings and answers null rather
-// than guess: a console that shows "Passport —" is right; one that shows a wrong
-// count is not.
+// The passport endpoints (docs/passport.md, api-contract §1.3) are read defensively:
+// each reader answers null rather than guess, so a console facing a backend without
+// them shows "Passport —", never a wrong count.
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
@@ -307,9 +306,14 @@ export function readVerification(raw: unknown): Verification | null {
   return { verified: flag, keyId: typeof key === 'string' ? key : null }
 }
 
-/** The decision's signed receipt, when the backend attaches one. */
+/** The decision's signed receipt, when the backend attaches one inline. */
 export function receiptOf(d: Decision): unknown | null {
   return (d as unknown as Record<string, unknown>).receipt ?? null
+}
+
+/** The decision has a signed receipt: named by `receipt_id` (P4), or attached inline. */
+export function hasReceipt(d: Decision): boolean {
+  return Boolean(d.receipt_id) || receiptOf(d) !== null
 }
 
 /**
@@ -318,6 +322,11 @@ export function receiptOf(d: Decision): unknown | null {
  * console leaves the section out.
  */
 export function wouldApproveIf(d: Decision): string[] {
+  // The backend's bounds are structured (`{field, operator, value}`, `{requires}`, …);
+  // the customer's own words for them are the decision's counterfactual.
+  if (Array.isArray(d.would_approve_if) && d.would_approve_if.length > 0 && d.counterfactual?.trim()) {
+    return [d.counterfactual.trim()]
+  }
   const own = (d as unknown as Record<string, unknown>).would_approve_if
   const value = own ?? record(record(receiptOf(d))?.payload)?.would_approve_if ?? record(receiptOf(d))?.would_approve_if
   const items = Array.isArray(value) ? value : value == null ? [] : [value]

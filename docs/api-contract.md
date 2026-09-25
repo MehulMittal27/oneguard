@@ -50,13 +50,34 @@ The frontend ignores unknown fields, so additions are safe. Removing or renaming
 | C10 | GET | `/api/customers/{customer_id}/accounts` | — | `{ accounts: Account[] }` | 404 |
 | C6 | GET | `/api/customers/{customer_id}/decisions[?operator=1]` | — | `{ decisions: Decision[] }` newest first; operator-only evidence only with `?operator=1` (§3.4) | 404 |
 | C1 | POST | `/api/cards/{card_id}/policy-drafts` | `{ instruction }` **or** `{ form: FormInput }` | `PolicyDraft` | 404 card · 422 neither/both · 504 compiler timeout |
-| C2 | POST | `/api/policy-drafts/{draft_id}/confirm` | `{ checks: RuleCheck[], uncertainty_policy, open_questions }` | `Mandate` | 404 draft · 409 draft already confirmed · 422 unknown check id · 409 `lint_failed` (see §3.2) |
+| C2 | POST | `/api/policy-drafts/{draft_id}/confirm` | `{ checks: RuleCheck[], uncertainty_policy, open_questions }` | `Mandate` | 404 draft · 401 not signed by a device on the draft's card (§3.10) · 409 draft already confirmed · 422 unknown check id · 409 `lint_failed` (see §3.2) |
 | C3 | GET | `/api/cards/{card_id}/policy` | — | `{ mandate: Mandate \| null }` | 404 card |
-| C4 | POST | `/api/cards/{card_id}/policy/tighten` | `{ add_checks: RuleCheck[], uncertainty_policy?: 'decline' }` | `Mandate` | 404 · 409 not a pure addition |
-| C5 | POST | `/api/cards/{card_id}/policy/revoke` | — | 204 | 404 |
-| C8 | POST | `/api/authorizations/{authorization_id}/resolve` | `{ decision: 'approve' \| 'decline' }` | 204 | 404 · 409 not awaiting an answer (incl. window closed) |
+| C4 | POST | `/api/cards/{card_id}/policy/tighten` | `{ add_checks: RuleCheck[], uncertainty_policy?: 'decline' }` | `Mandate` | 404 · 401 (§3.10) · 409 not a pure addition |
+| C5 | POST | `/api/cards/{card_id}/policy/revoke` | — | 204 | 404 · 401 (§3.10) |
+| C8 | POST | `/api/authorizations/{authorization_id}/resolve` | `{ decision: 'approve' \| 'decline' }` | 204 | 404 · 401 not signed by a device on the purchase's card (§3.10) · 409 not awaiting an answer (incl. window closed) |
 
-Unchanged from the frontend README except: C1 gains `504`, C2 gains the two `409`s.
+Unchanged from the frontend README except: C1 gains `504`, C2 gains the two `409`s, and C2, C4, C5
+and C8 are device-bound writes (§3.10, NEW): refused with `401` unless signed by a device enrolled
+on the card, before anything is read for the change or applied.
+
+### 1.3 Passport, receipts and devices (NEW, docs/passport.md)
+
+| # | Method | Path | Request | Response | Errors |
+|---|---|---|---|---|---|
+| P1 | GET | `/api/passport/keys` | — | `{ keys: PublicKey[] }` the active key first | |
+| P2 | GET | `/api/cards/{card_id}/passport` | — | `Passport`: the latest version of the card's current policy's passport, with `versions` | 404 card, or no passport (no policy confirmed yet) |
+| P3 | GET | `/api/cards/{card_id}/passport/qr.svg` | — | `image/svg+xml`: a QR code of `<ONEGUARD_PUBLIC_URL>/verify?passport=<passport_id>&v=<version>` (default `https://oneguard.fly.dev`) | 404 as P2 |
+| P4 | GET | `/api/authorizations/{authorization_id}/receipt` | — | `Receipt` (signed on the spot when the background sweep has not reached the decision yet) | 404 |
+| P5 | POST | `/api/verify` | `{ document, signature, key_id }` **or** `{ passport_id, version? }` **or** `{ receipt_id }` | `VerifyResult` | 404 unknown stored id · 422 not exactly one form |
+| P6 | GET | `/api/cards/{card_id}/devices` | — | `{ devices: Device[] }` enrolled first, then pending, then removed | 404 card |
+| P7 | POST | `/api/cards/{card_id}/devices` | `{ public_key_jwk, label? }` (P-256 public JWK) | `{ device_id, status }`: `enrolled` for the card's first device, else `pending`; the same key again returns the same device | 404 card · 422 not a P-256 key |
+| P8 | POST | `/api/cards/{card_id}/devices/{device_id}/approve` | — (signed, §3.10) | `Device` (enrolled, `enrolled_by_device_id` the signer); a new passport version | 401 · 404 · 409 `device_state` (not pending) |
+| P9 | POST | `/api/cards/{card_id}/devices/{device_id}/remove` | — (signed, §3.10) | `Device` (removed); a new passport version when it was enrolled | 401 · 404 · 409 `last_device` (the card's only enrolled device) · 409 `device_state` (already removed) |
+| — | GET | `/verify` | query `passport` + `v`, or `receipt` | the app's HTML; the page calls P5 (where the P3 QR code points) | |
+
+Operator-only: `POST /api/dev/devices/reset/{card_id}` → `{ card_id, removed }`: every device on
+the card removed, so the next one enrols as the card's first (issuer-side recovery in a real
+rollout). `403 forbidden` when `ONEGUARD_ENV=prod`.
 
 ### 1.2 Operator-only (never called by the UI, not shown to the customer)
 
@@ -155,7 +176,9 @@ PolicyDraft  { draft_id, card_id, instruction, checks: RuleCheck[],   // instruc
 Mandate      { mandate_id, card_id, instruction, checks: RuleCheck[],   // instruction: as its draft's (C4 keeps it)
                uncertainty_policy: 'ask'|'decline'|'approve', open_questions: string[],
                status: 'active'|'revoked', confirmed_at,
-               usage?: MandateUsage }                                  // NEW
+               usage?: MandateUsage,                                   // NEW
+               passport?: { passport_id, version: number, issued_at,   // NEW: its passport's latest version
+                            devices_count: number } }                 // (absent until one is issued)
 
 MandateUsage { per_order_limit_chf: number|null,                      // NEW — engine ledger, authoritative
                period_limit_chf: number|null, period_days: number|null,
@@ -211,7 +234,16 @@ Decision {
   policy_applied?: { mandate_id: string,      // NEW: the policy this decision was checked against
                      source: 'confirmed' | 'platform',   // platform = the Viseca mandate's own rules (no confirmed policy bound)
                      checks: RuleCheck[] } | null,       // what decided, whatever the card's policy is now
+  would_approve_if: Bound[] | null,           // NEW: the counterfactual structured, declines only (null otherwise
+                                              // and on decisions made before it existed); what the agent is told
+  receipt_id?: string,                        // NEW: the signed receipt of this decision (P4)
 }
+
+Bound       { field: string, operator: string, value: number|string|string[],   // NEW (docs/passport.md)
+              scope?: 'period', period_days?: number }       // e.g. billing_amount_chf <= 400
+          | { remove_items: string[] }                       // the cart lines (item ids) to drop
+          | { requires: string }                             // known_shop, requested_item, clean_merchant_text,
+                                                             // active_policy, unanswered_declined, ...
 
 Evidence  { rule: string,                     // which check or signal
             outcome: 'pass' | 'fail' | 'uncertain' | 'info',   // 'info' is NEW; render unknown values neutrally
@@ -239,6 +271,22 @@ ScenarioSummary { scenario_id, name, event_count: number,             // NEW (D9
                   customer_id: string|null, customer_name: string|null, card_id: string|null }
 LedgerSnapshot { card_id, mandate_id, entries: [{ authorization_id, occurred_at, decision,
                  counted_chf, note }], period_spent_chf, frozen: boolean }
+
+// NEW: passport, receipts, devices (§1.3, docs/passport.md). `document` is the signed body,
+// byte for byte what canonical JSON of it signs; the UI renders fields from it as plain text.
+PublicKey    { key_id, algorithm: 'ed25519', public_key_pem, active: boolean }
+Passport     { passport_id, version, document, signature, key_id,
+               versions: [{ version, issued_at, reason }] }   // reason: confirmed, backfill, tightened,
+                                                             // devices, confirmation, revoked, updated
+Receipt      { receipt_id, document, signature, key_id,
+               history: [{ document, signature, key_id, signed_at }] }   // earlier signatures (before the answer)
+Device       { device_id, card_id, label,                    // label: the customer's own text
+               status: 'pending'|'enrolled'|'removed', enrolled_at: string|null,
+               enrolled_by_device_id: string|null, removed_at: string|null, last_seen_at }
+VerifyResult { valid: boolean, document_type: 'passport'|'receipt'|null, key_id: string|null,
+               issued_at: string|null,                       // passport issued_at; receipt decided_at
+               reason: string, document?: object|null,       // the document checked (the stored one for an id)
+               current?: boolean|null }                      // passport: latest version and not revoked
 ```
 
 ---
@@ -383,6 +431,13 @@ fields, never in place of them. Both default to unknown, and unknown is never a 
   rows are **operator-only**: kept in the stored decision and the decision posted to
   Viseca, sent by C6 only with `?operator=1` (the operator console passes it); the
   customer's app never sees them (`api/models.py` `OPERATOR_ONLY_EVIDENCE`).
+- A decline is posted to Viseca with one more evidence row, `{ kind: 'would_approve_if', rule:
+  'would_approve_if', outcome: 'info', source: 'policy', detail: <counterfactual>,
+  would_approve_if: Bound[] }`, so the agent learns what the customer would accept. It is not
+  in `Decision.evidence`. A 400/422 on the body is retried without that row, then minimal.
+- Every decision gets a signed `Receipt` (P4, docs/passport.md), issued by a background sweep
+  off the decision's path (never delaying a post); a step-up's answer re-signs it. Its
+  `evidence_hash` covers the stored evidence, operator-only rows included.
 - `Decision.evidence` may carry a W6 row (rules.md §8): the cart line, its unit price in CHF
   and the catalogue range `items.unit_price_min_chf`–`items.unit_price_max_chf`.
 
@@ -442,7 +497,9 @@ fields, never in place of them. Both default to unknown, and unknown is never a 
 All errors: `{ error: { code: string, message: string, detail?: object } }`. Codes used:
 `not_found`, `validation`, `draft_confirmed`, `lint_failed`, `not_pure_addition`,
 `not_awaiting_answer`, `window_closed`, `upstream_unavailable`, `compiler_timeout`,
-`internal`, `runs_disabled`, `run_active` (D3: an unfinished run is still followed).
+`internal`, `runs_disabled`, `run_active` (D3: an unfinished run is still followed),
+and (NEW, §3.10, §1.3) `device_signature_required`, `device_not_enrolled`,
+`signature_invalid`, `replay` (401), `last_device`, `device_state` (409), `forbidden` (403).
 `upstream_unavailable` (503: Viseca or the database unreachable or too slow) never changes a
 stored decision; the UI shows its offline state ("Nothing was approved while we were
 offline"). `internal` (500) is an unexpected server error.
@@ -459,6 +516,27 @@ Total at or below CHF <amount> across any <n> days
 ```
 
 The backend emits both this wording and `usage`.
+
+### 3.10 Device-bound writes (NEW, docs/passport.md)
+
+C2, C4, C5, C8 and P8/P9 change what an agent may do with a card, so they are accepted only
+from a device enrolled on that card (C2: the draft's card; C8: the purchase's card). The
+device holds a P-256 key pair it cannot export (WebCrypto `extractable: false`); OneGuard
+keeps its public JWK. Each such request carries:
+
+| Header | Value |
+|---|---|
+| `X-OneGuard-Device` | the `device_id` P7 returned for this card |
+| `X-OneGuard-Ts` | Unix time in seconds when signed |
+| `X-OneGuard-Nonce` | a fresh random string (≤ 128 chars) |
+| `X-OneGuard-Signature` | base64 ECDSA-P256-SHA256 (raw `r‖s` or DER) over canonical JSON of `{ method, path, body, ts, nonce }`: `path` without the query, `body` the JSON body or `null` |
+
+Refused with `401`, nothing applied: `device_signature_required` (a header missing),
+`device_not_enrolled` (unknown device, another card's, pending or removed),
+`signature_invalid` (the signature does not match this method, path, body, time and nonce),
+`replay` (`|now − ts| > 120 s`, or the nonce was used before; nonces are kept 10 min). The
+UI answers `device_not_enrolled` by opening the enrolment flow. C1 drafts and every GET stay
+open. The card's first device enrols without approval; later ones wait for an enrolled one.
 
 ---
 
@@ -522,9 +600,10 @@ fixtures to it.
 16. Operator strip (`?demo=1`, operator only): reads D5 GET on each poll and labels the toggle with what the server reports (on, off, live only, replay only), never an assumed "on"; D1's 404 reads as "no replay yet", not as the backend being unreachable.
 17. `Decision.policy_applied` - DecisionDetail's "Policy applied" shows these checks (the rules that decided), with a note when they are the platform mandate's rules or differ from the card's current policy (another mandate id and other checks: a D3 move keeps the checks under a new id); the card link (manage / revoke) stays. Absent: the card's current policy, as before.
 18. Home follows each poll: `OverviewHero` counts the same decisions as Activity's filter chips (each card's newest run, `lib/runs.ts` `countDecisions`, no simulated-day window), and each "Active policies" row shows its `Mandate.usage` (re-read by C3 after every decisions poll): "CHF x of CHF y" with a bar and "This week · n purchases" for a period limit, "CHF x spent" and "This run · n purchases" without one, plus what is waiting.
-19. Operator console at `/ops` (desktop, operator only, never linked from the phone UI): a separate page of the same build (`src/ops/`), reading `/healthz`, D2, D3, D5, D7, D9, C6 (with `?operator=1`, §3.4) and C3's card, plus the passport endpoints when the backend has them (else "Passport —"). It follows D7: whatever run started last, from any source, is the one it shows. Its "Judging run (live)" (D3) is disabled, with the reason on the button and under it, while `/healthz` shows the worker off (`worker.configured` false) or not polling (`worker.state` other than `polling`), or has not answered. It never answers a step-up and never enrols, approves or removes a device; the customer does that on the phone.
+19. Operator console at `/ops` (desktop, operator only, never linked from the phone UI): a separate page of the same build (`src/ops/`), reading `/healthz`, D2, D3, D5, D7, D9, C6 (with `?operator=1`, §3.4) and C3's card, plus the passport endpoints (§1.3): the card's passport line (version, checks, devices, QR) is checked with P5, and each decision with a `receipt_id` has its receipt (P4) checked with P5. It follows D7: whatever run started last, from any source, is the one it shows. Its "Judging run (live)" (D3) is disabled, with the reason on the button and under it, while `/healthz` shows the worker off (`worker.configured` false) or not polling (`worker.state` other than `polling`), or has not answered. It never answers a step-up and never enrols, approves or removes a device; the customer does that on the phone.
 20. Phone UI deep links, both read once at load: `?customer=<customer_id>` signs in as that customer and skips the picker (session only, nothing stored; an unknown id shows the picker); `?embed=1` draws the phone UI without `DeviceFrame`'s bezel, for the console's embedded phone (an iframe of `/?customer=<id>&embed=1`, 390×844).
 21. Sign-in footer: "Powered by OneGuard" (small), the same line the console carries.
+22. Passport (§1.3, §3.10, docs/passport.md): `lib/deviceKey.ts` (a non-extractable P-256 key in IndexedDB, `signedFetch` for C2, C4, C5, C8, P8, P9; a `device_not_enrolled` answer opens enrolment); NewPolicy confirm enrols this device first (the card's first device silently, otherwise "This device isn't approved for this card yet"), and a card's first passport (`Mandate.passport.version == 1`, none before) gets step 3 "Your passport is issued" with the first-passport animation; CardDetail gains a Passport section (QR, version, devices with Approve / Remove, Verify); Home shows "Devices waiting for your approval"; DecisionDetail shows "What your agent was told" (`would_approve_if`, in words from `counterfactual`) and "Receipt · Verify"; a `/verify` page for the QR link. Mock fixtures gain a passport, two devices and a receipt.
 
 No customer endpoint changes. No screen removals. Tighten UI stays dormant.
 

@@ -15,7 +15,12 @@ The lifespan, in order (docs/architecture.md Runtime, docs/database.md §5):
    store, then long-polls. Once started, the routes use its history index (reloaded if
    the sync changed anything), and C12 / D3 / D8 read the scenario bindings it stores
    (``scenario_profiles``) and the scenarios it serves. ``/healthz`` shows it;
-5. the soft-signal model (``ONEGUARD_SOFT_SIGNALS=laya``) loaded in the background, never
+5. the passport book opened (the signing key created on an empty store) and its sweep
+   started in the background: every ``passport_sweep_s`` it signs the receipts of new
+   decisions and re-signs answered step-ups; every ``PASSPORT_SYNC_EVERY`` sweeps (and
+   first) it brings every mandate's passport up to date. The first sweep after a deploy
+   is the backfill (docs/passport.md); it never delays the worker or a decision;
+6. the soft-signal model (``ONEGUARD_SOFT_SIGNALS=laya``) loaded in the background, never
    before the worker polls: until it has loaded, and for good if it fails to load, the
    engine answers the signal with keywords (``signals.LayaSignals``). Loading Laya takes
    about 35 s on the cloud machine; a platform request in that window must not wait.
@@ -48,7 +53,15 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from oneguard import __version__
-from oneguard.api import errors, policies, queries, routes_customer, routes_dev, static
+from oneguard.api import (
+    errors,
+    policies,
+    queries,
+    routes_customer,
+    routes_dev,
+    routes_passport,
+    static,
+)
 from oneguard.api.models import _utc_z
 from oneguard.api.offline import OfflineRunner
 from oneguard.api.services import (
@@ -66,6 +79,7 @@ from oneguard.llm.provider import (
     get_provider,
     provider_available,
 )
+from oneguard.passport.book import PassportBook
 from oneguard.store import seed as seed_module
 from oneguard.store.db import get_engine, init_db, make_engine, session
 from oneguard.store.history import StoreHistoryIndex
@@ -77,6 +91,9 @@ log = logging.getLogger(__name__)
 SIGNALS_ENV = "ONEGUARD_SOFT_SIGNALS"
 SIGNALS_BACKENDS: tuple[SignalsBackend, ...] = ("off", "keywords", "laya")
 HEALTH_DB_TIMEOUT_S = 5.0
+PASSPORT_SWEEP_S = 5.0
+PASSPORT_SYNC_EVERY = 12
+"""Passports are compared every 12th sweep (a minute); routes reissue them as they change."""
 _URL = re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE)
 _SECRETISH = re.compile(r"(?i)(password|passwd|pwd|token|key|secret)=\S+")
 
@@ -99,6 +116,8 @@ class AppConfig:
     db_timeout_s: float = DB_TIMEOUT_S
     viseca_timeout_s: float = VISECA_TIMEOUT_S
     compile_timeout_s: float = COMPILE_TIMEOUT_S
+    passport_sweep_s: float | None = PASSPORT_SWEEP_S
+    """Seconds between passport sweeps; None: no background sweep (tests call ``book.sync``)."""
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
 
@@ -191,6 +210,30 @@ async def _load_signals_model(s: Services, warm: Callable[[SignalsBackend], bool
         log.warning("no soft-signal model loaded; signals stay on keywords")
 
 
+async def _passport_sweep(s: Services, interval_s: float) -> None:
+    """Keep passports and receipts signed (``PassportBook``); the first pass is the backfill."""
+    assert s.book is not None
+    book = s.book
+    tick = 0
+    while True:
+        try:
+            if tick % PASSPORT_SYNC_EVERY == 0:
+                issued = await asyncio.to_thread(book.sync_passports)
+                if tick == 0 or issued:
+                    log.info("passports: %d version(s) issued", issued)
+            counts = await asyncio.to_thread(book.sync_receipts)
+            if tick == 0 or counts.receipts or counts.resolutions:
+                log.info("receipts: %d issued, %d re-signed with an answer", counts.receipts, counts.resolutions)
+            if tick == 0:
+                log.info("passport book: %s", await asyncio.to_thread(book.counts))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("passport sweep failed; trying again in %.0f s", interval_s)
+        tick += 1
+        await asyncio.sleep(interval_s)
+
+
 async def _start_worker(s: Services) -> None:
     assert s.worker is not None
     try:
@@ -262,13 +305,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         for mandate in await asyncio.to_thread(queries.mandates, db):
             s.bind_mandate(mandate)
         start = asyncio.create_task(_start_worker(s), name="viseca-worker-start")
+    # After the worker's start is scheduled, so opening the book (the signing key, one
+    # round trip) never delays the first poll (docs/decisions.md, startup gap).
+    s.book = await asyncio.to_thread(PassportBook.open, db, config.now)
     load: asyncio.Task[None] | None = None
     if backend == "laya":
         load = asyncio.create_task(_load_signals_model(s, config.warm_signals or _warm_signals), name="signals-load")
+    sweep: asyncio.Task[None] | None = None
+    if config.passport_sweep_s is not None:
+        sweep = asyncio.create_task(_passport_sweep(s, config.passport_sweep_s), name="passport-sweep")
     try:
         yield
     finally:
-        for task in (start, load):
+        for task in (start, load, sweep):
             if task is not None and not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
@@ -345,6 +394,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.include_router(routes_customer.router)
     app.include_router(routes_dev.router)
     app.include_router(routes_dev.catalogue_router)
+    app.include_router(routes_passport.router)
     static.mount(app, app.state.config.frontend_dist)
     return app
 

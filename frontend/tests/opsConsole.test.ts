@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import type { Decision, ScenarioSummary } from '../src/api/types.ts'
 import {
@@ -10,6 +11,7 @@ import {
   healthChips,
   judgingRunBlocked,
   outcomeBadge,
+  hasReceipt,
   passportSummary,
   readVerification,
   runDecisions,
@@ -224,4 +226,29 @@ test('a judging run waits for /healthz to show the worker polling, and says why 
     judgingRunBlocked({ worker: { configured: true, state: 'polling' } }, true),
     'Judging run needs the worker polling: /healthz did not answer.',
   )
+})
+
+test('the passport line reads the real signed passport: version, checks and devices', () => {
+  const fixture = JSON.parse(readFileSync(new URL('../src/mocks/fixtures/passport.json', import.meta.url), 'utf8'))
+  const doc = fixture.passport.document
+  assert.deepEqual(passportSummary(doc), { version: String(doc.version), checks: doc.checks.length, devices: doc.devices.length })
+  assert.deepEqual(readVerification({ valid: true, key_id: fixture.passport.key_id, reason: 'Signed by OneGuard.' }), {
+    verified: true,
+    keyId: fixture.passport.key_id,
+  })
+})
+
+test('a decision naming a receipt_id has a receipt to verify; one without has none', () => {
+  assert.equal(hasReceipt(decision({})), false)
+  assert.equal(hasReceipt({ ...decision({}), receipt_id: 'rc_1' } as Decision), true)
+})
+
+test('what the agent was told from the backend bounds is said in the counterfactual\'s words', () => {
+  const told = {
+    ...decision({}),
+    would_approve_if: [{ field: 'authorization.billing_amount_chf', operator: '<=', value: 400 }],
+    counterfactual: 'Would approve at CHF 400.00 or less.',
+  } as Decision
+  assert.deepEqual(wouldApproveIf(told), ['Would approve at CHF 400.00 or less.'])
+  assert.deepEqual(wouldApproveIf({ ...told, would_approve_if: null } as Decision), [])
 })

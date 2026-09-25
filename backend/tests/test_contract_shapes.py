@@ -81,6 +81,7 @@ USAGE = {
     "confirmations": [CONFIRMATION],
     "as_of": "2026-08-10T09:12:00Z",
 }
+PASSPORT_SUMMARY = {"passport_id": "pp_1", "version": 2, "issued_at": "2026-09-24T10:00:00Z", "devices_count": 1}
 MANDATE = {
     "mandate_id": "mnd_1",
     "card_id": "CA0001",
@@ -91,6 +92,7 @@ MANDATE = {
     "status": "active",
     "confirmed_at": "2026-09-24T10:00:00Z",
     "usage": USAGE,
+    "passport": PASSPORT_SUMMARY,
 }
 EVIDENCE = {"rule": "Per-order limit", "outcome": "pass", "detail": "CHF 44.50 ≤ CHF 120.", "source": "policy"}
 DECISION = {
@@ -137,7 +139,20 @@ DECISION = {
     "explanation_source": "template",
     "confirmable": {"rule_id": "U1", "phrase": "from the official ticket seller"},
     "policy_applied": {"mandate_id": "TM_1", "source": "platform", "checks": [CHECK]},
+    "would_approve_if": [{"field": "authorization.billing_amount_chf", "operator": "<=", "value": 400}],
+    "receipt_id": "rc_1",
 }
+DEVICE = {
+    "device_id": "dv_1",
+    "card_id": "CA0001",
+    "label": "Chrome on macOS",
+    "status": "enrolled",
+    "enrolled_at": "2026-09-24T10:00:00Z",
+    "enrolled_by_device_id": None,
+    "removed_at": None,
+    "last_seen_at": "2026-09-24T10:05:00Z",
+}
+SIGNED = {"document": {"type": "oneguard.receipt/1"}, "signature": "c2ln", "key_id": "ogk_1"}
 RESOLVED_DECISION = {
     **{k: v for k, v in DECISION.items() if k != "deadline_at"},
     "uncertain_outcome": "expired",
@@ -314,6 +329,36 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
     api.CreateRunRequest: {"scenario_id": "S1", "card_id": "CA0001", "force": True},
     api.SoftSignalsToggle: {"enabled": True},
     api.SoftSignalsState: {"live": True, "replay": False},
+    api.PassportSummary: PASSPORT_SUMMARY,
+    api.Device: DEVICE,
+    api.DevicesResponse: {"devices": [DEVICE]},
+    api.EnrolDeviceRequest: {"public_key_jwk": {"kty": "EC", "crv": "P-256", "x": "x", "y": "y"}, "label": "Phone"},
+    api.EnrolDeviceResponse: {"device_id": "dv_1", "status": "pending"},
+    api.DeviceReset: {"card_id": "CA0001", "removed": 2},
+    api.PassportVersion: {"version": 1, "issued_at": "2026-09-24T10:00:00Z", "reason": "confirmed"},
+    api.Passport: {
+        "passport_id": "pp_1",
+        "version": 1,
+        "document": {"type": "oneguard.passport/1"},
+        "signature": "c2ln",
+        "key_id": "ogk_1",
+        "versions": [{"version": 1, "issued_at": "2026-09-24T10:00:00Z", "reason": "confirmed"}],
+    },
+    api.ReceiptSignature: {**SIGNED, "signed_at": "2026-09-24T10:00:00Z"},
+    api.Receipt: {"receipt_id": "rc_1", **SIGNED, "history": [{**SIGNED, "signed_at": "2026-09-24T10:00:00Z"}]},
+    api.PublicKey: {"key_id": "ogk_1", "algorithm": "ed25519", "public_key_pem": "-----BEGIN PUBLIC KEY-----", "active": True},
+    api.KeysResponse: {"keys": []},
+    api.VerifyRequest: {"document": None, "signature": None, "key_id": None, "passport_id": "pp_1", "version": 2,
+                        "receipt_id": None},
+    api.VerifyResult: {
+        "valid": True,
+        "document_type": "passport",
+        "key_id": "ogk_1",
+        "issued_at": "2026-09-24T10:00:00Z",
+        "reason": "Signed by OneGuard key ogk_1.",
+        "document": {"type": "oneguard.passport/1"},
+        "current": True,
+    },
     api.ErrorBody: {"code": "lint_failed", "message": "No per-order cap.", "detail": {"missing": ["amount"]}},
     api.ErrorResponse: {"error": {"code": "not_found", "message": "No such card."}},
 }
@@ -359,14 +404,16 @@ def test_optional_fields_are_omitted_and_nullable_fields_are_null() -> None:
         related=None,
         session=None,
         confirmable=None,
+        would_approve_if=None,
     )
     del minimal["deadline_at"]
+    del minimal["receipt_id"]
     dumped = api.Decision.model_validate(minimal).model_dump(mode="json")
     assert dumped == minimal
     for key in ("uncertain_outcome", "uncertainty", "injection_flag", "counterfactual", "related", "session",
-                "confirmable"):
+                "confirmable", "would_approve_if"):
         assert key in dumped and dumped[key] is None
-    for key in ("deadline_at", "merchant_meta", "resolved_by", "latency_ms"):
+    for key in ("deadline_at", "merchant_meta", "resolved_by", "latency_ms", "receipt_id"):
         assert key not in dumped
     assert "kind" not in api.RuleCheck(id="a", text="t", source="exact", uncertainty=None).model_dump()
     usage = {k: v for k, v in USAGE.items() if k != "confirmations"}
@@ -413,6 +460,7 @@ def test_policy_draft_request_needs_exactly_one_input(body: dict) -> None:
         ("decisions.json", "decisions", api.Decision),
         ("customers.json", "customers", api.Customer),
         ("accounts.json", "accounts", api.Account),
+        ("passport.json", "devices", api.Device),
     ],
 )
 def test_frontend_mock_fixtures_validate(fixture: str, key: str, model: type[BaseModel]) -> None:
@@ -717,3 +765,26 @@ def test_the_lint_stub_counts_only_an_upper_bound_as_a_per_order_cap() -> None:
         assert stubs.STUBS["lint_accepted"]([amount(floor)], ["C1"])[0] == ["per_order_limit"]
     for cap in ("<", "<=", "="):
         assert stubs.STUBS["lint_accepted"]([amount(cap)], ["C1"]) == ([], [])
+
+
+def test_the_mock_passport_and_receipt_are_real_signed_documents() -> None:
+    """passport.json holds what a local OneGuard signed, with its public key: the shapes validate
+    and each signature checks out over the canonical bytes (docs/passport.md §2.1, §2.2)."""
+    import base64
+
+    from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
+    from oneguard.passport.canonical import canonical
+
+    fixture = json.loads((FRONTEND_FIXTURES / "passport.json").read_text(encoding="utf-8"))
+    (key,) = [api.PublicKey.model_validate(k) for k in fixture["keys"]]
+    passport = api.Passport.model_validate(fixture["passport"])
+    receipt = api.Receipt.model_validate(fixture["receipts"]["AU0037"])
+    assert passport.document["type"] == "oneguard.passport/1"
+    assert receipt.document["would_approve_if"] == [
+        {"field": "authorization.billing_amount_chf", "operator": "<=", "value": 400}
+    ]
+    public = load_pem_public_key(key.public_key_pem.encode())
+    for signed in (passport, receipt):
+        assert signed.key_id == key.key_id
+        public.verify(base64.b64decode(signed.signature), canonical(signed.document))  # raises if changed

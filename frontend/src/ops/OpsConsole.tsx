@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { getDecisions } from '../api/decisions'
 import { getCurrentRun, getSoftSignals, setSoftSignals, type CurrentRun } from '../api/operator'
 import { ApiRefusal, getHealth, getScenarios, restartReplay, startJudgingRun, type Health } from '../api/ops'
-import { getPassport, passportQrUrl, verifySigned } from '../api/passport'
+import { getPassport, passportQrUrl, verifyDocument } from '../api/passport'
 import type { Decision, ScenarioSummary, SoftSignalsState } from '../api/types'
 import {
   arrivalOrder,
@@ -157,11 +157,23 @@ export default function OpsConsole() {
   useEffect(() => {
     if (!runKey || !cardId) return
     let cancelled = false
-    getPassport(cardId).then(async (raw) => {
-      const summary = passportSummary(raw)
-      const verification = summary ? readVerification(await verifySigned(raw)) : null
-      if (!cancelled) setPassport({ key: runKey, line: { summary, verification, qrUrl: summary ? passportQrUrl(cardId) : null } })
-    })
+    // The card's passport (P2) and OneGuard's check of its signature (P5). A backend
+    // without them, or any failure, leaves "Passport —".
+    getPassport(cardId)
+      .catch(() => null)
+      .then(async (found) => {
+        const summary = found ? passportSummary(found.document) : null
+        const verification =
+          found && summary
+            ? readVerification(
+                await verifyDocument({ document: found.document, signature: found.signature, key_id: found.key_id }).catch(
+                  () => null,
+                ),
+              )
+            : null
+        const qrUrl = found && summary ? passportQrUrl(cardId, found.version) : null
+        if (!cancelled) setPassport({ key: runKey, line: { summary, verification, qrUrl } })
+      })
     return () => {
       cancelled = true
     }

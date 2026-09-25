@@ -16,6 +16,8 @@ dependencies = [
     "pandas",
     "sqlalchemy>=2",
     "psycopg[binary]",
+    "cryptography",
+    "segno",
 ]
 
 [project.optional-dependencies]

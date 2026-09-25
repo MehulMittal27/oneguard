@@ -257,6 +257,7 @@ def no_local_worker(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 async def demo_live(run: Running, scenario_id: str, lines: list[str], **kw: Any) -> int:
+    kw.setdefault("device", run.device)  # one terminal key per test, never the real key file
     return await demo.live(
         scenario_id, api_base=API, transport=httpx.ASGITransport(app=run.app), out=lines.append, max_seconds=30, **kw
     )
