@@ -72,7 +72,8 @@ Reading it:
 ## 2. Soft signal: Laya on the laptop
 
 `ONEGUARD_SOFT_SIGNALS=laya`, `signals.warm()` once, then only the soft signal is timed,
-10 repetitions: `soft_signals` per purchase (45, keywords + one Laya call per item line)
+10 repetitions: `soft_signals` per purchase (45, keywords + one Laya call per item line;
+since 2026-09-25 only per line the keywords did not flag with at least 6 words, see below)
 and the bare Laya `agent_directed` call per item line (56).
 
 | stage | n | P50 ms | P95 ms | max ms |
@@ -89,6 +90,11 @@ and the bare Laya `agent_directed` call per item line (56).
   signal answers exactly as the keywords do on this pack.
 - Laya warns at load that the checkpoint ships out-of-range temperatures and treats the
   affected confidences as uncalibrated; the 0.6 threshold (signals.py) is unchanged.
+- Line filter (2026-09-25, docs/decisions.md): the model reads 36 of the 56 lines (2 are
+  flagged by the keywords, 18 have fewer than 6 words); 11 purchases need no model call and
+  2 (was 11) need two. Same laptop (Apple Silicon, MPS), same process, 10 repetitions each,
+  `soft_signals` per purchase: every line P50 39 ms, P95 74 ms; filtered P50 33 ms, P95 51 ms.
+  Triggered on the same purchases (20/450 each, all keywords).
 
 ## 3. Soft signal: Laya in the image (CPU torch)
 
@@ -172,4 +178,7 @@ Fly, `performance-2x` (2 dedicated CPUs) with 4 GB in lhr, image `oneguard:9a1a6
   back on `performance-2x` with `ONEGUARD_SIGNAL_BUDGET_MS=1500`, above both P95s above; the
   slowest purchases (P99 1.7-1.8 s) keep the keyword answer. The budget is 975 ms since SCEN0124
   (engine P50 ~1.96 s with 1500 ms; docs/decisions.md): purchases past it keep the keyword answer.
+- 1500 ms again since SCEN0135 (975 ms: over budget on nearly every decision), with the model
+  reading only the lines the keywords did not flag that have at least 6 words (§2): 43 of
+  the 45 pack purchases need at most one model call (per item line P95 ~865 ms above).
 
