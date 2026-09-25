@@ -154,9 +154,9 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
 - Fly secrets: `VISECA_API_KEY`, `OPENAI_API_KEY`, `ONEGUARD_DATABASE_URL`,
   `ONEGUARD_LLM_PROVIDER`; temporarily `ONEGUARD_ALLOW_RUNS=false`
   (D3 and `make demo-live` refuse to start a run while it is set). Set with `fly secrets`, never in files.
-  `ONEGUARD_SOFT_SIGNALS=laya` and `ONEGUARD_SIGNAL_BUDGET_MS=1500` are set as secrets
-  (decisions.md 2026-09-25: keywords missed two live injections; per-purchase P95 on
-  `performance-2x` is 1.3-1.5 s, docs/benchmark.md §3). Past the budget the keyword answer
+  `ONEGUARD_SOFT_SIGNALS=laya` and `ONEGUARD_SIGNAL_BUDGET_MS=975` are set as secrets
+  (decisions.md 2026-09-25: keywords missed two live injections; with a 1500 ms budget the
+  engine P50 on SCEN0124 was ~1.96 s, so the budget is 975 ms). Past the budget the keyword answer
   stands. Back to keywords: `fly secrets set ONEGUARD_SOFT_SIGNALS=keywords` (no rebuild).
 - Rollback: every deploy is tagged in `registry.fly.io/oneguard`; `fly image show -a oneguard`
   before a deploy names the running one, and `fly deploy -a oneguard --image <that ref>` puts

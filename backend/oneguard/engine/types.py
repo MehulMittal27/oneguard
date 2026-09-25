@@ -151,6 +151,7 @@ class Facts(_Model):
     merchant_name: str
     merchant_category: str
     merchant_country: str
+    merchant_city: str | None = None  # trusted catalogue city; None is unknown, never a pass
     merchant_mcc: str
     merchant_recurring_capable: bool
     merchant_known: bool = False
@@ -426,6 +427,7 @@ class HistoryRow(_Model):
     recurring: bool
     customer_device_id: str | None
     description: str
+    merchant_city: str | None = None  # catalogue city; None where the source has none
 
 
 @runtime_checkable

@@ -4,8 +4,8 @@
 # The worker long-polls Viseca from inside the app, so the machine never auto-stops.
 # ONEGUARD_LOG_VISECA_CALLS stays unset (no viseca_calls rows); set it only to debug.
 # Laya soft signals on performance-2x (docs/decisions.md 2026-09-25): Fly secrets
-# ONEGUARD_SOFT_SIGNALS=laya and ONEGUARD_SIGNAL_BUDGET_MS=1500 (per-purchase P95 1.3-1.5 s
-# there, docs/benchmark.md §3); past the budget the keyword answer stands. The model is
+# ONEGUARD_SOFT_SIGNALS=laya and ONEGUARD_SIGNAL_BUDGET_MS=975 (1500 made the engine P50
+# ~1.96 s on SCEN0124, docs/decisions.md); past the budget the keyword answer stands. The model is
 # ~2 GB resident, so 4 GB; it loads in the background at startup while the worker polls
 # with keywords. `fly deploy` applies the [[vm]] below, so a manual scale must match it.
 app = "oneguard"

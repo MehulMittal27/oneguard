@@ -325,10 +325,11 @@ expire — that is a broken state, not a degraded one.
 | `items[].quantity` | every cart line's `quantity` |
 | `cart.quantity` | total quantity of the requested item across all cart lines (all lines when no item is requested); "two tickets" is 1 line × 2 or 2 lines × 1 |
 | `merchant.merchant_country` | trusted catalogue country, ISO 3166 alpha-2 (e.g. `"CH"`) |
+| `merchant.merchant_city` | trusted catalogue city as the event spells it (e.g. `"Munich"`); `unknown` if the event has none. Fail: "SummitStay is in Lucerne, not Munich", counterfactual "Would approve at a shop in Munich" |
 | `authorization.delivery_by` | the live `delivery_by` date, compared as a date; `unknown` if `null` |
 | `authorization.weekday` | purchase time in Europe/Zurich, `"mon"`..`"sun"` |
 | `authorization.local_hour` | purchase time in Europe/Zurich, 0–23; time-of-day rules |
-| `unverifiable` | a stated restriction no field can check (e.g. "from the official ticket seller"); always `unknown`, so C11 applies |
+| `unverifiable` | a stated restriction no field can check (e.g. "from the official ticket seller"); always `unknown`, so C11 applies. Evidence `Can't check "from the official ticket seller" from the data; you decide` (the rule's value, quoted once) |
 
 C2 (`scope: period`) is not evaluated with the other customer rules: it needs the run's spending memory. C2 and remembered answers are added by the pipeline via `policy.add_ledger_results`, from the LedgerView's spent and reserved amounts (M4, M5), its purchase count (`period_count`, `period_reserved_count`: the same window and card as the spend) and `confirmed_keys`, so decide and explain both see them. The same step makes a known-shop check (`merchant.known_shop`, `merchant.familiar_on_card`, or the `requires_known_shop` flag, C9) `unknown` when the LedgerView knows no shop at all (no purchase history yet), with reason code `no_purchase_history`. `confirmed_keys` holds `rule|merchant|item` (read for `unverifiable` rules) and `rule|merchant|*` (read for a known-shop check: one yes covers the shop).
 
