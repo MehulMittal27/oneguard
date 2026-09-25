@@ -17,6 +17,8 @@ from oneguard.compiler.draft import (
     ALCOHOL_FIELD,
     COUNT_FIELD,
     COUNTRY_NAMES,
+    EVENING_HOURS,
+    HOUR_FIELD,
     KNOWN_SHOP_FIELD,
     MONEY_FIELDS,
     WEEKDAYS,
@@ -522,8 +524,32 @@ def _time(reading: _Reading, text: str) -> None:
             hour += 12
         w = m.group("w").lower()
         op = {"before": "<", "not after": "<", "until": "<", "after": ">=", "not before": ">="}[w]
-        reading.specs.append(RuleSpec(field="authorization.local_hour", operator=op, value=hour,
-                                      words=m.group(0).strip()))
+        reading.specs.append(RuleSpec(field=HOUR_FIELD, operator=op, value=hour, words=m.group(0).strip()))
+    reading.specs += evening_window(text, reading.specs)
+
+
+# "Weeknight dinners only": dinner and supper are eaten in the evening, a weeknight is a
+# weekday evening. Lunch gets no hours (acceptance-oracle.yaml: "no lunchtime hours
+# invented", T2). Words after "no" / "never" exclude, so they name no time.
+_EVENING_WORDS = re.compile(r"\b(?:dinners?|suppers?|weeknights?)\b", re.IGNORECASE)
+
+
+def evening_window(text: str, specs: list[RuleSpec]) -> list[RuleSpec]:
+    """The evening window (``EVENING_HOURS``, decisions.md) for a meal or day word that
+    names the evening: ``local_hour >= 17`` and ``local_hour < 23``, source inferred. An
+    hour the customer stated wins on its side ("dinner after 19:00" keeps 19). Both
+    compiler paths take the window from here, so they read the same."""
+    m = _EVENING_WORDS.search(_positive(text))
+    if not m:
+        return []
+    stated = {s.operator for s in specs if s.field == HOUR_FIELD}
+    start, end = EVENING_HOURS
+    out = []
+    if not stated & {">", ">="}:
+        out.append(RuleSpec(field=HOUR_FIELD, operator=">=", value=start, words=m.group(0), source="inferred"))
+    if not stated & {"<", "<="}:
+        out.append(RuleSpec(field=HOUR_FIELD, operator="<", value=end, words=m.group(0), source="inferred"))
+    return out
 
 
 # --- Shops (C8, C9, C12 country, unverifiable) ---------------------------------------

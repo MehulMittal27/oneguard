@@ -361,6 +361,12 @@ def _fail_text(rule: Rule, target: Any, failing: list[tuple[FactValue, ItemFacts
         if op in ("=", "in"):
             return f"Placed on a {day}, not {_either(listed)}", f"Would approve on {_either(listed)}"
         return f"Placed on a {day}, which you excluded", "Would approve on another day"
+    if field == "authorization.local_hour" and op in ("<", "<=", ">=", ">"):
+        hour = int(target)
+        allowed = {"<": f"before {hour:02d}:00", "<=": f"until {hour:02d}:59",
+                   ">=": f"from {hour:02d}:00", ">": f"after {hour:02d}:59"}[op]
+        return (f"Placed at {facts.timestamp.astimezone(ZURICH):%H:%M} Swiss time; you allowed {allowed}",
+                f"Would approve {allowed}")
     if field in ("items[].quantity", "cart.quantity") and op in ("<", "<="):
         allowed = f"{want} or fewer" if op == "<=" else f"fewer than {want}"
         return f"Quantity {seen}; you allowed {allowed}", f"Would approve with a quantity of {allowed}"

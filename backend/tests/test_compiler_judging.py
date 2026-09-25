@@ -16,6 +16,8 @@
    "X each" per purchase, and excluded things no category holds.
 6. "one delivery a day" is a purchase count (cart.purchases_in_period), never a CHF period
    limit: SCEN0113 compiled on both paths declines a second dinner the same simulated day.
+7. "Weeknight dinners" is the evening as well (local_hour >= 17 and < 23, inferred), on both
+   paths: the live run's Tue 01:15 and Wed 15:35 deliveries now decline.
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ BILL = "authorization.billing_amount_chf"
 KNOWN = "merchant.familiar_on_card"
 CAT = "items[].item_category"
 ALCOHOL = "items[].contains_alcohol"
+HOUR = "authorization.local_hour"
 WEEK = ["mon", "tue", "wed", "thu", "fri"]
 
 # Open questions a correct reading keeps, and why (no per-order limit is stated; T5).
@@ -79,6 +82,8 @@ EXPECTED: dict[str, dict[str, Any]] = {
         ("authorization.weekday", "in", tuple(WEEK), None, None, None, "decline"),  # weeknight, never weekend
         ("cart.purchases_in_period", "<=", 1, None, "period", 1, "decline"),  # "one delivery a day"
         (KNOWN, "=", "true", None, None, None, "decline"),               # "my usual services"
+        (HOUR, ">=", 17, None, None, None, "decline"),                  # "dinners": the evening
+        (HOUR, "<", 23, None, None, None, "decline"),
     ]},
     "SCEN0117": {"rules": [
         (BILL, "<=", 100, "CHF", "purchase", None, "decline"),
@@ -435,15 +440,12 @@ def _scen0113_response() -> dict:
     return next(e["response"] for e in RECORDED if e["scenario"] == "SCEN0113")
 
 
-@pytest.mark.parametrize("path", ["fallback", "llm"])
-def test_scen0113_declines_a_second_dinner_the_same_day(path):
-    """SCEN0113 end to end, compiled on each path: a CHF 30 weekday dinner is approved, a
-    second one the same simulated day declines with period_count_exceeded."""
+def _scen0113_context(path: str):
+    """SCEN0113 compiled on one path, as an active policy over the usual dinner service."""
     from oneguard.engine.ledger_base import InMemoryLedger
     from oneguard.engine.types import Policy
     from oneguard.llm.provider import NullProvider
-    from oneguard.pipeline import PipelineContext, decide_event, period_days_of
-    from tests.test_c9_no_history import event
+    from oneguard.pipeline import PipelineContext, period_days_of
 
     dinners = _dinner_history()
     instruction = SERVED["SCEN0113"]
@@ -455,22 +457,87 @@ def test_scen0113_declines_a_second_dinner_the_same_day(path):
                     allowed_item_categories=draft.allowed_item_categories,
                     requires_known_shop=draft.requires_known_shop)
     assert period_days_of(policy) == 1
-    ctx = PipelineContext(policy=policy, ledger=InMemoryLedger(history=dinners), history=dinners,
-                          run_id=f"run-113-{path}", now=lambda: datetime(2026, 9, 25, 12, 0, tzinfo=UTC))
+    return PipelineContext(policy=policy, ledger=InMemoryLedger(history=dinners), history=dinners,
+                           run_id=f"run-113-{path}", now=lambda: datetime(2026, 9, 25, 12, 0, tzinfo=UTC))
 
-    def dinner(item: str, minutes: int) -> dict:  # Monday 10 Aug 2026, 12:00 Zurich + minutes
-        ev = event("ME_DINNER", item, minutes=minutes, amount=30.0)
-        ev["authorization"]["merchant"]["merchant_category"] = "food_delivery"
-        ev["authorization"]["items"][0].update(item_category="food_delivery", item_name="Dinner")
-        return ev
 
-    first, _, _ = decide_event(dinner("IT_DINNER_1", 0), ctx)
+def _dinner(item: str, minutes: int) -> dict:
+    """A CHF 30 dinner delivery at Monday 10 Aug 2026, 12:00 Zurich + minutes."""
+    from tests.test_c9_no_history import event
+
+    ev = event("ME_DINNER", item, minutes=minutes, amount=30.0)
+    ev["authorization"]["merchant"]["merchant_category"] = "food_delivery"
+    ev["authorization"]["items"][0].update(item_category="food_delivery", item_name="Dinner")
+    return ev
+
+
+@pytest.mark.parametrize("path", ["fallback", "llm"])
+def test_scen0113_declines_a_second_dinner_the_same_day(path):
+    """SCEN0113 end to end, compiled on each path: a CHF 30 weekday dinner is approved, a
+    second one the same simulated day declines with period_count_exceeded."""
+    from oneguard.pipeline import decide_event
+
+    ctx = _scen0113_context(path)
+    first, _, _ = decide_event(_dinner("IT_DINNER_1", 6 * 60), ctx)  # 18:00
     assert first.outcome == "approve", first
-    second, explanation, _ = decide_event(dinner("IT_DINNER_2", 7 * 60), ctx)  # 19:00 the same day
+    second, explanation, _ = decide_event(_dinner("IT_DINNER_2", 8 * 60), ctx)  # 20:00 the same day
     assert (second.outcome, second.reason_codes) == ("decline", ["period_count_exceeded"])
     assert explanation.message == ("Declined CHF 30.00: You allowed one order per day; one was already "
-                                   "approved today at 12:00.")
-    assert explanation.counterfactual == "Would approve from tomorrow at 12:00."
+                                   "approved today at 18:00.")
+    assert explanation.counterfactual == "Would approve from tomorrow at 18:00."
+
+
+@pytest.mark.parametrize("path", ["fallback", "llm"])
+def test_scen0113_declines_a_dinner_outside_the_evening(path):
+    """The live run approved SCEN0113 deliveries on Tue 01:15 and Wed 15:35 (Zurich): "weeknight
+    dinners" is the evening too, so both now fail the evening check, on either path."""
+    from oneguard.pipeline import decide_event
+
+    ctx = _scen0113_context(path)
+    night = 13 * 60 + 15  # Tue 11 Aug 01:15
+    afternoon = 2 * 24 * 60 + 3 * 60 + 35  # Wed 12 Aug 15:35
+    for item, minutes, at in (("IT_NIGHT", night, "01:15"), ("IT_AFTERNOON", afternoon, "15:35")):
+        decision, explanation, _ = decide_event(_dinner(item, minutes), ctx)
+        assert (decision.outcome, decision.reason_codes, decision.deciding_ids) == (
+            "decline", ["rule_not_met"], ["C12-hour"]), (item, explanation.message)
+        assert explanation.message == f"Declined CHF 30.00: Placed at {at} Swiss time; you allowed from 17:00."
+        assert explanation.counterfactual == "Would approve from 17:00."
+    evening, _, _ = decide_event(_dinner("IT_EVENING", 2 * 24 * 60 + 7 * 60), ctx)  # Wed 19:00
+    assert evening.outcome == "approve", evening
+
+
+def test_the_evening_window_is_inferred_and_no_cap(history):
+    """"Weeknight dinners" gives local_hour >= 17 and < 23 (source inferred) with plain texts;
+    a stated hour wins on its side; lunch and an excluded dinner name no hours. The window is
+    no amount cap and no invented number for lint."""
+    from oneguard.compiler.lint import lint, lint_accepted
+
+    draft = parse(SERVED["SCEN0113"], history, "", TODAY)
+    hours = [(r.id, r.operator, r.value, r.source, r.text) for r in draft.rules if r.field == HOUR]
+    assert hours == [("C12-hour", ">=", 17, "inferred", "Only in the evening: from 17:00 (Swiss time)"),
+                     ("C12-hour-2", "<", 23, "inferred", "Only in the evening: before 23:00 (Swiss time)")]
+    stated = parse("Order supper after 19:00, max CHF 30", history, "", TODAY)
+    assert [(r.operator, r.value, r.source) for r in stated.rules if r.field == HOUR] == [
+        (">=", 19, "exact"), ("<", 23, "inferred")]
+    for instruction in ("Order lunch on weekdays only, under CHF 25", "No dinners, groceries up to CHF 50"):
+        assert not [r for r in parse(instruction, history, "", TODAY).rules if r.field == HOUR]
+    window = [r for r in draft.rules if r.field == HOUR]
+    assert [i.code for i in lint_accepted(window, [r.id for r in window]).issues] == ["no_amount_cap"]
+    assert lint(draft).ok, lint(draft).issues
+
+
+def test_the_llm_path_takes_the_parsers_evening_window(history):
+    """A model that guesses other evening hours, or none, ships the parser's window; an hour
+    the customer wrote in digits stays the model's reading."""
+    instruction = SERVED["SCEN0113"]
+    guessed = _raw(HOUR, ">=", "dinners", value_number=18, source="inferred")
+    for rules in ([guessed], []):
+        read = read_with_llm(instruction, Scripted(_response(*rules)), history, "", TODAY)
+        assert [(r.operator, r.value) for r in read.rules if r.field == HOUR] == [(">=", 17), ("<", 23)]
+    stated = "Order dinner after 19:00, max CHF 30"
+    read = read_with_llm(stated, Scripted(_response(_raw(HOUR, ">=", "after 19:00", value_number=19))),
+                         history, "", TODAY)
+    assert [(r.operator, r.value) for r in read.rules if r.field == HOUR] == [(">=", 19), ("<", 23)]
 
 
 def test_one_item_reads_in_the_singular():
