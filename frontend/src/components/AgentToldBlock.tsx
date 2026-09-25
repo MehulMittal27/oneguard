@@ -4,7 +4,7 @@ import type { Decision, VerifyResult } from '../api/types'
 import { CheckIcon, CrossIcon } from './icons/lucide'
 
 /**
- * DecisionDetail's two passport lines (`../../docs/api-contract.md` §6 item 18):
+ * DecisionDetail's two passport lines (`../../docs/api-contract.md` §6 item 19):
  * "What your agent was told" — a decline's `would_approve_if`, said in the
  * words of the counterfactual the customer already reads — and the decision's
  * signed receipt, which a tap sends to OneGuard's verify.

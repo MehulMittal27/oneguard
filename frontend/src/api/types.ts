@@ -119,7 +119,7 @@ export interface Mandate {
   confirmed_at: string
   usage?: MandateUsage
   // The mandate's signed passport, latest version (`../docs/api-contract.md` §2,
-  // §6 item 18); absent until one is issued.
+  // §6 item 19); absent until one is issued.
   passport?: PassportSummary
 }
 

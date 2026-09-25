@@ -1079,6 +1079,16 @@ class VisecaWorker:
             policy = policy.model_copy(update={"status": "revoked"})
         self._policies[viseca_mandate_id] = policy
 
+    def move_policy(self, viseca_mandate_id: str, policy: Policy) -> None:
+        """D3 moved the policy behind ``viseca_mandate_id`` to a new mandate id (same rules):
+        bind it, and a run already deciding under it decides its later purchases under the
+        new id, so they name the policy the card holds now."""
+        self.bind_policy(viseca_mandate_id, policy)
+        for run in self._runs.values():
+            if run.viseca_mandate_id == viseca_mandate_id and run.ctx is not None:
+                run.ctx.policy = self._policies[viseca_mandate_id]
+                run.mandate_id = policy.mandate_id
+
     def set_models(self, *, signals_enabled: bool, provider: Provider | None) -> None:
         """Soft signals and the tier-2/3 provider for every later decision, in every run (D5).
 

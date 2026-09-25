@@ -138,13 +138,20 @@ class Services:
         if self.worker is not None:
             self.worker.set_models(signals_enabled=enabled, provider=self.decision_provider(enabled))
 
-    def bind_mandate(self, row: Mandate) -> None:
-        """Decide with this mandate's policy from the next purchase on, live and in a replay."""
+    def bind_mandate(self, row: Mandate, *, moved: bool = False) -> None:
+        """Decide with this mandate's policy from the next purchase on, live and in a replay.
+
+        ``moved``: the row is a D3 copy of the policy its Viseca mandate already held, so a
+        live run in flight under that mandate takes it too (``Worker.move_policy``).
+        """
         rules, flags = policies.load_rules(row.rules, row.checks)
         policy = policies.policy_of(row.mandate_id, row.status, row.instruction, rules, flags, row.uncertainty_policy)
         self.offline.bind_policy(policy)
         if self.worker is not None and row.viseca_mandate_id:
-            self.worker.bind_policy(row.viseca_mandate_id, policy)
+            if moved:
+                self.worker.move_policy(row.viseca_mandate_id, policy)
+            else:
+                self.worker.bind_policy(row.viseca_mandate_id, policy)
 
     # Bounded calls ------------------------------------------------------------------------
 

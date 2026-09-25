@@ -191,15 +191,13 @@ def decision(db: Engine, live_id: str) -> StoredDecision | None:
     return _stored(entry, event, run)
 
 
-def latest_run_decisions(db: Engine, *, card_id: str, mandate_id: str | None = None) -> list[LedgerEntry]:
-    """The decisions of the most recent run on this card (under this mandate, if given).
+def latest_run_decisions(db: Engine, *, card_id: str) -> list[LedgerEntry]:
+    """The decisions of the most recent run on this card, whichever mandate decided them.
 
     "Most recent" is the run of the decision decided last on the real clock.
     """
     with session(db) as s:
         query = select(Decision.run_id).where(Decision.card_id == card_id)
-        if mandate_id is not None:
-            query = query.where(Decision.mandate_id == mandate_id)
         run_id = s.scalar(query.order_by(Decision.decided_at.desc()).limit(1))
         if run_id is None:
             return []
@@ -209,6 +207,17 @@ def latest_run_decisions(db: Engine, *, card_id: str, mandate_id: str | None = N
             .order_by(Decision.ts_sim, Decision.decided_at)
         )
         return [entry_of(r) for r in rows]
+
+
+def policy_lineage(db: Engine, mandate_id: str) -> set[str]:
+    """This mandate's id and those of the mandates holding the same policy: a D3 move
+    (``move_mandate``) copies a policy under a new id with the same Viseca mandate, and a
+    run already deciding under the original keeps its id on the decisions it stored."""
+    with session(db) as s:
+        viseca_id = s.scalar(select(Mandate.viseca_mandate_id).where(Mandate.mandate_id == mandate_id))
+        if viseca_id is None:
+            return {mandate_id}
+        return {mandate_id, *s.scalars(select(Mandate.mandate_id).where(Mandate.viseca_mandate_id == viseca_id))}
 
 
 # Drafts and mandates --------------------------------------------------------------------

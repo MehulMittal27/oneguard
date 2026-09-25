@@ -159,6 +159,9 @@ class Confirmation(ApiModel):
 
 
 class MandateUsage(ApiModel):
+    """Counted from the card's newest run, whichever mandate decided it (§2); with no
+    period limit the window is the whole run."""
+
     _omit_if_none = frozenset({"confirmations"})
 
     per_order_limit_chf: float | None

@@ -20,7 +20,7 @@ const POLL_MS = 4000
 
 /**
  * Card detail's Passport section (`../../docs/passport.md`,
- * `../../docs/api-contract.md` §6 item 18): the signed policy as a QR code to
+ * `../../docs/api-contract.md` §6 item 19): the signed policy as a QR code to
  * the verify page, its version, the devices that control the card, and a
  * Verify that asks OneGuard to check the latest version's signature.
  */

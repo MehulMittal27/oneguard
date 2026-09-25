@@ -112,18 +112,52 @@ export function computePendingChf(decisions: Decision[], cardId: string): number
     .reduce((sum, d) => sum + d.billing_amount_chf, 0)
 }
 
+/** What a card's row under "Active policies" on Home says about its use. */
+export interface PolicyUse {
+  /** Final approvals (a customer-approved step-up included) in the card's newest run. */
+  approved: number
+  /** The ledger's spend (`usage`): the period window with a period limit, else the whole newest run. */
+  spentChf: number
+  /** Stepped up and waiting: a reservation, never spend. */
+  pendingChf: number
+  period: { limitChf: number; days: number } | null
+}
+
 /**
- * `OverviewHero`'s rolling window — every decision (not just approved,
- * unlike computePeriodSpend: this total is proposals, not spend), windowed
- * the same way: ending at the most recent decision's own simulated
- * timestamp, not the real clock.
+ * The use of a card's policy for Home, re-derived on every poll: the counts from
+ * the same newest-run decisions Activity lists, the money from the mandate's
+ * `usage`, which C3 re-reads after each decisions poll. A policy with no period
+ * limit still moves: its spend is the newest run's. Without `usage` (mock mode)
+ * the money is summed from those decisions instead.
  */
-export function recentDecisions(decisions: Decision[], days: number): Decision[] {
-  if (decisions.length === 0) return []
-  const windowEnd = decisions.reduce(
-    (latest, d) => (d.occurred_at > latest ? d.occurred_at : latest),
-    decisions[0].occurred_at,
-  )
-  const windowStartMs = new Date(windowEnd).getTime() - days * 24 * 60 * 60 * 1000
-  return decisions.filter((d) => new Date(d.occurred_at).getTime() > windowStartMs)
+export function policyUse(mandate: Mandate, current: Decision[], cardId: string): PolicyUse {
+  const spend = current.filter((d) => d.card_id === cardId && isSpend(d))
+  const { period } = limitsFromMandate(mandate)
+  const usage = mandate.usage
+  const counted = period ? inPeriod(spend, period.days, usage) : spend
+  return {
+    approved: counted.length,
+    spentChf: usage
+      ? usage.period_spent_chf
+      : counted.reduce((sum, d) => sum + d.billing_amount_chf, 0),
+    pendingChf: usage ? usage.pending_chf : computePendingChf(current, cardId),
+    period,
+  }
+}
+
+/**
+ * The purchases inside the period window the spend is measured over: the
+ * ledger's (`usage.period_window_start` to `as_of`) when sent, otherwise
+ * `computePeriodSpend`'s, so the count and the amount always cover the same days.
+ */
+function inPeriod(spend: Decision[], days: number, usage: Mandate['usage']): Decision[] {
+  const ms = (iso: string) => new Date(iso).getTime()
+  if (usage) {
+    const start = ms(usage.period_window_start)
+    const end = ms(usage.as_of)
+    return spend.filter((d) => ms(d.occurred_at) >= start && ms(d.occurred_at) <= end)
+  }
+  if (spend.length === 0) return []
+  const end = Math.max(...spend.map((d) => ms(d.occurred_at)))
+  return spend.filter((d) => ms(d.occurred_at) > end - days * 24 * 60 * 60 * 1000)
 }

@@ -11,6 +11,7 @@ import { AccountsIcon, BackChevronIcon, BellIcon, PlusIcon } from '../../compone
 import { formatShortDate } from '../../lib/datetime'
 import { formatChf } from '../../lib/money'
 import { splitByRun } from '../../lib/runs'
+import { policyUse } from '../../lib/spend'
 import { useCustomer } from '../../state/CustomerContext'
 import { useDecisions } from '../../state/DecisionsContext'
 import { usePolicy } from '../../state/PolicyContext'
@@ -18,6 +19,11 @@ import type { FilterId } from '../Activity/Activity'
 import { DecisionDetail } from '../DecisionDetail/DecisionDetail'
 
 type PolicyStatus = 'loading' | 'error' | 'ready'
+
+/** A period limit's window, worded as the Card detail meter words it. */
+function periodLabel(days: number): string {
+  return days === 7 ? 'This week' : `Last ${days} days`
+}
 
 /**
  * Header (DESIGN.md #2/#10, D-021), `OverviewHero`, "Needs your review" (shown
@@ -305,29 +311,60 @@ export function Home({
                 {/* Card and date, then through to Card detail where Manage and
                     Revoke live. The instruction text used to lead this row — long,
                     variable, and nothing the customer could act on here. */}
-                {activePolicies.map(({ cardId, mandate }) => (
-                  <button
-                    key={cardId}
-                    type="button"
-                    onClick={() => onViewPolicy(cardId)}
-                    className="flex min-h-16 w-full items-center gap-4 rounded-row px-4 py-3 text-left"
-                  >
-                    <span className="flex size-9.5 shrink-0 items-center justify-center rounded-full bg-approved-tint text-approved">
-                      <AccountsIcon size={20} strokeWidth={1.8} />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[15px] font-semibold text-ink">
-                        Card {cardId}
+                {activePolicies.map(({ cardId, mandate }) => {
+                  const use = policyUse(mandate, current, cardId)
+                  const fill = use.period ? Math.min(1, use.spentChf / use.period.limitChf) : null
+                  return (
+                    <button
+                      key={cardId}
+                      type="button"
+                      onClick={() => onViewPolicy(cardId)}
+                      className="flex min-h-16 w-full items-center gap-4 rounded-row px-4 py-3 text-left"
+                    >
+                      <span className="flex size-9.5 shrink-0 items-center justify-center rounded-full bg-approved-tint text-approved">
+                        <AccountsIcon size={20} strokeWidth={1.8} />
                       </span>
-                      <span className="block truncate text-[13px] text-ink-muted">
-                        Since {formatShortDate(mandate.confirmed_at)}
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-baseline gap-2">
+                          <span className="shrink-0 text-[15px] font-semibold text-ink">
+                            Card {cardId}
+                          </span>
+                          <span className="truncate text-[12px] text-ink-muted">
+                            Since {formatShortDate(mandate.confirmed_at)}
+                          </span>
+                        </span>
+                        {/* The policy's use, from C3's `usage` (re-read after every
+                            decisions poll) and the newest run's decisions, so it
+                            moves as each decision lands. */}
+                        <span className="mt-0.5 block truncate text-[13px] text-ink-soft tabular-nums">
+                          {use.period
+                            ? `${formatChf(use.spentChf)} of ${formatChf(use.period.limitChf)}`
+                            : `${formatChf(use.spentChf)} spent`}
+                        </span>
+                        {fill !== null && (
+                          <span className="mt-1.5 block h-1.5 overflow-hidden rounded-meter bg-surface-active">
+                            <span
+                              className="block h-full rounded-meter bg-leash-fill"
+                              style={{ width: `${fill * 100}%` }}
+                            />
+                          </span>
+                        )}
+                        <span className="mt-0.5 block truncate text-[12px] text-ink-muted">
+                          {use.period ? periodLabel(use.period.days) : 'This run'} ·{' '}
+                          {use.approved === 1 ? '1 purchase' : `${use.approved} purchases`}
+                        </span>
+                        {use.pendingChf > 0 && (
+                          <span className="block truncate text-[12px] text-asked tabular-nums">
+                            {formatChf(use.pendingChf)} waiting for you
+                          </span>
+                        )}
                       </span>
-                    </span>
-                    <span className="rotate-180 shrink-0 text-ink-muted">
-                      <BackChevronIcon size={18} strokeWidth={2} />
-                    </span>
-                  </button>
-                ))}
+                      <span className="rotate-180 shrink-0 text-ink-muted">
+                        <BackChevronIcon size={18} strokeWidth={2} />
+                      </span>
+                    </button>
+                  )
+                })}
               </div>
             </div>
           )}

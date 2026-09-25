@@ -329,7 +329,7 @@ async def _passport_summary(s: Services, row: Mandate) -> api.PassportSummary | 
 
 async def _with_usage(s: Services, row: Mandate) -> api.Mandate:
     rules, _ = policies.load_rules(row.rules, row.checks)
-    entries = await s.db(queries.latest_run_decisions, s.db_engine, card_id=row.card_id, mandate_id=row.mandate_id)
+    entries = await s.db(queries.latest_run_decisions, s.db_engine, card_id=row.card_id)
     return _mandate(row, policies.usage(rules, entries, row.confirmed_at), await _passport_summary(s, row))
 
 

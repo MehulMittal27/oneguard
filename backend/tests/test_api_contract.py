@@ -32,7 +32,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from oneguard.api import queries
+from oneguard.api import queries, routes_dev
 from oneguard.api.app import AppConfig, create_app, sanitise
 from oneguard.api.policies import (
     FORM_INSTRUCTION,
@@ -1383,6 +1383,48 @@ def test_usage_follows_the_ledger(db_url: str) -> None:
             assert len(ledger["entries"]) == 10
             counted = {e["authorization_id"]: e["counted_chf"] for e in ledger["entries"]}
             assert counted[ok["authorization_id"]] == ok["billing_amount_chf"]
+
+    asyncio.run(scenario())
+
+
+def test_usage_counts_a_run_decided_before_its_policy_moved(db_url: str) -> None:
+    """D3 moves a policy to the run's card under a new id while the run keeps deciding under
+    the original (same Viseca mandate): C3 ``usage`` and D6 still count that run."""
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast())) as run:
+            decisions = await live_run(run)
+            before = (await run.get("/api/cards/CA0001/policy")).json()["mandate"]
+            assert before["usage"]["period_spent_chf"] > 0
+            moved = await routes_dev._move_policy(run.services, before["mandate_id"], "CA0001", "CU0001")
+            assert moved != before["mandate_id"]
+            assert {d["policy_applied"]["mandate_id"] for d in decisions} == {before["mandate_id"]}
+
+            after = (await run.get("/api/cards/CA0001/policy")).json()["mandate"]
+            assert after["mandate_id"] == moved
+            assert after["usage"] == before["usage"]
+            ledger = (await run.get("/api/dev/ledger/CA0001")).json()
+            assert ledger["period_spent_chf"] == before["usage"]["period_spent_chf"]
+
+    asyncio.run(scenario())
+
+
+def test_usage_is_the_cards_latest_run_whichever_policy_decided_it(db_url: str) -> None:
+    """C3 ``usage`` keys on the card: a policy confirmed after a run still shows that run's
+    spend on the card, under its own limits, until a newer run replaces it."""
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast())) as run:
+            await live_run(run)
+            first = (await run.get("/api/cards/CA0001/policy")).json()["mandate"]
+            second = await confirm_form(run, "CA0001", per_order_limit_chf=99)
+            assert second["mandate_id"] != first["mandate_id"]
+            usage = (await run.get("/api/cards/CA0001/policy")).json()["mandate"]["usage"]
+            assert usage["per_order_limit_chf"] == 99
+            assert (usage["period_spent_chf"], usage["as_of"]) == (
+                first["usage"]["period_spent_chf"],
+                first["usage"]["as_of"],
+            )
 
     asyncio.run(scenario())
 

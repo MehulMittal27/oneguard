@@ -189,6 +189,10 @@ MandateUsage { per_order_limit_chf: number|null,                      // NEW —
                                   item_name: string }],                     // remembered yeses (ask once,
                                                                             // then remember); names untrusted
                as_of: string }                 // simulated time of the last decision
+                                               // Counted from the card's newest run, whichever mandate
+                                               // decided it (a D3 move re-ids the policy mid-run; a new
+                                               // policy shows the card's last run until its own); no
+                                               // period limit: the window is the whole run
 
 Decision {
   authorization_id, customer_id, card_id,
@@ -580,8 +584,9 @@ fixtures to it.
 
 15. Approvals pending card: `uncertainty.note` shows only when it says something the message does not (`lib/decisionMessage.ts` `noteAddsToMessage`); the note is usually the uncertain evidence row's detail, which the card lists anyway.
 16. Operator strip (`?demo=1`, operator only): reads D5 GET on each poll and labels the toggle with what the server reports (on, off, live only, replay only), never an assumed "on"; D1's 404 reads as "no replay yet", not as the backend being unreachable.
-17. `Decision.policy_applied` - DecisionDetail's "Policy applied" shows these checks (the rules that decided), with a note when they are the platform mandate's rules or differ from the card's current policy; the card link (manage / revoke) stays. Absent: the card's current policy, as before.
-18. Passport (§1.3, §3.10, docs/passport.md): `lib/deviceKey.ts` (a non-extractable P-256 key in IndexedDB, `signedFetch` for C2, C4, C5, C8, P8, P9; a `device_not_enrolled` answer opens enrolment); NewPolicy confirm enrols this device first (the card's first device silently, otherwise "This device isn't approved for this card yet"); CardDetail gains a Passport section (QR, version, devices with Approve / Remove, Verify); Home shows "Devices waiting for your approval"; DecisionDetail shows "What your agent was told" (`would_approve_if`, in words from `counterfactual`) and "Receipt · Verify"; a `/verify` page for the QR link. Mock fixtures gain a passport, two devices and a receipt.
+17. `Decision.policy_applied` - DecisionDetail's "Policy applied" shows these checks (the rules that decided), with a note when they are the platform mandate's rules or differ from the card's current policy (another mandate id and other checks: a D3 move keeps the checks under a new id); the card link (manage / revoke) stays. Absent: the card's current policy, as before.
+18. Home follows each poll: `OverviewHero` counts the same decisions as Activity's filter chips (each card's newest run, `lib/runs.ts` `countDecisions`, no simulated-day window), and each "Active policies" row shows its `Mandate.usage` (re-read by C3 after every decisions poll): "CHF x of CHF y" with a bar and "This week · n purchases" for a period limit, "CHF x spent" and "This run · n purchases" without one, plus what is waiting.
+19. Passport (§1.3, §3.10, docs/passport.md): `lib/deviceKey.ts` (a non-extractable P-256 key in IndexedDB, `signedFetch` for C2, C4, C5, C8, P8, P9; a `device_not_enrolled` answer opens enrolment); NewPolicy confirm enrols this device first (the card's first device silently, otherwise "This device isn't approved for this card yet"), and a card's first passport (`Mandate.passport.version == 1`, none before) gets step 3 "Your passport is issued" with the first-passport animation; CardDetail gains a Passport section (QR, version, devices with Approve / Remove, Verify); Home shows "Devices waiting for your approval"; DecisionDetail shows "What your agent was told" (`would_approve_if`, in words from `counterfactual`) and "Receipt · Verify"; a `/verify` page for the QR link. Mock fixtures gain a passport, two devices and a receipt.
 
 No customer endpoint changes. No screen removals. Tighten UI stays dormant.
 
