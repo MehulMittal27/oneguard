@@ -25,7 +25,8 @@ The lifespan, in order (docs/architecture.md Runtime, docs/database.md §5):
    engine answers the signal with keywords (``signals.LayaSignals``). Loading Laya takes
    about 35 s on the cloud machine; a platform request in that window must not wait.
 
-``/healthz`` reports the worker (state, last poll, events cursor), whether a model
+``/healthz`` reports the worker (state, last poll, events cursor), the machine when the
+host exposes it (Fly: region, memory, CPUs), whether a model
 provider is configured, the signals backend deciding now (``keywords`` while the model
 loads), the configured one and whether its model is loading or loaded, the database
 engine and a one-row round trip. It names no secret and no URL.
@@ -383,7 +384,24 @@ async def healthz(request: Request) -> JSONResponse:
             "stubbed": sorted(s.stubbed if s.stubbed is not None else (frozenset() if s.implementations else stubs.STUBBED))
         },
     }
+    if (machine := machine_info()) is not None:
+        body["machine"] = machine
     return JSONResponse(body, status_code=200 if db_ok else 503)
+
+
+def machine_info() -> dict[str, Any] | None:
+    """The machine the server runs on, when the host says (Fly sets ``FLY_MACHINE_ID``,
+    ``FLY_REGION`` and ``FLY_VM_MEMORY_MB``); None elsewhere. Nothing secret."""
+    machine_id = os.environ.get("FLY_MACHINE_ID", "").strip()
+    if not machine_id:
+        return None
+    memory = os.environ.get("FLY_VM_MEMORY_MB", "").strip()
+    return {
+        "region": os.environ.get("FLY_REGION", "").strip() or None,
+        "memory_mb": int(memory) if memory.isdigit() else None,
+        "cpus": os.cpu_count(),
+        "machine_id": machine_id,
+    }
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:

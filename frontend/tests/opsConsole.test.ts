@@ -5,6 +5,10 @@ import type { Decision, ScenarioSummary } from '../src/api/types.ts'
 import {
   arrivalOrder,
   consoleRun,
+  exportFileName,
+  filterCounts,
+  filterDecisions,
+  flattenHealth,
   formatElapsed,
   formatLatency,
   groupScenarios,
@@ -251,4 +255,46 @@ test('what the agent was told from the backend bounds is said in the counterfact
   } as Decision
   assert.deepEqual(wouldApproveIf(told), ['Would approve at CHF 400.00 or less.'])
   assert.deepEqual(wouldApproveIf({ ...told, would_approve_if: null } as Decision), [])
+})
+
+test('the decision log filters by outcome and searches shops, accents and case aside', () => {
+  const row = (id: string, name: string, fields: Partial<Decision>) =>
+    decision({ authorization_id: id, merchant: { merchant_id: id, name }, ...fields })
+  const rows = [
+    row('a', 'PixelHarbor', { decision: 'approved' }),
+    row('b', 'Café Zürich', { decision: 'stopped' }),
+    row('c', 'PixelHarbour', { decision: 'uncertain', uncertain_outcome: 'pending', status: 'pending_human' }),
+    row('d', 'HarborByte', { decision: 'uncertain', uncertain_outcome: 'declined' }),
+    row('e', 'HarborByte', { decision: 'uncertain', uncertain_outcome: 'expired' }),
+  ]
+  const ids = (list: Decision[]) => list.map((d) => d.authorization_id)
+  assert.deepEqual(ids(filterDecisions(rows, 'all', '')), ['a', 'b', 'c', 'd', 'e'])
+  assert.deepEqual(ids(filterDecisions(rows, 'approved', '')), ['a'])
+  assert.deepEqual(ids(filterDecisions(rows, 'stopped', '')), ['b'])
+  assert.deepEqual(ids(filterDecisions(rows, 'waiting', '')), ['c'])
+  assert.deepEqual(ids(filterDecisions(rows, 'answered', '')), ['d']) // expired is nobody's answer
+  assert.deepEqual(ids(filterDecisions(rows, 'all', ' pixelharb ')), ['a', 'c'])
+  assert.deepEqual(ids(filterDecisions(rows, 'all', 'cafe zurich')), ['b'])
+  assert.deepEqual(ids(filterDecisions(rows, 'stopped', 'pixel')), [])
+  assert.deepEqual(filterCounts(rows), { all: 5, approved: 1, stopped: 1, waiting: 1, answered: 1 })
+})
+
+test('an export is named after the run, safely', () => {
+  assert.equal(exportFileName('SCEN0004', 'replay'), 'oneguard-SCEN0004-replay-decisions.json')
+  assert.equal(exportFileName(null, null), 'oneguard-decisions.json')
+  assert.equal(exportFileName('../x y', 'live'), 'oneguard-x-y-live-decisions.json')
+})
+
+test('the health table shows every key of /healthz, nested keys joined with dots', () => {
+  assert.deepEqual(
+    flattenHealth({ status: 'ok', worker: { state: 'polling', last_error: null }, engine: { stubbed: [] }, runs: ['a', 'b'] }),
+    [
+      { key: 'status', value: 'ok' },
+      { key: 'worker.state', value: 'polling' },
+      { key: 'worker.last_error', value: 'null' },
+      { key: 'engine.stubbed', value: 'none' },
+      { key: 'runs', value: 'a, b' },
+    ],
+  )
+  assert.deepEqual(flattenHealth(null), [])
 })

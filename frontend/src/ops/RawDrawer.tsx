@@ -3,7 +3,7 @@ import { getReceipt } from '../api/passport'
 import type { Decision } from '../api/types'
 import { CheckIcon, CrossIcon } from '../components/icons/lucide'
 import { receiptOf, type Verification } from '../lib/opsConsole'
-import { TEXT_M } from './style'
+import { BUTTON_SECONDARY, TEXT_M } from './style'
 
 /**
  * The signed receipt of one decision as JSON (P4, read when the drawer opens), in
@@ -79,7 +79,7 @@ export function RawDrawer({
           <button
             type="button"
             onClick={onClose}
-            className="min-h-9 rounded-button border border-border-quiet px-4 font-semibold text-ink hover:bg-surface-sunken"
+            className={BUTTON_SECONDARY}
           >
             Close
           </button>

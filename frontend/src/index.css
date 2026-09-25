@@ -247,3 +247,72 @@ body {
     display: none !important;
   }
 }
+
+/*
+ * Operator console (/ops) in Viseca's colours and type (colours and type only, no
+ * logo file). Scoped to `.ops-viseca`, the console's root: the app's tokens are
+ * redefined there, so the console's own utilities pick them up while the phone
+ * UI (its own document, in the embedded iframe) keeps its styling untouched.
+ * Roboto is loaded by the console page only (ops/OpsConsole.tsx), with a system
+ * fallback.
+ */
+.ops-viseca {
+  --ops-gold: #e9a23b;
+  --ops-gold-hover: #d9931f;
+  --ops-link: #4a7fc1;
+  --color-ground: #f7f5f0;
+  --color-surface: #ffffff;
+  --color-surface-sunken: #f1eee7;
+  --color-surface-expired: #efece5;
+  --color-ink: #1a1a1a;
+  --color-ink-soft: #33322f;
+  --color-ink-muted: #5f5e5a;
+  --color-hairline: #e4e1da;
+  --color-border-quiet: #d6d2c8;
+  --color-on-ink: #ffffff;
+  --color-approved: #2f7d4f;
+  --color-approved-tint: #e5f1e9;
+  --color-stopped: #b3382e;
+  --color-stopped-tint: #f8e6e3;
+  --color-stopped-border: #e5b8b2;
+  --font-sans: Roboto, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-display: var(--font-sans);
+  font-family: var(--font-sans);
+  color: var(--color-ink);
+  background: var(--color-ground);
+}
+
+/* Roboto ships 400, 500 and 700: the console's semibold is Roboto's medium. */
+.ops-viseca .font-semibold {
+  font-weight: 500;
+}
+
+.ops-viseca h1,
+.ops-viseca h2,
+.ops-viseca h3 {
+  font-weight: 500;
+}
+
+/* "VISECA" as a text wordmark, with a small gold slash after the last letter. */
+.ops-wordmark {
+  position: relative;
+  display: inline-block;
+  padding-right: 0.42em;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--color-ink);
+}
+
+.ops-wordmark::after {
+  content: '';
+  position: absolute;
+  top: 0.02em;
+  right: 0.06em;
+  width: 0.13em;
+  height: 0.96em;
+  background: var(--ops-gold);
+  transform: skewX(-20deg);
+}

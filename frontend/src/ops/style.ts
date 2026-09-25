@@ -18,3 +18,9 @@ export const TONE_CLASS = {
   neutral: 'bg-surface-sunken text-ink-muted',
   muted: 'bg-surface-expired text-ink-muted',
 } as const
+
+// Buttons in Viseca's gold (primary) and outline (secondary), `index.css` `.ops-viseca`.
+const BUTTON = `${TEXT_M} inline-flex min-h-10 items-center justify-center gap-2 rounded-button px-5 font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40`
+export const BUTTON_PRIMARY = `${BUTTON} bg-[var(--ops-gold)] text-ink enabled:hover:bg-[var(--ops-gold-hover)]`
+export const BUTTON_SECONDARY = `${BUTTON} border border-border-quiet bg-surface text-ink enabled:hover:border-[var(--ops-gold)]`
+export const LINK = 'font-semibold text-[var(--ops-link)] underline decoration-[var(--ops-link)]/40 underline-offset-4 hover:decoration-[var(--ops-link)]'

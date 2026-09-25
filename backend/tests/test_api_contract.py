@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
 import threading
@@ -750,6 +751,18 @@ def test_nothing_secret_reaches_a_response(db_url: str) -> None:
             assert health["database"]["engine"] == "sqlite"
 
     asyncio.run(scenario())
+
+
+def test_healthz_names_the_machine_only_when_the_host_exposes_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    from oneguard.api.app import machine_info
+
+    for name in ("FLY_MACHINE_ID", "FLY_REGION", "FLY_VM_MEMORY_MB"):
+        monkeypatch.delenv(name, raising=False)
+    assert machine_info() is None
+    monkeypatch.setenv("FLY_MACHINE_ID", "e286e1f2")
+    monkeypatch.setenv("FLY_REGION", "lhr")
+    monkeypatch.setenv("FLY_VM_MEMORY_MB", "1024")
+    assert machine_info() == {"region": "lhr", "memory_mb": 1024, "cpus": os.cpu_count(), "machine_id": "e286e1f2"}
 
 
 def test_healthz_error_lines_carry_no_url_or_credential() -> None:

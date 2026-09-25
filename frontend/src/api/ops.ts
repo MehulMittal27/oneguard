@@ -16,7 +16,17 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
  * older backend or a worker that never started leaves parts out. */
 export interface Health {
   status?: 'ok' | 'degraded'
-  worker?: { configured?: boolean; state?: string; ok?: boolean; last_error?: string | null }
+  worker?: {
+    configured?: boolean
+    state?: string
+    ok?: boolean
+    last_error?: string | null
+    last_poll_at?: string | null
+    events_cursor?: number | string | null
+  }
+  events_cursor?: number | string | null
+  // The machine the server runs on, when the host says (Fly: region, memory, CPUs).
+  machine?: { region?: string | null; memory_mb?: number | null; cpus?: number | null; machine_id?: string | null }
   provider?: { name?: string; configured?: boolean }
   signals?: { backend?: string; configured?: string; enabled?: boolean; model_loading?: boolean; model_loaded?: boolean }
   model_loaded?: boolean

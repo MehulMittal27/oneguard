@@ -179,7 +179,9 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
   cursor, human window, pending step-ups, fx rates match and mismatch lines, last error), `events_cursor`,
   `provider` (name, configured), `signals` (`backend`: the detector answering now, `keywords`
   until the model has loaded; `configured`; `enabled`; `model_loading`; `model_loaded`), `database`
-  (engine name `sqlite`/`postgresql`, `SELECT 1` round trip in ms), `engine.stubbed`.
+  (engine name `sqlite`/`postgresql`, `SELECT 1` round trip in ms), `engine.stubbed`, and
+  `machine` only when the host names it (Fly: `region`, `memory_mb`, `cpus`, `machine_id`;
+  absent elsewhere).
   503 only when the database does not answer.
 - SQLite fallback (docs/database.md §5): if Supabase is unreachable, unset
   `ONEGUARD_DATABASE_URL`; the app seeds the empty SQLite store on the machine at start.

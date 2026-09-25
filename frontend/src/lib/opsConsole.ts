@@ -339,3 +339,76 @@ export function wouldApproveIf(d: Decision): string[] {
     })
     .filter((line) => line.length > 0)
 }
+
+// Decision log: filters, search, export -----------------------------------------------
+
+export type LogFilter = 'all' | 'approved' | 'stopped' | 'waiting' | 'answered'
+
+export const LOG_FILTERS: { id: LogFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'approved', label: 'Approved' },
+  { id: 'stopped', label: 'Stopped' },
+  { id: 'waiting', label: 'Waiting' },
+  { id: 'answered', label: 'Answered' },
+]
+
+const FILTER_BADGE: Record<Exclude<LogFilter, 'all'>, OutcomeBadge['label']> = {
+  approved: 'Approved',
+  stopped: 'Stopped',
+  waiting: 'Waiting',
+  answered: 'Answered',
+}
+
+/**
+ * The rows the decision log shows: those whose badge matches the filter (an
+ * expired step-up shows only under All), and whose shop name contains the search,
+ * case- and accent-insensitive. Order is kept.
+ */
+export function filterDecisions(rows: Decision[], filter: LogFilter, query: string): Decision[] {
+  const fold = (text: string) => text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
+  const needle = fold(query.trim())
+  return rows.filter(
+    (d) =>
+      (filter === 'all' || outcomeBadge(d).label === FILTER_BADGE[filter]) &&
+      (needle === '' || fold(d.merchant.name).includes(needle)),
+  )
+}
+
+/** How many rows each filter would show (the filter chips' counts). */
+export function filterCounts(rows: Decision[]): Record<LogFilter, number> {
+  const counts: Record<LogFilter, number> = { all: rows.length, approved: 0, stopped: 0, waiting: 0, answered: 0 }
+  for (const d of rows) {
+    const label = outcomeBadge(d).label
+    for (const f of LOG_FILTERS) if (f.id !== 'all' && FILTER_BADGE[f.id] === label) counts[f.id] += 1
+  }
+  return counts
+}
+
+/** "oneguard-SCEN0004-replay-decisions.json": the Export JSON file name, safe for any OS. */
+export function exportFileName(scenarioId: string | null, kind: string | null): string {
+  const part = (text: string | null) => (text ?? '').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
+  return ['oneguard', part(scenarioId), part(kind), 'decisions'].filter(Boolean).join('-') + '.json'
+}
+
+// Health -----------------------------------------------------------------------------------
+
+export interface HealthRow {
+  key: string
+  value: string
+}
+
+/**
+ * The whole `/healthz` body as rows, nested keys joined with dots
+ * ("worker.state"), in the order the server sent them. Lists read "a, b" (empty:
+ * "none"), null reads "null": nothing is left out or reworded.
+ */
+export function flattenHealth(body: unknown, prefix = ''): HealthRow[] {
+  const node = record(body)
+  if (!node) return prefix ? [{ key: prefix, value: body === null || body === undefined ? 'null' : String(body) }] : []
+  return Object.entries(node).flatMap(([key, value]) => {
+    const path = prefix ? `${prefix}.${key}` : key
+    if (Array.isArray(value)) return [{ key: path, value: value.length ? value.map(String).join(', ') : 'none' }]
+    if (record(value)) return flattenHealth(value, path)
+    return [{ key: path, value: value === null || value === undefined ? 'null' : String(value) }]
+  })
+}
