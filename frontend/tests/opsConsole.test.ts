@@ -24,6 +24,8 @@ import {
   readVerification,
   replayGuard,
   runDecisions,
+  runInProgress,
+  runPanel,
   runTitle,
   scenarioOptionLabel,
   scenarioSignIn,
@@ -442,6 +444,36 @@ test('the sign-in line follows the selected scenario; the last run is its own li
   })!
   assert.equal(lastRunLine(replay), 'Last run: Replay · SCEN0000 · Sofia Keller (CU0001, card CA0001) · done')
   assert.equal(lastRunLine({ ...replay, customerId: null, customerName: null }), 'Last run: Replay · SCEN0000 · card CA0001 · done')
+})
+
+test('the run panel shows a run in progress; a finished one only for its selected scenario', () => {
+  const live = consoleRun({
+    kind: 'live',
+    run: {
+      run_id: 'r1', scenario_id: 'SCEN0136', card_id: 'CA1', state: 'running', delivered: 2, total: 10,
+      decided: 2, pending_human: 0, last_error: null,
+    },
+  } as never)!
+  // Running: shown whatever is selected.
+  assert.equal(runInProgress(live, 0), true)
+  assert.deepEqual(runPanel(live, 0, 'SCEN0001'), { run: live, finished: false })
+
+  // Finished with step-ups waiting (counted from the stream, or D7's pending_human): still in progress.
+  const done = { ...live, state: 'done' as const }
+  assert.deepEqual(runPanel(done, 2, 'SCEN0001'), { run: done, finished: false })
+  assert.deepEqual(runPanel({ ...done, pendingHuman: 1 }, 0, null), { run: { ...done, pendingHuman: 1 }, finished: false })
+
+  // Finished, another scenario selected (or none): "No run in progress".
+  assert.equal(runInProgress(done, 0), false)
+  assert.equal(runPanel(done, 0, 'SCEN0001'), null)
+  assert.equal(runPanel(done, 0, null), null)
+  assert.equal(runPanel({ ...done, state: 'error' }, 0, 'SCEN0001'), null)
+
+  // Finished, its own scenario selected: shown, labelled finished.
+  assert.deepEqual(runPanel(done, 0, 'SCEN0136'), { run: done, finished: true })
+
+  // No run at all.
+  assert.equal(runPanel(null, 0, 'SCEN0136'), null)
 })
 
 test('a replay from record is marked as one, and names the live run it replays', () => {

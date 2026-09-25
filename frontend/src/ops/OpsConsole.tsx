@@ -25,6 +25,8 @@ import {
   readVerification,
   replayGuard,
   runDecisions,
+  runInProgress,
+  runPanel,
   scenarioSignIn,
   type Verification,
 } from '../lib/opsConsole'
@@ -132,17 +134,13 @@ export default function OpsConsole() {
   const customerId = run?.customerId ?? null
   const ledgerRunId = run?.ledgerRunId ?? null
 
-  // The picker follows each new run; in between, the operator may look at others.
+  // The picker follows each new run while it is in progress (a finished one found
+  // on opening the console is not followed); in between, the operator may look at others.
   const [followed, setFollowed] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   // The last start this console asked for and the backend refused, verbatim;
   // a new run, from anywhere, clears it.
-  const [refusal, setRefusal] = useState<string | null>(null)
-  if (run && run.key !== followed) {
-    setFollowed(run.key)
-    setSelectedId(run.scenarioId)
-    setRefusal(null)
-  }
+  const [refusal, setRefusal] = useState<{ runKey: string | null; text: string } | null>(null)
   // The run D7 names, whoever started it; the sign-in line follows the selected scenario.
   const lastRun = run ? lastRunLine(run) : null
 
@@ -162,7 +160,7 @@ export default function OpsConsole() {
     }
   }, [runKey])
   const selected =
-    scenarios?.find((s) => s.scenario_id === selectedId) ?? (selectedId === null && run === null ? scenarios?.[0] : null) ?? null
+    scenarios?.find((s) => s.scenario_id === selectedId) ?? (selectedId === null && run !== undefined ? scenarios?.[0] : null) ?? null
   // Whom to sign in as on the phone for the selected scenario, and whether D2 can replay it.
   const signIn = scenarioSignIn(selected)
   const replayable = replayGuard(selected)
@@ -238,8 +236,20 @@ export default function OpsConsole() {
     RUN_POLL_MS,
     `${runKey}|${customerId}`,
   )
-  const rows = run === null ? [] : run && !customerId ? [] : stream.key === runKey ? stream.rows : null
-  const waiting = (rows ?? []).filter(isWaiting).length
+  const runRows = run === null ? [] : run && !customerId ? [] : stream.key === runKey ? stream.rows : null
+  const runWaiting = (runRows ?? []).filter(isWaiting).length
+  // A finished run's waiting step-ups are not known before its rows arrive.
+  const known = run !== undefined && (run === null || runRows !== null || runInProgress(run, 0))
+  const inProgress = Boolean(run && known && runInProgress(run, runWaiting))
+  if (run && inProgress && run.key !== followed) {
+    setFollowed(run.key)
+    setSelectedId(run.scenarioId)
+  }
+  // The run panel, and the stream under it: D7's run while in progress, else only
+  // as its selected scenario's finished run. Undefined while that is not known.
+  const panel = known ? runPanel(run ?? null, runWaiting, selectedScenarioId) : undefined
+  const rows = panel === undefined ? null : panel ? runRows : []
+  const waiting = panel ? runWaiting : 0
 
   // The card's passport, once per run --------------------------------------------------
   const [passport, setPassport] = useState<{ key: string; line: PassportLine } | null>(null)
@@ -283,7 +293,7 @@ export default function OpsConsole() {
       // Read D7 at once: the new run, and with it the sign-in line, shows now.
       setRunRead((n) => n + 1)
     } catch (error) {
-      setRefusal(refusalText(error))
+      setRefusal({ runKey, text: refusalText(error) })
     } finally {
       setBusy(false)
     }
@@ -341,8 +351,8 @@ export default function OpsConsole() {
     setJudgingRefusal(null)
   }, [])
   const [showPhone, setShowPhone] = useState(true)
-  const phoneCustomer = run ? customerId : (selected?.customer_id ?? null)
-  const phoneName = run ? run.customerName : (selected?.customer_name ?? null)
+  const phoneCustomer = panel ? customerId : (selected?.customer_id ?? null)
+  const phoneName = panel ? panel.run.customerName : (selected?.customer_name ?? null)
   const offline = healthFailed || runFailed
   // D3 needs a served scenario (D8) and the worker polling (/healthz); the button and
   // the dialog both say why not, and both repeat a finished run already on record.
@@ -391,15 +401,23 @@ export default function OpsConsole() {
                 judgingWarning={judging.warning}
                 signIn={signIn}
                 lastRun={lastRun}
-                refusal={refusal}
+                refusal={refusal?.runKey === runKey ? refusal.text : null}
                 signals={signals}
                 onToggleSignals={toggleSignals}
                 onRefreshHealth={() => setHealthRead((n) => n + 1)}
                 showPhone={showPhone}
                 onShowPhone={setShowPhone}
               />
-              <RunHeader run={run} waiting={waiting} passport={passportLine} />
-              <RecentDecisions decisions={rows} onOpen={openInLog} onOpenLog={() => setTab('log')} />
+              <RunHeader
+                run={panel === undefined ? undefined : (panel?.run ?? null)}
+                finished={panel?.finished ?? false}
+                lastRun={run != null}
+                waiting={waiting}
+                passport={passportLine}
+              />
+              {panel !== null && (
+                <RecentDecisions decisions={rows} onOpen={openInLog} onOpenLog={() => setTab('log')} />
+              )}
             </div>
           )}
           {tab === 'log' && (
@@ -409,8 +427,8 @@ export default function OpsConsole() {
                 expanded={expanded}
                 onToggle={toggleRow}
                 onOpenRaw={openRaw}
-                scenarioId={run?.scenarioId ?? null}
-                runKind={run ? (run.fromRecord ? 'replay-from-record' : run.kind) : null}
+                scenarioId={panel?.run.scenarioId ?? null}
+                runKind={panel ? (panel.run.fromRecord ? 'replay-from-record' : panel.run.kind) : null}
               />
             </div>
           )}
@@ -421,7 +439,7 @@ export default function OpsConsole() {
           )}
         </div>
 
-        {showPhone && run !== undefined && (
+        {showPhone && panel !== undefined && (
           <CustomerPhone
             customerId={phoneCustomer}
             customerLabel={phoneCustomer ? `${phoneName ?? phoneCustomer} (${phoneCustomer})` : null}
