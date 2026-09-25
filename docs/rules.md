@@ -171,5 +171,21 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 ## 12. Acceptance examples
 
 See `docs/acceptance-oracle.yaml` — the machine-readable version of this table, used by
-`backend/tests/test_oracle.py`. Totals under defaults: 10 Approve, 20 Decline, 11 Ask, 4 depends. With Q10 =
-Decline, AU0018 becomes Decline (10 / 21 / 10). With Q7 card-level, AU0044 becomes Decline.
+`backend/tests/test_oracle.py`. This is the one place the public counts are stated; other
+docs point here. Counted under `defaults`, one purchase per row: `outcome: approve` is
+Approve, `decline` is Decline, `step_up` is Ask, and a purchase with `depends:` (its outcome
+follows an earlier step-up's resolution) counts once as depends, whatever its branches say.
+
+source: acceptance-oracle.yaml
+
+| Scenario | Purchases | Approve | Decline | Ask | Depends |
+|---|---|---|---|---|---|
+| SCEN0000 | 1 | 1 | 0 | 0 | 0 |
+| SCEN0001 | 10 | 3 | 3 | 1 | 3 |
+| SCEN0002 | 12 | 1 | 7 | 4 | 0 |
+| SCEN0003 | 11 | 2 | 6 | 2 | 1 |
+| SCEN0004 | 11 | 1 | 4 | 6 | 0 |
+| **Total** | **45** | **8** | **20** | **13** | **4** |
+
+With Q10 = Decline (`alt` on AU0018), AU0018 becomes Decline (8 / 21 / 12 / 4). With Q7
+card-level (`alt` on AU0044), AU0044 becomes Decline (8 / 21 / 12 / 4).

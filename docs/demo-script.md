@@ -447,7 +447,8 @@ run holds the team's single delivery slot while a step-up waits.
 On the GitHub tab:
 
 - `docs/replay-matrix.md`: all 45 public purchases, **Oracle match 45/45**, signals on vs off
-  45/45 identical outcomes (14 approve, 20 decline, 11 ask), every row with its message and
+  45/45 identical outcomes (oracle totals in `docs/rules.md` §12, source:
+  acceptance-oracle.yaml), every row with its message and
   counterfactual.
 - `docs/benchmark.md`: engine end to end **P95 5.6 ms** against a 20 ms target (4,500
   decisions, signals off, laptop).
