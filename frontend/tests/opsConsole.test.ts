@@ -68,10 +68,23 @@ test('a live run and a replay read as one shape, keyed by the run their decision
     run: { scenario_id: 'S2', card_id: 'CA2', delivered: 11, total: 11, running: false, next_at: null, ledger_run_id: 'replay-x', decided: 11 },
   })
   assert.deepEqual(
-    [replay?.kind, replay?.key, replay?.state, replay?.decided, replay?.pendingHuman],
-    ['replay', 'replay-x', 'done', 11, null],
+    [replay?.kind, replay?.key, replay?.state, replay?.decided, replay?.pendingHuman, replay?.policy],
+    ['replay', 'replay-x', 'done', 11, null, null],
   )
+  assert.equal(live?.policy, null)
   assert.equal(consoleRun(null), null)
+})
+
+test('the run header says which policy a replay decides by', () => {
+  const replay = (policy_source?: 'card' | 'revoked' | 'scenario') =>
+    consoleRun({
+      kind: 'replay',
+      run: { scenario_id: 'S', card_id: 'CA1', delivered: 0, total: 1, running: true, next_at: null, policy_source },
+    })?.policy
+  assert.equal(replay('scenario'), 'policy compiled from the scenario')
+  assert.equal(replay('card'), "the card's active policy")
+  assert.equal(replay('revoked'), 'policy revoked: every purchase declines')
+  assert.equal(replay(undefined), null)
 })
 
 test('the stream keeps only the current run, newest first as C6 sent it', () => {

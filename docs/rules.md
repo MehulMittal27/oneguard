@@ -120,7 +120,7 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 - **W-rule 1** One strong sign → Ask.
 - **W-rule 2** Two or more weak signs → Ask. One weak sign alone → no effect.
 - **W-rule 3** "Pause anything that looks like someone else is driving" confirms this section is wanted; it does not lower the bar.
-- **W-rule 4** Recovery: after a burst (session watch on), the next otherwise-clean purchase asks once; the customer's approval turns the watch off; a no or a timeout keeps it on. The watch is per card and carries into later live sessions.
+- **W-rule 4** Recovery: after a burst (session watch on), the next otherwise-clean purchase asks once; the customer's approval turns the watch off; a no or a timeout keeps it on. The watch is per mandate: it carries into later live sessions under the same policy, and a new policy (a new mandate the customer confirms) starts clean, as remembered answers and fulfilments (A8) do.
 - **W-rule 5** No baseline yet: with no approved purchase in history (any card) and no final approval in this run, W1, W3 and W4 do not trigger and show "no baseline yet" as info; from the first final approval in the run, that purchase's device, shop country and amount count as known (a purchase with no device id still triggers W1).
 
 ## 9. Explanations

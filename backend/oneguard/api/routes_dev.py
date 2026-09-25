@@ -23,6 +23,7 @@ import secrets
 from collections import defaultdict
 from datetime import datetime, timedelta
 from functools import cache
+from typing import Literal
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -59,6 +60,13 @@ catalogue_router = APIRouter(prefix="/api")
 
 REPLAY_MANDATE = "TM_REPLAY"
 """The platform mandate id replay events carry when the policy has none at Viseca."""
+
+ReplaySource = Literal["card", "revoked", "scenario"]
+
+
+def compiled_mandate_id(scenario_id: str) -> str:
+    """The mandate id of a scenario's instruction compiled for a replay (D2, never stored)."""
+    return f"replay-{scenario_id}"
 
 
 @cache
@@ -134,14 +142,17 @@ async def _replay_named(s: Services, status: api.ReplayStatus) -> api.ReplayStat
     return status.model_copy(update={"customer_id": customer_id, "customer_name": names.get(customer_id)})
 
 
-async def _replay_policy(s: Services, scenario_id: str, card_id: str) -> tuple[Policy, str]:
-    """The card's active policy, else the scenario's instruction compiled for this replay
-    only (never stored as a mandate). Returns the policy and the platform mandate id."""
+async def _replay_policy(s: Services, scenario_id: str, card_id: str) -> tuple[Policy, str, ReplaySource]:
+    """The card's own policy (the customer's words and checks): its active one, else the
+    one it had last, revoked, under which every purchase declines at step 1. Only a card
+    that never had a policy replays the scenario's instruction, compiled for this replay
+    only (never stored as a mandate). Returns the policy, the platform mandate id and where
+    the policy came from."""
     row = await s.db(queries.latest_mandate, s.db_engine, card_id)
-    if row is not None and row.status == "active":
+    if row is not None:
         rules, flags = policies.load_rules(row.rules, row.checks)
         policy = policies.policy_of(row.mandate_id, row.status, row.instruction, rules, flags, row.uncertainty_policy)
-        return policy, row.viseca_mandate_id or REPLAY_MANDATE
+        return policy, row.viseca_mandate_id or REPLAY_MANDATE, "card" if row.status == "active" else "revoked"
     instruction = pack().scenarios[scenario_id]["cardholder_instruction"]
     compile_instruction = s.functions["compile_instruction"]
     try:
@@ -152,14 +163,14 @@ async def _replay_policy(s: Services, scenario_id: str, card_id: str) -> tuple[P
     except TimeoutError:
         raise ApiError(504, "compiler_timeout", "Compiling the scenario's instruction took too long.") from None
     policy = Policy(
-        mandate_id=f"replay-{scenario_id}",
+        mandate_id=compiled_mandate_id(scenario_id),
         status="active",
         instruction=draft.instruction,
         rules=draft.rules,
         uncertainty_policy=draft.uncertainty_policy,
         **policies.flags_of(draft),
     )
-    return policy, REPLAY_MANDATE
+    return policy, REPLAY_MANDATE, "scenario"
 
 
 @router.post("/replay/restart", response_model=api.ReplayStatus)
@@ -167,7 +178,7 @@ async def replay_restart(body: api.ReplayRestartRequest, request: Request) -> JS
     """D2: replay a scenario's purchases offline, ``speed_ms`` apart."""
     s = services(request)
     customer_id, card_id = _scenario(body.scenario_id, body.card_id)
-    policy, platform_mandate = await _replay_policy(s, body.scenario_id, card_id)
+    policy, platform_mandate, source = await _replay_policy(s, body.scenario_id, card_id)
     sources = [row["authorization_id"] for row in pack().attempts_for(body.scenario_id)]
     events = build_events(
         pack(), body.scenario_id, mandate_id=platform_mandate, live_id=live_ids(sources).__getitem__
@@ -178,6 +189,7 @@ async def replay_restart(body: api.ReplayRestartRequest, request: Request) -> JS
         card_id=card_id,
         customer_id=customer_id,
         policy=policy,
+        policy_source=source,
         events=events,
         history=s.history,
         provider=s.decision_provider(models),
@@ -398,8 +410,23 @@ async def current_run(request: Request) -> JSONResponse:
         ledger_run_id=stored.run_id,
         started_at=stored.started_at,
         decided=stored.decided,
+        mandate_id=stored.mandate_id,
+        policy_source=await _stored_replay_source(s, stored),
     )
     return reply(await _replay_named(s, status))
+
+
+async def _stored_replay_source(s: Services, row: Run) -> ReplaySource | None:
+    """Where a stored replay's policy came from: a stored mandate is the card's, active or
+    already revoked when the replay started; D2's compiled id is the scenario's; anything
+    else (``make replay``'s fixture) says nothing."""
+    if row.scenario_id and row.mandate_id == compiled_mandate_id(row.scenario_id):
+        return "scenario"
+    mandate = (await s.db(queries.mandates_by_id, s.db_engine, [row.mandate_id])).get(row.mandate_id)
+    if mandate is None:
+        return None
+    revoked = mandate.status != "active" and (mandate.revoked_at is None or mandate.revoked_at <= row.started_at)
+    return "revoked" if revoked else "card"
 
 
 @router.get("/runs/{run_id}", response_model=api.LiveRun)

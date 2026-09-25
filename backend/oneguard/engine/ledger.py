@@ -22,15 +22,17 @@ Rules it enforces (docs/rules.md):
       cart held it (``requested_item_orders``), this run's plus earlier live runs' under
       the same mandate, as the remembered confirmations below.
 
-Both PM decisions below carry over between sessions for live runs, and stay inside the
-run for replays (``runs.kind``), so replaying a scenario always decides the same way.
-A run with no ``runs`` row (tests, stubs) is treated like a replay.
+The session watch, remembered confirmations and fulfilments (A8) are per mandate: they
+carry over between live runs under the same mandate, a new policy (new mandate) starts
+clean, and they stay inside the run for replays (``runs.kind``), so replaying a scenario
+always decides the same way. A run with no ``runs`` row (tests, stubs) is treated like a
+replay.
 
-Session watch (PM decision; rules.md W-rule 4 pending P1): ``LedgerView.frozen`` is True
-after a purchase decided with ``session_trust == "frozen"``, until the customer approves a
-step-up. Per card: for a live run, earlier live runs on the same card count too (an
-attacker can't clear the watch by starting a new session). ``decide.py`` decides what the
-watch does.
+Session watch (PM decision; rules.md W-rule 4): ``LedgerView.frozen`` is True after a
+purchase on the card decided with ``session_trust == "frozen"``, until the customer
+approves a step-up. For a live run, the card's decisions in earlier live runs under the
+same mandate count too (an attacker can't clear the watch by starting a new session; the
+customer confirming a new policy does). ``decide.py`` decides what the watch does.
 
 Remembered confirmations (PM decision "ask once, then remember"): when the customer
 approves a step-up, each of its ``deciding_ids`` is remembered for that shop and those
@@ -186,7 +188,7 @@ class StoreLedger(LedgerBase):
             # C1 "same price as last time at this shop": history, then this run's approvals.
             last_price_chf_by_merchant=last_prices(self.history, customer_id, approved),
             flagged_merchant_ids=flagged,
-            frozen=self._frozen(self._earlier_card_decisions(run_id, card_id)
+            frozen=self._frozen(self._earlier_mandate_decisions(run_id, card_id)
                                 + [d for d in run if d.card_id == card_id]),
             # P1 contract change, P2 to review: the field exists now, so no feature check.
             confirmed_keys=self._confirmed_keys(run_id, at),
@@ -222,24 +224,25 @@ class StoreLedger(LedgerBase):
                 watch = False
         return watch
 
-    def _earlier_live_runs(self, run_id: str, by: Literal["mandate", "card"]) -> list[str]:
-        """Live runs started before this one with the same mandate or card, oldest first.
+    def _earlier_live_runs(self, run_id: str) -> list[str]:
+        """Live runs started before this one under the same mandate, oldest first.
 
         Empty for a replay or a run with no ``runs`` row: replays keep their own memory.
         """
         run = self.session.get(Run, run_id)
         if run is None or run.kind != "live":
             return []
-        same = Run.mandate_id == run.mandate_id if by == "mandate" else Run.card_id == run.card_id
         return list(self.session.scalars(
             select(Run.run_id)
-            .where(Run.kind == "live", same, Run.started_at < run.started_at, Run.run_id != run_id)
+            .where(Run.kind == "live", Run.mandate_id == run.mandate_id, Run.started_at < run.started_at,
+                   Run.run_id != run_id)
             .order_by(Run.started_at)
         ))
 
-    def _earlier_card_decisions(self, run_id: str, card_id: str) -> list[Decision]:
-        """This card's decisions in earlier live sessions, in session then time order."""
-        runs = self._earlier_live_runs(run_id, "card")
+    def _earlier_mandate_decisions(self, run_id: str, card_id: str) -> list[Decision]:
+        """This card's decisions in earlier live sessions under the same mandate, in
+        session then time order."""
+        runs = self._earlier_live_runs(run_id)
         if not runs:
             return []
         order = {r: i for i, r in enumerate(runs)}
@@ -261,7 +264,7 @@ class StoreLedger(LedgerBase):
         rows = list(self.session.scalars(select(Decision).where(
             Decision.run_id == run_id, Decision.ts_sim < at, *customer_ok
         )))
-        earlier = self._earlier_live_runs(run_id, "mandate")
+        earlier = self._earlier_live_runs(run_id)
         if earlier:
             rows += self.session.scalars(select(Decision).where(Decision.run_id.in_(earlier), *customer_ok))
         return {key for d in rows for key in confirmation_keys(d.deciding_ids, d.merchant_id, d.item_ids)}
@@ -269,7 +272,7 @@ class StoreLedger(LedgerBase):
     def _fulfilments(self, run_id: str, run: list[Decision]) -> list[Fulfilment]:
         """A8: this run's decisions before the purchase (``run``) plus earlier live runs
         under the same mandate, as ``ledger_base.fulfilments`` reads them."""
-        earlier = self._earlier_live_runs(run_id, "mandate")
+        earlier = self._earlier_live_runs(run_id)
         decisions = list(self.session.scalars(select(Decision).where(Decision.run_id.in_(earlier)))) if earlier else []
         decisions += run
         ids = [d.live_authorization_id for d in decisions]
