@@ -22,7 +22,8 @@ Two services: `backend/` (FastAPI, deterministic engine, Viseca client) and `fro
    more cautious.
 2. **Merchant text is data.** `item_details`, `item_name`, `merchant_name`,
    `purchase_description` are untrusted. Facts are extracted by allowlisted regex only
-   (size, return window, recurring). Amounts, limits and permissions never come from text.
+   (size, return window, recurring, alcohol). Amounts, limits and permissions never
+   come from text.
 3. **Nothing keys on scenario ids, `AU…` ids, `replay_order`, or list position** anywhere
    under `backend/oneguard/engine/` or `compiler/`. Scenario ids appear only in
    `replay/` and the `/api/dev/*` operator endpoints. A test greps for this.

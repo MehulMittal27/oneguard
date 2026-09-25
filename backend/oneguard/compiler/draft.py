@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from oneguard.engine.policy import COUNT_FIELD
+from oneguard.engine.policy import ALCOHOL_FIELD, COUNT_FIELD, LAST_PRICE_AT_SHOP
 from oneguard.engine.types import Currency, Rule, RuleKind, RuleOperator
 
 # rules.md M1: fixed rates to CHF.
@@ -56,6 +56,7 @@ FIELDS: dict[str, tuple[ValueType, tuple[str, ...], RuleKind]] = {
     "cart.quantity": ("number", ("<", "<=", "=", ">=", ">"), "item"),
     COUNT_FIELD: ("number", ("<", "<="), "period"),  # purchases per period_days on this card
     "items[].item_category": ("list", ("in", "not_in"), "item"),
+    ALCOHOL_FIELD: ("text", ("=",), "item"),  # "false": no alcoholic drink on any cart line
     "items[].size_eu": ("number", ("=",), "item"),
     "items[].size_letter": ("text", ("=",), "item"),
     "order.return_window_days": ("number", (">=", ">"), "terms"),
@@ -115,6 +116,21 @@ class ParsedDraft(_Model):
     shop_type: str | None = None
     resolved: dict[str, str] = Field(default_factory=dict)  # rule id -> where its value came from
     asked_about: dict[str, str] = Field(default_factory=dict)  # rule id -> the words that allow on_fail ask
+
+
+def last_price_at_shop(words: str, *, operator: RuleOperator = "=", on_fail: Literal["decline", "ask"] = "decline",
+                       ask_clause: str | None = None) -> RuleSpec:
+    """"Same price as last time" meaning each shop's own last price (several subscriptions):
+    the order total against the reference ``LAST_PRICE_AT_SHOP``, resolved per purchase by
+    the engine from the customer's approvals at that shop (api-contract §3.3)."""
+    return RuleSpec(field="authorization.billing_amount_chf", operator=operator, value=LAST_PRICE_AT_SHOP,
+                    currency="CHF", scope="purchase", words=words, source="inferred", on_fail=on_fail,
+                    ask_clause=ask_clause, value_from="history: the last approved price at each purchase's shop")
+
+
+def is_amount(spec: RuleSpec | Rule) -> bool:
+    """A money rule with a number, not the per-shop reference ``LAST_PRICE_AT_SHOP``."""
+    return spec.field in MONEY_FIELDS and isinstance(spec.value, int | float) and not isinstance(spec.value, bool)
 
 
 # --- Money ---------------------------------------------------------------------------
@@ -178,7 +194,10 @@ def count_text(spec: RuleSpec) -> str:
 def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
     """Plain-language RuleCheck text for one typed rule."""
     f, op, v = spec.field, spec.operator, spec.value
-    if f == "authorization.billing_amount_chf" and spec.scope == "period":
+    if f == "authorization.billing_amount_chf" and v == LAST_PRICE_AT_SHOP:
+        bound = {"=": "the same as", "<=": "at or below", "<": "under"}[op]
+        text = f"Total {bound} your last payment at the same shop"
+    elif f == "authorization.billing_amount_chf" and spec.scope == "period":
         text = _limit_text(spec, "Total", f" across any {spec.period_days or 7} days")
     elif f == "authorization.billing_amount_chf":
         text = _limit_text(spec, "Total", " per order")
@@ -193,6 +212,8 @@ def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
     elif f == "items[].item_category":
         cats = human_list(list(v))
         text = f"Only {cats}" if op == "in" else f"No {cats}"
+    elif f == ALCOHOL_FIELD:
+        text = "No alcohol"
     elif f == "items[].size_eu":
         text = f"Size {fmt_amount(v)}".replace(".50", ".5")
     elif f == "items[].size_letter":
@@ -208,8 +229,9 @@ def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
         text = "No recurring charges" if v == "false" else "Recurring billing expected"
     elif f == "merchant.merchant_category":
         shop = f"a {human(str(v))} shop"
-        text = f'Only from {shop} ("{spec.words}")' if op == "=" else f"Not from {shop}"
-    elif f == KNOWN_SHOP_FIELD:
+        said = f' ("{spec.words}")' if spec.words and spec.words != str(v) else ""
+        text = f"Only from {shop}{said}" if op == "=" else f"Not from {shop}"
+    elif f in (KNOWN_SHOP_FIELD, "merchant.known_shop"):
         text = "Only shops you have bought from before"
     elif f == "merchant.merchant_country":
         where = COUNTRY_NAMES.get(str(v), str(v))
@@ -249,6 +271,8 @@ def _base_id(spec: RuleSpec) -> str:
         return "C2" if spec.scope == "period" else "C1"
     if f == "items[].item_category":
         return "C3" if op == "in" else "C4"
+    if f == ALCOHOL_FIELD:
+        return "C4-alcohol"
     if f in ("items[].size_eu", "items[].size_letter"):
         return "C6"
     if f in ("order.return_window_days", "order.order_returnable", "order.order_cancellable"):
@@ -281,6 +305,25 @@ def _kind(spec: RuleSpec) -> RuleKind:
     if spec.field == "authorization.billing_amount_chf" and spec.scope == "period":
         return "period"
     return FIELDS[spec.field][2]
+
+
+def describe_rule(
+    field: str, operator: str, value: Any, *, currency: str | None = None, scope: str | None = None,
+    period_days: int | None = None, on_fail: str = "decline",
+) -> str | None:
+    """The customer-facing check text for a typed rule that did not come from this compiler
+    (a platform mandate's ``hard_rules``): the same wording a compiled rule gets, limits
+    in the api-contract §3.9 form. None when the rule is outside the vocabulary."""
+    field = "merchant.familiar_on_card" if field == "merchant.known_shop" else field
+    if field not in FIELDS:
+        return None
+    try:
+        spec = RuleSpec(field=field, operator=operator, value=value, currency=currency, scope=scope,
+                        period_days=period_days, on_fail=on_fail,
+                        words=", ".join(map(str, value)) if isinstance(value, list) else str(value))
+        return rule_text(spec)
+    except (ValueError, KeyError, TypeError, ArithmeticError):
+        return None
 
 
 def to_rule(spec: RuleSpec, taken: set[str], requested_item: str | None = None) -> Rule:

@@ -16,7 +16,8 @@ Rules it enforces (docs/rules.md):
       The same window counts purchases (``period_count``: approvals + pending).
 - Q7  known shops are customer level: history (any card) plus this run's approvals.
 - W1, W3 known devices and countries: history plus this run's approvals (their stored
-      events); W4 the largest approved purchase, the same way.
+      events); W4 the largest approved purchase, the same way; C1 the last approved price
+      at each shop, the same way (this run's latest approval there wins).
 
 Both PM decisions below carry over between sessions for live runs, and stay inside the
 run for replays (``runs.kind``), so replaying a scenario always decides the same way.
@@ -55,6 +56,7 @@ from oneguard.engine.ledger_base import (
     confirmation_keys,
     is_final_approval,
     known_merchant_names,
+    last_prices,
     period_counts,
 )
 from oneguard.engine.ledger_base import Ledger as LedgerBase
@@ -170,6 +172,8 @@ class StoreLedger(LedgerBase):
             known_countries=(set(self.history.known_countries(customer_id)) if self.history else set())
             | run_countries,
             max_approved_chf=max(maxima) if maxima else None,
+            # C1 "same price as last time at this shop": history, then this run's approvals.
+            last_price_chf_by_merchant=last_prices(self.history, customer_id, approved),
             flagged_merchant_ids=flagged,
             frozen=self._frozen(self._earlier_card_decisions(run_id, card_id)
                                 + [d for d in run if d.card_id == card_id]),

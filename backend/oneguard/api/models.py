@@ -256,6 +256,16 @@ class Confirmable(ApiModel):
     phrase: str
 
 
+class PolicyApplied(ApiModel):
+    """The policy this decision was checked against (api-contract §2): our confirmed
+    mandate (``confirmed``), or the platform mandate's own rules when no confirmed policy
+    was bound to it (``platform``). The checks are what decided, whatever the card holds now."""
+
+    mandate_id: str
+    source: Literal["confirmed", "platform"]
+    checks: list[RuleCheck]
+
+
 class Decision(ApiModel):
     """One purchase decision. Only the combinations of §3.1a are valid."""
 
@@ -269,6 +279,7 @@ class Decision(ApiModel):
             "resolved_by",
             "run_id",
             "run_started_at",
+            "policy_applied",
         }
     )
 
@@ -304,6 +315,7 @@ class Decision(ApiModel):
     confirmable: Confirmable | None = None
     run_id: str | None = None
     run_started_at: Timestamp | None = None
+    policy_applied: PolicyApplied | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> Decision:

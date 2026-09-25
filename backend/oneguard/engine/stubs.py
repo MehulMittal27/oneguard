@@ -178,7 +178,7 @@ def rewrite_explanation(
 
 
 def compile_instruction(
-    text: str, history: HistoryIndex, card_id: str, provider: Provider,
+    text: str, history: HistoryIndex, card_id: str, provider: Provider, customer_id: str | None = None,
     *, confirmed_at: datetime | None = None,
 ) -> CompiledDraft:
     return CompiledDraft(
@@ -212,7 +212,7 @@ def lint_accepted(rules: list[Rule], accepted_ids: list[str]) -> tuple[list[str]
     return missing, reasons
 
 
-def dry_run(policy: Policy, history: HistoryIndex, card_id: str) -> DryRunResult:
+def dry_run(policy: Policy, history: HistoryIndex, card_id: str, customer_id: str) -> DryRunResult:
     return DryRunResult(sample_size=0, would_violate=0, would_fit=0, would_ask=0, insight="stub")
 
 

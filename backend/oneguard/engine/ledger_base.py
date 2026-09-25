@@ -139,6 +139,22 @@ def confirmation_keys(rule_ids: Iterable[str], merchant_id: str, item_ids: Itera
     return keys
 
 
+def last_prices(history: HistoryIndex | None, customer_id: str, approved: Iterable[Any]) -> dict[str, float]:
+    """``LedgerView.last_price_chf_by_merchant``: history's last approved price at each shop
+    the customer knows, replaced by this run's final approvals (``approved``: decisions with
+    ``customer_id``, ``merchant_id``, ``ts_sim``, ``billing_amount_chf``), the latest by
+    simulated time winning. The run comes after the history it is scored against."""
+    prices: dict[str, float] = {}
+    if history is not None:
+        for merchant_id in history.known_merchants(customer_id):
+            price = history.last_price(customer_id, merchant_id)
+            if price is not None:
+                prices[merchant_id] = float(price)
+    for d in sorted((d for d in approved if d.customer_id == customer_id), key=lambda d: d.ts_sim):
+        prices[d.merchant_id] = float(d.billing_amount_chf)
+    return prices
+
+
 def known_merchant_names(history: HistoryIndex | None, merchant_ids: set[str]) -> dict[str, str]:
     """Catalogue names of the known merchants (``LedgerView.known_merchant_names``, A7).
 
@@ -209,6 +225,15 @@ class Ledger(ABC):
     def flag_merchant(self, run_id: str, merchant_id: str, reason: str, at: datetime) -> None:
         """Remember an A1 injection at this shop for later purchases in the run."""
 
+    def note_event(self, event: dict[str, Any]) -> None:
+        """Keep what the view learns from a purchase's event: its device and shop country.
+
+        ``decide_event`` calls this before deciding. The view adds them to
+        ``known_device_ids`` / ``known_countries`` once that purchase is a final approval
+        (W1, W3); declines, pending and expired step-ups teach nothing. ``StoreLedger``
+        reads the stored event (``events_raw``) instead, so the default does nothing.
+        """
+
     def set_deadline(self, authorization_id: str, deadline_at: datetime) -> LedgerEntry:
         """Replace a pending step-up's ``deadline_at`` and return the stored entry.
 
@@ -240,6 +265,7 @@ class InMemoryLedger(Ledger):
         self.history = history
         self.entries: dict[str, LedgerEntry] = {}
         self.flags: dict[str, set[str]] = {}
+        self.events: dict[str, tuple[str | None, str | None]] = {}  # live id -> device, country
         self._lock = threading.Lock()
 
     def get(self, authorization_id: str) -> LedgerEntry | None:
@@ -292,6 +318,9 @@ class InMemoryLedger(Ledger):
         hist_max = self.history.max_approved(customer_id) if self.history else None
         if hist_max is not None:
             maxima.append(hist_max)
+        noted = [self.events[e.live_authorization_id] for e in approved if e.live_authorization_id in self.events]
+        run_devices = {device for device, _ in noted if device}
+        run_countries = {country for _, country in noted if country}
 
         return LedgerView(
             period_spent_chf=round(sum(e.spent_chf for e in in_window), 2),
@@ -318,9 +347,11 @@ class InMemoryLedger(Ledger):
             known_merchant_names=known_merchant_names(self.history, known),
             merchant_approvals_on_card=on_card,
             merchant_approvals_other_cards=other_cards,
-            known_device_ids=set(self.history.known_devices(customer_id)) if self.history else set(),
-            known_countries=set(self.history.known_countries(customer_id)) if self.history else set(),
+            known_device_ids=(set(self.history.known_devices(customer_id)) if self.history else set()) | run_devices,
+            known_countries=(set(self.history.known_countries(customer_id)) if self.history else set())
+            | run_countries,
             max_approved_chf=max(maxima) if maxima else None,
+            last_price_chf_by_merchant=last_prices(self.history, customer_id, approved),
             flagged_merchant_ids=set(self.flags.get(run_id, set())),
             frozen=False,
             confirmed_keys={
@@ -372,6 +403,16 @@ class InMemoryLedger(Ledger):
             )
             self.entries[authorization_id] = resolved
             return resolved
+
+    def note_event(self, event: dict[str, Any]) -> None:
+        """Device and shop country per live id, as ``StoreLedger`` reads them from
+        ``events_raw``. The first note wins, like the stored event."""
+        auth = event.get("authorization") or {}
+        with self._lock:
+            self.events.setdefault(
+                auth["authorization_id"],
+                (auth.get("customer_device_id") or None, (auth.get("merchant") or {}).get("merchant_country") or None),
+            )
 
     def flag_merchant(self, run_id: str, merchant_id: str, reason: str, at: datetime) -> None:
         with self._lock:

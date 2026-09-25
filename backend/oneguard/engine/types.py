@@ -82,7 +82,10 @@ class ItemFacts(_Model):
 
     ``item_name`` and ``item_details`` are untrusted shop text: facts come from them
     only through the FactValues. ``size_eu`` is decimal (43.5 is a real size and is not
-    43); ``size_letter`` is XS-XXXL for clothing (C6). The catalogue range comes from ``items`` and is
+    43); ``size_letter`` is XS-XXXL for clothing (C6). ``contains_alcohol`` is whether the
+    line is an alcoholic drink (C4 "no alcohol"): from the trusted category and an
+    allowlisted lexicon over the catalogue's and the shop's text, unknown when the text
+    names drinks without saying which. The catalogue range comes from ``items`` and is
     ``None`` when the ``item_id`` is not in the catalogue.
 
     Two facts are a second source after the trusted fields, never in place of them, and
@@ -107,6 +110,9 @@ class ItemFacts(_Model):
     )
     return_window_days: FactValue[int]
     recurring: FactValue[bool]
+    contains_alcohol: FactValue[bool] = Field(
+        default_factory=lambda: FactValue[bool](known=False, source="regex", detail="not extracted")
+    )
     matches_requested: FactValue[bool] = Field(
         default_factory=lambda: FactValue[bool](known=False, source="regex", detail="not extracted")
     )
@@ -243,6 +249,10 @@ class LedgerView(_Model):
     ``merchant_approvals_on_card`` / ``merchant_approvals_other_cards`` count
     approved purchases per ``merchant_id`` for ``Decision.merchant_meta``.
     ``max_approved_chf`` is ``None`` when the customer has no approved purchase (W4).
+    ``last_price_chf_by_merchant`` is the customer's last final approved CHF total per
+    ``merchant_id`` (C1 "same price as last time at this shop"): history's
+    ``last_price``, replaced by this run's latest final approval there; a shop the
+    customer never paid is absent, never zero (P3).
     ``flagged_merchant_ids`` carries A1 info evidence to later purchases.
     ``confirmed_keys`` are remembered customer confirmations: ``rule|merchant|item``
     (read only for restrictions no data can check) and ``rule|merchant|*`` (read only
@@ -270,6 +280,7 @@ class LedgerView(_Model):
     known_device_ids: set[str]
     known_countries: set[str]
     max_approved_chf: float | None
+    last_price_chf_by_merchant: dict[str, float] = Field(default_factory=dict)
     flagged_merchant_ids: set[str]
     frozen: bool
     confirmed_keys: set[str] = Field(default_factory=set)
@@ -448,4 +459,10 @@ class HistoryIndex(Protocol):
 
     def item_price_range(self, item_id: str) -> tuple[float, float, float] | None:
         """(min, typical, max) CHF unit price from ``items``, ``None`` if unknown (W6)."""
+        ...
+
+    def catalogue_item_text(self, item_id: str) -> str | None:
+        """The catalogue's ``item_name`` and ``item_description`` for this item, ``None``
+        if the catalogue does not list it (C4 "no alcohol": what the item is, not what
+        the shop says it is)."""
         ...

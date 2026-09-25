@@ -1,20 +1,21 @@
 """build_facts: turn one authorization event into trusted, typed Facts.
 
 Serves rules.md M1-M3 (money), M6 (purchase time), P2/A2 (shop text is data) and the
-extraction behind C6 (size), C7 (return window) and A6 (recurring).
+extraction behind C4 ("no alcohol"), C6 (size), C7 (return window) and A6 (recurring).
 
 What comes from where:
-- Every field except three comes from the event's trusted structured fields.
-- Shop text (``item_details``) is read ONLY by the allowlisted patterns below, and only
-  for: size (EU numeric incl. half sizes, or letter S-XXXL), return window in days,
-  recurring billing. Nothing else is ever read
+- Every field except four comes from the event's trusted structured fields.
+- Shop text (``item_details``; ``item_name`` for alcohol) is read ONLY by the allowlisted
+  patterns below, and only for: size (EU numeric incl. half sizes, or letter S-XXXL),
+  return window in days, recurring billing, alcohol (a lexicon, on lines whose category
+  can be a drink, with the catalogue's text for the item id). Nothing else is ever read
   from text: never amounts, limits, permissions, merchants or categories (A2).
 - An extracted value is a FactValue with ``source="regex"``. Not stated -> ``known=False``.
   Two different values in the same text -> ``known=False`` with the contradiction in
   ``detail`` (P3: missing or contradictory is never a pass).
 
 Pure function: no I/O, no CSV, no network. ``history`` is only used for the catalogue
-price range of each item (W6); familiarity (``merchant_known``) is set by the pipeline
+price range (W6) and text of each item; familiarity (``merchant_known``) is set by the pipeline
 from the LedgerView before rules are evaluated.
 """
 from __future__ import annotations
@@ -97,6 +98,56 @@ _RECURRING = re.compile(
     r"|\b(?:per|each|every)\s+" + _PERIOD + r"\b"
     r"|/\s*(?:month|mo|year|yr|week|wk)\b"
     r"|\bauto[- ]?renew\w*|\brenews?\b|\brenewal\b|\brecurring\b|\bsubscriptions?\b",
+    re.IGNORECASE,
+)
+
+# Alcohol (C4 "no alcohol"): an allowlisted lexicon in English, German, French and Italian,
+# read only on lines whose trusted category can hold a drink. Order of reading:
+# 1. non-drink uses of drink words are removed ("wine vinegar", "ginger beer", "Weintrauben");
+# 2. alcohol-free wording is removed and remembered ("non-alcoholic", "alkoholfrei");
+# 3. soft-drink wording is removed and remembered ("soft drinks", "Erfrischungsgetränke");
+# 4. an alcohol word left over names alcohol; with alcohol-free wording beside it the line
+#    says both, which is unknown ("non-alcoholic beer": the lexicon cannot tell which);
+# 5. a bare drinks word left over ("drinks", "Getränke") is unknown unless steps 2-3 said
+#    what the drinks are.
+# Categories that cannot be a drink (a "wine rack" is household) are never alcohol.
+_NOT_A_DRINK = frozenset({
+    "books", "clothing", "cosmetics", "electronics", "fuel", "gift_card", "home_improvement", "hotel",
+    "household", "photography", "sporting_goods", "transport", "travel",
+})
+_NOT_ALCOHOL_USES = re.compile(
+    r"\b(?:red\s+|white\s+)?wine\s+vinegar\b|\bweinessig\b|\bvinaigre\s+de\s+vin\b|\baceto\s+di\s+vino\b"
+    r"|\bginger\s+(?:beer|ale)\b|\broot\s+beer\b|\bingwerbier\b|\bweintrauben?\b|\bwine\s+gums?\b"
+    r"|\bweingummis?\b",
+    re.IGNORECASE,
+)
+_ALCOHOL_FREE = re.compile(
+    r"\b(?:non|no|zero)[- ]?alcoholic\b|\balcohol[- ]free\b|\b(?:no|zero|without)\s+alcohol\b"
+    r"|\bde-?alcoholi[sz]ed\b|(?<![\d.,])0[.,]0\s?%|\balkoholfrei\w*|\bohne\s+alkohol\b"
+    r"|\bsans\s+alcool\b|\bnon[- ]alcoolis\w*|\banalcolic\w*|\bsenza\s+alcol\w*|\bsin\s+alcohol\b",
+    re.IGNORECASE,
+)
+_SOFT_DRINKS = re.compile(
+    r"\bsoft[- ]?drinks?\b|\bsoftgetränke?\b|\berfrischungsgetränke?\b|\bboissons?\s+(?:gazeuses|fraîches)\b"
+    r"|\bbibite\s+gassate\b",
+    re.IGNORECASE,
+)
+_ALCOHOL = re.compile(
+    r"\balcohol(?:ic)?\b|\bwines?\b|\bspirits\b|\bliquors?\b|\bliqueurs?\b|\bbeers?\b|\bales?\b|\blagers?\b"
+    r"|\bciders?\b|\bchampagnes?\b|\bprosecco\b|\bcava\b|\bwhisk(?:e?y|ies)\b|\bvodkas?\b|\bgin\b|\brums?\b"
+    r"|\btequila\b|\bmezcal\b|\bbrand(?:y|ies)\b|\bcognac\b|\barmagnac\b|\bsherry\b|\bvermouth\b"
+    r"|\bschnap(?:p?s)\b|\babsinthe?\b|\bbourbon\b|\bcocktails?\b|\bhard\s+seltzers?\b|\balcopops?\b|\bbooze\b"
+    r"|\bsangria\b|\baperol\b|\bcampari\b|\blimoncello\b|\bpils(?:ner)?\b|\bstout\b"
+    r"|\balkohol\w*|\b(?:rot|weiss|weiß|glüh|schaum|dessert|süss|süß|land|tafel|apfel|obst|jung|perl|brannt)?"
+    r"wein(?:e|es)?\b|\b\w*biere?\b|\bspirituosen\b|\bschnäpse\b|\blikör(?:e)?\b|\bsekt\b|\bgrappa\b"
+    r"|\bkirsch(?:wasser)?\b|\bobstbrand\b|\bwodka\b"
+    r"|\balcool(?:is\w*)?\b|\bvins?\b|\bbières?\b|\bspiritueux\b|\bcidres?\b|\beau[- ]de[- ]vie\b"
+    r"|\balcol\w*|\bvin[oi]\b|\bbirr[ae]\b|\bliquor[ei]\b|\bspumante\b",
+    re.IGNORECASE,
+)
+_DRINKS = re.compile(
+    r"\bdrinks?\b|\bbeverages?\b|\bgetränke?\b|\bboissons?\b|\bbevand[ae]\b|\bbibit[ae]\b"
+    r"|\bap[ée]ritif\w*|\baperitivo\b|\bap[ée]ro\b|\bminibar\b|\bpunch\b",
     re.IGNORECASE,
 )
 
@@ -199,6 +250,52 @@ def extract_recurring(text: str) -> FactValue[bool]:
     return FactValue[bool](known=False, source="regex", detail="recurring billing not stated")
 
 
+def _alcohol_reading(text: str) -> tuple[str, str, str]:
+    """Steps 1-5 above on one text: ``(verdict, word, qualifier)``. ``verdict`` is
+    ``alcohol``, ``both``, ``drinks``, ``free`` (alcohol-free or soft drinks stated) or
+    ``none``; ``word`` the alcohol or drinks word read, ``qualifier`` the alcohol-free or
+    soft-drink wording."""
+    text = _NOT_ALCOHOL_USES.sub(" ", text or "")
+    free = [m.group(0) for m in _ALCOHOL_FREE.finditer(text)]
+    text = _ALCOHOL_FREE.sub(" ", text)
+    soft = [m.group(0) for m in _SOFT_DRINKS.finditer(text)]
+    text = _SOFT_DRINKS.sub(" ", text)
+    qualifier = (free + soft)[0].lower() if free or soft else ""
+    if m := _ALCOHOL.search(text):
+        return ("both" if free else "alcohol"), m.group(0).lower(), qualifier
+    if m := _DRINKS.search(text):
+        return ("free" if qualifier else "drinks"), m.group(0).lower(), qualifier
+    return ("free" if qualifier else "none"), "", qualifier
+
+
+def extract_contains_alcohol(category: str, text: str, catalogue: str | None = None) -> FactValue[bool]:
+    """Is this cart line an alcoholic drink? ``text`` is the shop's item name and details
+    (untrusted, read only by the lexicon), ``catalogue`` the catalogue's name and
+    description for the item id. The catalogue naming alcohol wins over anything the shop
+    says (a shop cannot rename wine into "drinks"); otherwise both texts are read together.
+    Known False when the category cannot be a drink or neither text names alcohol or
+    drinks; unknown when drinks are named without saying which, or alcohol and
+    alcohol-free are named together (P3). ``detail`` completes "<item name> …"."""
+    if category.lower() in _NOT_A_DRINK:
+        return FactValue[bool](value=False, known=True, source="event",
+                               detail=f"is {category.replace('_', ' ')}, not a drink")
+    verdict, word, _ = _alcohol_reading(catalogue or "")
+    if verdict == "alcohol":
+        return FactValue[bool](value=True, known=True, source="history",
+                               detail=f'is listed as alcohol in the catalogue ("{word}")')
+    verdict, word, qualifier = _alcohol_reading(f"{text}\n{catalogue or ''}")
+    if verdict == "alcohol":
+        return FactValue[bool](value=True, known=True, source="regex", detail=f'says "{word}"')
+    if verdict == "both":
+        return FactValue[bool](known=False, source="regex", detail=f'says "{word}" and "{qualifier}", so it may contain alcohol')
+    if verdict == "drinks":
+        return FactValue[bool](known=False, source="regex",
+                               detail=f'says "{word}" but not whether they contain alcohol')
+    if verdict == "free":
+        return FactValue[bool](value=False, known=True, source="regex", detail=f'says "{qualifier}"')
+    return FactValue[bool](value=False, known=True, source="regex", detail="names no alcohol")
+
+
 def order_return_window(order_returnable: str, lines: list[ItemFacts]) -> FactValue[int]:
     """Order-level return window.
 
@@ -248,6 +345,7 @@ def _item_facts(line: dict, history: HistoryIndex | None) -> ItemFacts:
     currency = line["currency"]
     unit_chf = to_chf(line["unit_price"], currency)  # schema restricts currency to the 4 fixed rates
     price_range = history.item_price_range(line["item_id"]) if history is not None else None
+    catalogue = history.catalogue_item_text(line["item_id"]) if history is not None else None
     extra: dict[str, Any] = {}
     if _HAS_SIZE_LETTER:
         extra["size_letter"] = extract_size_letter(details)
@@ -267,6 +365,8 @@ def _item_facts(line: dict, history: HistoryIndex | None) -> ItemFacts:
         size_eu=extract_size_eu(details),
         return_window_days=extract_return_window_days(details),
         recurring=extract_recurring(details),
+        contains_alcohol=extract_contains_alcohol(
+            line["item_category"], f"{line['item_name']}\n{details}", catalogue),
         **extra,
     )
 
@@ -314,22 +414,19 @@ def build_facts(event: dict, history: HistoryIndex | None = None) -> Facts:
 # --- Tier 2 guardrails (rules.md §4a; P2 flag R2) ------------------------------------
 # Tier 2 (P4) may ask a model to read a fact the English patterns above missed, e.g.
 # German shop text ("Grösse 42", "Rückgabe innerhalb 30 Tagen"). These helpers say which
-# facts it may try and accept a model answer only when it is grounded in the shop text.
+# facts it may try; tier2.py checks each answer is grounded next to its label word.
 #
 # Never tried: a contradiction (the shop said two things; picking one is a guess), a
 # seller statement that the policy is not stated, and exchange/store-credit-only terms
-# (a PM decision that they stay unknown). Only positive item facts are accepted, each
-# with a verbatim quote that is in the line's text and contains the value; absence is
-# never a fact, and amounts never come from text (A2).
+# (a PM decision that they stay unknown). Amounts never come from text (A2).
 
-TIER2_FIELDS: tuple[str, ...] = ("size_eu", "size_letter", "return_window_days", "recurring")
+# Recurring billing is not here: it stays tier-1 regex only (CLAUDE.md rule 2), so a model
+# can never add or remove a recurring charge.
+TIER2_FIELDS: tuple[str, ...] = ("size_eu", "size_letter", "return_window_days")
 SELLER_STATED_UNKNOWN: tuple[str, ...] = (
     "return policy not stated by seller",
     "exchange or store credit only",
 )
-_TIER2_LETTER_SIZES = ("XS", "S", "M", "L", "XL", "XXL", "XXXL")
-_TIER2_SIZE_EU_RANGE = (15.0, 55.0)
-_TIER2_MAX_RETURN_DAYS = 365
 
 
 def tier2_may_resolve(field: str, fact: FactValue) -> bool:
@@ -365,57 +462,3 @@ def tier2_candidates(facts: Facts) -> list[tuple[int, str, str]]:
                 out.append((line.line_no, field, line.item_details))
     return out
 
-
-def _norm(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "")).strip().casefold()
-
-
-def _numbers(text: str) -> set[float]:
-    return {float(n.replace(",", ".")) for n in re.findall(r"\d+(?:[.,]\d+)?", text)}
-
-
-def tier2_accept(facts: Facts, line_no: int, field: str, value: Any, quote: str) -> FactValue | None:
-    """A model answer as a FactValue (``source="model"``), or None if it is not grounded.
-
-    Grounded means: the fact may be tried, ``quote`` appears verbatim (case and spacing
-    aside) in that line's ``item_details``, and the value is in the quote and plausible.
-    """
-    line = next((ln for ln in facts.items if ln.line_no == line_no), None)
-    if line is None or not quote or not quote.strip():
-        return None
-    current = getattr(line, field, None)
-    if current is None or not tier2_may_resolve(field, current):
-        return None
-    if _agent_directed(line.item_details) or _norm(quote) not in _norm(line.item_details):
-        return None
-    numbers = _numbers(quote)
-    ok = False
-    if field == "size_eu" and isinstance(value, int | float) and not isinstance(value, bool):
-        v = float(value)
-        low, high = _TIER2_SIZE_EU_RANGE
-        ok = low <= v <= high and (v * 2).is_integer() and (v in numbers or float(int(v)) in numbers)
-    elif field == "size_letter" and isinstance(value, str):
-        v = value.strip().upper()
-        # One-letter sizes must be capitals in the quote ("20 m" is metres, not size M).
-        flags = re.IGNORECASE if len(v) > 1 else 0
-        ok = v in _TIER2_LETTER_SIZES and bool(re.search(rf"(?<![A-Za-z]){v}(?![A-Za-z])", quote, flags))
-        value = v
-    elif field == "return_window_days" and isinstance(value, int) and not isinstance(value, bool):
-        weeks = value / 7
-        ok = 0 <= value <= _TIER2_MAX_RETURN_DAYS and (
-            value in numbers or (weeks.is_integer() and weeks in numbers) or (value == 0 and bool(quote.strip())))
-    elif field == "recurring":
-        ok = value is True  # only a stated recurring charge; "not recurring" is absence
-    if not ok:
-        return None
-    return current.__class__(value=value, known=True, source="model", detail=f'read by model from: "{quote.strip()}"')
-
-
-def with_tier2_fact(facts: Facts, line_no: int, field: str, fact: FactValue) -> Facts:
-    """Facts with one line's fact replaced by an accepted tier-2 value; the order-level
-    return window is recomputed from the lines (strictest wins, as for regex facts)."""
-    items = [ln.model_copy(update={field: fact}) if ln.line_no == line_no else ln for ln in facts.items]
-    update: dict[str, Any] = {"items": items}
-    if field == "return_window_days":
-        update["return_window_days"] = order_return_window(facts.order_returnable, items)
-    return facts.model_copy(update=update)

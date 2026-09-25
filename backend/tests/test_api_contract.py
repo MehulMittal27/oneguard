@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import shutil
+import threading
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -36,6 +38,7 @@ from oneguard.api.policies import (
     FORM_INSTRUCTION,
     NO_CAP_QUESTION,
     NO_CHECKS_QUESTION,
+    load_rules,
     per_order_cap,
 )
 from oneguard.api.services import Services
@@ -51,10 +54,11 @@ from oneguard.engine.types import (
     Rule,
     RuleResult,
 )
+from oneguard.pipeline import policy_applied
 from oneguard.store import seed as seed_module
 from oneguard.store.db import make_engine, session
-from oneguard.store.schema import Decision, Mandate, PolicyDraft, Run
-from oneguard.viseca.client import VisecaClient, store_sink
+from oneguard.store.schema import Decision, Mandate, PolicyDraft, Run, VisecaCall
+from oneguard.viseca.client import LOG_CALLS_ENV, VisecaClient, call_sink
 from oneguard.viseca.demo import rule_to_viseca
 from tests.fake_viseca import FakeConfig, FakeViseca
 
@@ -172,7 +176,8 @@ class Clock:
 
 
 class Faulty(httpx.AsyncBaseTransport):
-    """Wraps the fake: answers ``(method, path prefix)`` with an error, or hangs."""
+    """Wraps the fake: answers ``(method, path prefix)`` with an error (or an empty
+    success below 400), or hangs."""
 
     def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
         self.inner = inner
@@ -184,6 +189,8 @@ class Faulty(httpx.AsyncBaseTransport):
             await asyncio.sleep(30)
         for (method, prefix), status in self.fail.items():
             if request.method == method and request.url.path.startswith(prefix):
+                if status < 400:
+                    return httpx.Response(status)
                 return httpx.Response(status, json={"error": {"code": "unavailable", "message": "injected"}})
         return await self.inner.handle_async_request(request)
 
@@ -196,10 +203,25 @@ class Running:
     faulty: Faulty | None
     clock: Clock
     responses: list[httpx.Response] = field(default_factory=list)
+    handled: set[str] = field(default_factory=set)
+    """Live ids the worker has fully handled (``add_handled_listener``)."""
+    _handled_changed: asyncio.Event = field(default_factory=asyncio.Event)
 
     @property
     def services(self) -> Services:
         return self.app.state.services
+
+    def on_handled(self, live_id: str) -> None:
+        self.handled.add(live_id)
+        self._handled_changed.set()
+
+    async def until_handled(self, live_ids: Iterable[str]) -> None:
+        """Wait on the worker's own signal until it has fully handled every one of
+        ``live_ids``: decision posted and recorded, expiry scheduled, rows committed."""
+        wanted = set(live_ids)
+        while not wanted <= self.handled:
+            self._handled_changed.clear()
+            await asyncio.wait_for(self._handled_changed.wait(), timeout=120)  # a hang guard
 
     async def get(self, path: str, **kw: Any) -> httpx.Response:
         r = await self.http.get(path, **kw)
@@ -254,7 +276,7 @@ async def running(
         if fake is None:
             return None
         return VisecaClient(
-            "http://fake-viseca", fake.config.api_key, transport=faulty, sink=store_sink(db), timeout_s=client_timeout_s
+            "http://fake-viseca", fake.config.api_key, transport=faulty, sink=call_sink(db), timeout_s=client_timeout_s
         )
 
     options = {
@@ -273,6 +295,8 @@ async def running(
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://oneguard.test") as http:
             run = Running(app, http, fake, faulty, clock)
+            if run.services.worker is not None:
+                run.services.worker.add_handled_listener(run.on_handled)
             if fake is not None:
                 await until(lambda: run.services.worker.status().state == ready)
             yield run
@@ -305,7 +329,7 @@ async def confirm_form(run: Running, card_id: str = "CA0001", **form: Any) -> di
 
 async def live_run(run: Running, scenario_id: str = "SCEN0001", card_id: str = "CA0001", n: int = 10) -> list[dict[str, Any]]:
     """A confirmed policy, a Viseca run started through D3, all ``n`` decisions in C6, every
-    step-up's deadline the platform's."""
+    step-up's deadline the platform's and its expiry timer running."""
     await confirm_form(run, card_id)
     r = await run.post("/api/dev/runs", json={"scenario_id": scenario_id, "card_id": card_id})
     assert r.status_code == 200, r.text
@@ -313,17 +337,21 @@ async def live_run(run: Running, scenario_id: str = "SCEN0001", card_id: str = "
 
     async def settled() -> list[dict[str, Any]] | None:
         # A step-up is listed before the reply to its POST moves deadline_at to the
-        # platform's expiry; on a loaded machine that gap can pass a second.
+        # platform's expiry, and its expiry timer starts after that; on a loaded machine
+        # either gap can pass a second, and a test that moves the clock inside it expires
+        # the step-up at once.
         listed = await run.decisions(customer)
         if len(listed) != n:
             return None
         expiry = {a.live_id: a.expires_at for a in run.fake.all_auths()}
+        timers = run.services.worker._expiry if run.services.worker is not None else {}
         for d in listed:
             expires = expiry.get(d["authorization_id"])
             if d["status"] == "pending_human" and (
                 expires is None
                 or not d["deadline_at"]
                 or abs((datetime.fromisoformat(d["deadline_at"]) - expires).total_seconds()) > 1.0
+                or d["authorization_id"] not in timers
             ):
                 return None
         return listed
@@ -694,6 +722,8 @@ def test_a_resolve_after_the_window_is_refused_and_not_recorded(db_url: str) -> 
             decisions = await live_run(run)
             step_up = next(d for d in decisions if d["status"] == "pending_human")
             live_id = step_up["authorization_id"]
+            # every expiry is scheduled on the real clock before the simulated one moves on
+            await run.until_handled(d["authorization_id"] for d in decisions)
             clock.offset = timedelta(seconds=61)  # the window is over; no expiry has run yet
             r = await run.post(f"/api/authorizations/{live_id}/resolve", json={"decision": "approve"})
             assert r.status_code == 409 and r.json()["error"]["code"] == "window_closed"
@@ -784,6 +814,51 @@ def test_revoke_flips_the_policy_and_leaves_purchases_alone(db_url: str) -> None
             # a revoked card can take a new policy
             fresh = await confirm_form(run)
             assert fresh["status"] == "active" and fresh["mandate_id"] != mandate["mandate_id"]
+
+    asyncio.run(scenario())
+
+
+@covers("revoke_policy_only", "no_false_2xx")
+@pytest.mark.parametrize("platform", [204, 404, 409, 503])
+def test_revoke_succeeds_when_the_platform_no_longer_has_the_mandate_active(
+    db_url: str, platform: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    """C5 when Viseca answers the DELETE with 204, 404, 409 (the mandate was superseded:
+    the team keeps one active mandate, and a policy confirmed on another card took its
+    place) or 503. Only the 503 reaches the customer, and our row is revoked every time."""
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast())) as run:
+            mandate = await confirm_form(run)
+            (tm,) = run.fake.mandates
+            if platform == 409:
+                await confirm_form(run, card_id="CA0002")
+                assert run.fake.mandates[tm]["status"] == "superseded"
+            elif platform == 404:
+                run.faulty.fail[("DELETE", "/v1/mandates")] = 404
+                run.faulty.fail[("GET", "/v1/mandates")] = 404
+            else:
+                run.faulty.fail[("DELETE", "/v1/mandates")] = platform
+            with caplog.at_level(logging.INFO, logger="oneguard.api.routes_customer"):
+                r = await run.post("/api/cards/CA0001/policy/revoke")
+            policy = (await run.get("/api/cards/CA0001/policy")).json()["mandate"]
+            assert (policy["mandate_id"], policy["status"]) == (mandate["mandate_id"], "revoked")
+            assert run.services.worker._policies[tm].status == "revoked"
+            logged = [m for m in caplog.messages if "no longer has mandate" in m]
+            if platform == 503:
+                assert r.status_code == 503 and r.json()["error"]["code"] == "upstream_unavailable"
+                assert not logged
+                run.faulty.fail.clear()  # the customer's retry reaches the platform
+                assert (await run.post("/api/cards/CA0001/policy/revoke")).status_code == 204
+                assert run.fake.mandates[tm]["status"] == "revoked"
+                return
+            assert r.status_code == 204 and r.content == b""
+            expected = {204: None, 404: "(404 unavailable); platform status: unread (404 unavailable)",
+                        409: "(409 mandate_inactive); platform status: superseded"}[platform]  # fmt: skip
+            if expected is None:
+                assert not logged
+            else:
+                assert logged == [f"Viseca no longer has mandate {tm} active {expected}"]
 
     asyncio.run(scenario())
 
@@ -883,7 +958,7 @@ def test_a_hanging_platform_answers_fast(db_url: str) -> None:
 
 @covers("bounded")
 def test_a_slow_compiler_or_database_answers_fast(db_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    def slow_compile(*_: Any) -> CompiledDraft:
+    def slow_compile(*_: Any, **__: Any) -> CompiledDraft:
         time.sleep(2)
         raise AssertionError("not reached in time")
 
@@ -966,10 +1041,13 @@ def test_policy_drafts_and_the_viseca_dance(db_url: str) -> None:
             assert bound.mandate_id == mandate["mandate_id"] and bound.requires_known_shop
             assert [rule_to_viseca(r) for r in bound.rules] == at_viseca["hard_rules"]
 
-            # a second policy replaces the first, which is revoked here and at Viseca
+            # a second policy replaces the first: revoked here, superseded at Viseca (one
+            # active mandate per team), so our DELETE's 409 counts as done
             second = await confirm_form(run, per_order_limit_chf=80)
             assert (await run.get("/api/cards/CA0001/policy")).json()["mandate"]["mandate_id"] == second["mandate_id"]
-            assert run.fake.mandates[tm]["status"] == "revoked"
+            assert run.fake.mandates[tm]["status"] == "superseded"
+            with session(run.services.db_engine) as s:
+                assert s.scalar(select(Mandate).where(Mandate.viseca_mandate_id == tm)).status == "revoked"
 
     asyncio.run(scenario())
 
@@ -1102,12 +1180,12 @@ def test_c2_relints_through_the_lint_accepted_interface(db_url: str) -> None:
         calls.append(accepted_ids)
         return lint_accepted(rules, accepted_ids)
 
-    def amount_compiler(text: str, *_: Any) -> CompiledDraft:
+    def amount_compiler(text: str, *_: Any, **__: Any) -> CompiledDraft:
         operator = text.split()[1]
         rule = Rule(id="C1", field="authorization.billing_amount_chf", operator=operator, value=59, currency="CHF",
                     scope="purchase", text=f"Total {operator} CHF 59", source="inferred", kind="amount")
         return CompiledDraft(instruction=text, rules=[rule], uncertainty_policy="ask", open_questions=[],
-                             dry_run=stubs.STUBS["dry_run"](None, None, ""), compiler="llm")
+                             dry_run=stubs.STUBS["dry_run"](None, None, "", ""), compiler="llm")
 
     async def scenario() -> None:
         engine = {**TEST_ENGINE, "compile_instruction": amount_compiler, "lint_accepted": recording_lint}
@@ -1131,6 +1209,95 @@ def test_c2_relints_through_the_lint_accepted_interface(db_url: str) -> None:
 
     asyncio.run(scenario())
 
+
+def item_compiler(text: str, *_: Any, **__: Any) -> CompiledDraft:
+    """A monitor with a cap, the requested item and nothing extra (C1, C5, C10)."""
+    rule = Rule(id="C1", field="authorization.billing_amount_chf", operator="<=", value=400, currency="CHF",
+                scope="purchase", text="Total at or below CHF 400 per order", source="exact", kind="amount")
+    return CompiledDraft(instruction=text, rules=[rule], uncertainty_policy="ask", open_questions=[],
+                         dry_run=stubs.STUBS["dry_run"](None, None, "", ""), compiler="llm",
+                         requested_item="27-inch monitor", nothing_extra=True)
+
+def test_requested_item_and_nothing_extra_show_as_exact_checks(db_url: str) -> None:
+    """C5 / C10 flags show as checks on the draft and the mandate; the engine still reads
+    the flags only, C2 holds the checks like any exact check, and C4 adds nothing for them."""
+
+    async def scenario() -> None:
+        engine = {**TEST_ENGINE, "compile_instruction": item_compiler}
+        async with running(db_url, implementations=engine) as run:
+            draft = (await run.post("/api/cards/CA0001/policy-drafts", json={"instruction": "a monitor"})).json()
+            assert draft["checks"][1:] == [
+                {"id": "requested_item", "text": "Only the item you asked for: 27-inch monitor",
+                 "source": "exact", "uncertainty": None, "kind": "item"},
+                {"id": "nothing_extra", "text": "Nothing added that you didn't ask for",
+                 "source": "exact", "uncertainty": None, "kind": "item"},
+            ]  # fmt: skip
+
+            async def confirm(checks: list[dict[str, Any]]) -> httpx.Response:
+                return await run.post(
+                    f"/api/policy-drafts/{draft['draft_id']}/confirm",
+                    json={"checks": checks, "uncertainty_policy": "ask", "open_questions": []},
+                )
+
+            dropped = await confirm(draft["checks"][:2])
+            assert dropped.status_code == 409 and dropped.json()["error"] == {
+                "code": "lint_failed",
+                "message": "Not confirmed: you stated \"Nothing added that you didn't ask for\" and it was left out.",
+                "detail": {"missing": ["nothing_extra"]},
+            }
+            ok = await confirm(draft["checks"])
+            assert ok.status_code == 200, ok.text
+            mandate = ok.json()
+            assert mandate["checks"] == draft["checks"]
+
+            s = run.services
+            row = await s.db(queries.latest_mandate, s.db_engine, "CA0001")
+            rules, flags = load_rules(row.rules, row.checks)
+            assert [r.id for r in rules] == ["C1"]
+            assert flags["requested_item"] == "27-inch monitor" and flags["nothing_extra"] is True
+
+            same = await run.post("/api/cards/CA0001/policy/tighten", json={"add_checks": draft["checks"][1:]})
+            assert same.status_code == 409 and same.json()["error"]["code"] == "not_pure_addition"
+            ok = await run.post(
+                "/api/cards/CA0001/policy/tighten", json={"add_checks": draft["checks"], "uncertainty_policy": "decline"}
+            )
+            assert ok.status_code == 200, ok.text
+            assert ok.json()["checks"] == draft["checks"]
+
+    asyncio.run(scenario())
+
+
+def test_a_restored_policy_keeps_the_flags_and_decisions_show_their_checks(db_url: str) -> None:
+    """After a restart the worker rebinds our confirmed policy from the store: the flag-check
+    ids have no typed rule, so the rules stay C1 only and the flags come back; a decision
+    under that policy lists the flag checks under ``policy_applied``."""
+
+    async def scenario() -> None:
+        engine = {**TEST_ENGINE, "compile_instruction": item_compiler}
+        async with running(db_url, fake=FakeViseca(fast()), implementations=engine) as run:
+            draft = (await run.post("/api/cards/CA0001/policy-drafts", json={"instruction": "a monitor"})).json()
+            r = await run.post(
+                f"/api/policy-drafts/{draft['draft_id']}/confirm",
+                json={"checks": draft["checks"], "uncertainty_policy": "ask", "open_questions": []},
+            )
+            assert r.status_code == 200, r.text
+            (tm,) = run.fake.mandates
+            worker = run.services.worker
+            worker._policies.clear()
+            worker._restore_policy(tm)
+            policy = worker._policies[tm]
+            assert [r.id for r in policy.rules] == ["C1"]
+            assert policy.requested_item == "27-inch monitor" and policy.nothing_extra is True
+
+            event = {"mandate": {"mandate_id": tm}}
+            entry = type("Entry", (), {"mandate_id": policy.mandate_id})()
+            applied = policy_applied(event, entry, policy)  # type: ignore[arg-type]
+            assert applied is not None and applied.source == "confirmed"
+            assert [c.model_dump(mode="json", exclude_none=True) for c in applied.checks] == [
+                {k: v for k, v in c.items() if v is not None} for c in draft["checks"]
+            ]
+
+    asyncio.run(scenario())
 
 def test_an_exact_price_is_a_per_order_cap_and_a_floor_is_not() -> None:
     def amount(operator: str) -> Rule:
@@ -1221,6 +1388,7 @@ def test_operator_endpoints(db_url: str) -> None:
 
             health = (await run.get("/healthz")).json()
             assert health["status"] == "ok" and health["worker"]["polling"] is True
+            assert (health["worker"]["fx_rates_match"], health["worker"]["fx_rates_mismatch"]) == (True, [])
             assert health["events_cursor"] == health["worker"]["events_cursor"] > 0
             assert health["database"]["ok"] and health["database"]["round_trip_ms"] is not None
             assert TIMESTAMP.match(health["worker"]["last_poll_at"])
@@ -1278,6 +1446,26 @@ def test_d5_switches_tier3_rewrites_on_and_off(db_url: str) -> None:
     asyncio.run(scenario())
 
 
+def test_healthz_is_degraded_while_viseca_serves_other_fx_rates(db_url: str) -> None:
+    """The worker's fx check reaches /healthz: it keeps polling but is not ok."""
+    rates = [
+        {"from_currency": c, "to_currency": "CHF", "rate": r}
+        for c, r in (("CHF", 1.0), ("EUR", 0.96), ("GBP", 1.12), ("USD", 0.87))
+    ]
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast(fx_rates=rates))) as run:
+            health = (await run.get("/healthz")).json()
+            assert health["status"] == "degraded"
+            worker = health["worker"]
+            assert worker["polling"] is True and worker["ok"] is False
+            assert worker["fx_rates_match"] is False
+            assert worker["fx_rates_mismatch"] == ["EUR: served 0.96, the engine uses 0.950000"]
+            assert "fx rates differ" in worker["last_error"]
+
+    asyncio.run(scenario())
+
+
 class TakenLease:
     """The worker lease while another process holds it."""
 
@@ -1306,6 +1494,82 @@ def test_healthz_shows_standby_while_another_process_holds_the_worker_lease(db_u
                 "standby", False, False, None,
             )  # fmt: skip
             assert r.json()["status"] == "degraded" and fake.polls == 0
+
+    asyncio.run(scenario())
+
+
+def _signals(health: dict[str, Any]) -> tuple[Any, ...]:
+    s = health["signals"]
+    return s["backend"], s["configured"], s["model_loading"], s["model_loaded"], health["model_loaded"]
+
+
+def test_the_worker_polls_while_the_model_loads_and_signals_switch_once_it_has(
+    db_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ONEGUARD_SOFT_SIGNALS=laya: the worker polls at once; keywords answer until the model is in."""
+    from oneguard.engine import signals
+    from tests.test_protections_signals import CLEAN, DIRTY
+
+    started, release = threading.Event(), threading.Event()
+
+    def slow_load() -> Callable[[str], float]:
+        started.set()
+        release.wait(10)
+        return lambda text: 0.9
+
+    monkeypatch.setattr(signals, "BACKEND", signals.LayaSignals(load=slow_load))
+
+    async def scenario() -> None:
+        fake = FakeViseca(fast())
+        try:
+            async with running(db_url, fake=fake, signals_backend="laya") as run:
+                assert await asyncio.to_thread(started.wait, 5)
+                await until(lambda: fake.polls > 0)  # polling before the model finished loading
+                health = (await run.get("/healthz")).json()
+                assert health["worker"]["polling"] is True and health["status"] == "ok"
+                assert _signals(health) == ("keywords", "laya", True, False, False)
+                for f in [*CLEAN, *DIRTY]:  # what a decision gets meanwhile: keywords
+                    assert signals.soft_signals(f, 0.5) == signals.KeywordSignals()(f, 0.5)
+
+                release.set()
+                await until(lambda: run.services.model_loaded)
+                health = (await run.get("/healthz")).json()
+                assert _signals(health) == ("laya", "laya", False, True, True)
+                [switched] = signals.soft_signals(CLEAN[0], 0.5)
+                assert (switched.triggered, switched.source) == (True, "model")
+        finally:
+            release.set()
+
+    asyncio.run(scenario())
+
+
+def test_a_model_that_fails_to_load_leaves_keywords_deciding(
+    db_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    def broken(backend: str) -> bool:
+        raise RuntimeError("no checkpoint")
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast()), signals_backend="laya", warm_signals=broken) as run:
+            await until(lambda: not run.services.model_loading)
+            health = (await run.get("/healthz")).json()
+            assert _signals(health) == ("keywords", "laya", False, False, False)
+            assert health["worker"]["polling"] is True and health["signals"]["enabled"] is True
+
+    with caplog.at_level(logging.WARNING, logger="oneguard.api.app"):
+        asyncio.run(scenario())
+    assert "the soft-signal model did not load; signals stay on keywords" in caplog.text
+
+
+@pytest.mark.parametrize("backend", ["off", "keywords"])
+def test_no_model_loads_without_laya(db_url: str, backend: str) -> None:
+    async def scenario() -> None:
+        loads: list[str] = []
+        async with running(db_url, signals_backend=backend, warm_signals=lambda b: bool(loads.append(b))) as run:
+            await asyncio.sleep(0.05)
+            health = (await run.get("/healthz")).json()
+            assert _signals(health) == (backend, backend, False, False, False)
+        assert loads == []
 
     asyncio.run(scenario())
 
@@ -1379,13 +1643,50 @@ def test_d7_reads_the_stored_newest_run_after_a_restart(db_url: str) -> None:
         async with running(db_url, fake=FakeViseca(fast())) as run:
             await confirm_form(run)
             live = (await run.post("/api/dev/runs", json={"scenario_id": "SCEN0000", "card_id": "CA0001"})).json()
-
-            async def decided() -> bool:
-                return (await run.get("/api/dev/runs/current")).json()["decided"] == 1
-
-            await until(decided)
+            # the worker says when the purchase is handled: decision recorded and its runs row
+            # committed (D7 alone shows the in-memory count, which is ahead of the row)
+            await run.until_handled(run.fake.auths)
+            assert (await run.get("/api/dev/runs/current")).json()["decided"] == 1
         async with running(db_url) as run:  # no worker now
             current = (await run.get("/api/dev/runs/current")).json()
             assert (current["run_id"], current["decided"], current["worker_ok"]) == (live["run_id"], 1, False)
+
+    asyncio.run(scenario())
+
+
+def viseca_call_rows(run: Running) -> list[str]:
+    with session(run.services.db_engine) as s:
+        return list(s.scalars(select(VisecaCall.path)))
+
+
+def test_viseca_calls_are_not_logged_by_default_and_healthz_reads_the_worker(
+    db_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ONEGUARD_LOG_VISECA_CALLS`` unset: no ``viseca_calls`` row, and /healthz still names
+    the worker's last error (it comes from the worker's state, never from that table)."""
+    monkeypatch.delenv(LOG_CALLS_ENV, raising=False)
+
+    async def scenario() -> None:
+        fake = FakeViseca(fast(reference_status=503))
+        async with running(db_url, fake=fake) as run:
+            await until(lambda: fake.polls >= 2)
+            health = (await run.get("/healthz")).json()
+            assert "reference data unavailable" in health["worker"]["last_error"]
+            assert viseca_call_rows(run) == []
+
+    asyncio.run(scenario())
+
+
+def test_viseca_calls_are_logged_when_switched_on(db_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(LOG_CALLS_ENV, "true")
+
+    async def scenario() -> None:
+        fake = FakeViseca(fast())
+        async with running(db_url, fake=fake) as run:
+            await until(lambda: fake.polls >= 2)
+            await run.services.client.drain()
+            paths = viseca_call_rows(run)
+            assert "/v1/bootstrap" in paths and "/v1/reference-data" in paths
+            assert any(p.startswith("/v1/decision-requests/next") for p in paths)
 
     asyncio.run(scenario())

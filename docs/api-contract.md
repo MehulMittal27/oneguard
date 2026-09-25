@@ -80,8 +80,10 @@ running (unless the platform's `GET /v1/scenario-runs/{id}` says it is over), or
 the platform (`GET /v1/authorizations` status `awaiting_decision` or `pending_step_up`), whoever started it; the
 message and detail name that run. `force: true` skips both checks and starts the run anyway. D1/D2 use the same engine and ledger as D3; only the event source differs (CSV vs Viseca long-poll).
 D3 accepts any scenario in the store's `scenario_catalogue`, which the worker syncs from Viseca's
-`/v1/reference-data` at start (docs/judging-pack.md): 404 for an unknown scenario or card, 422 when the scenario's card
-is known and is another. D2 replays only scenarios the local pack has purchases for (404 otherwise).
+`/v1/reference-data` at start and again when the served pack changes (docs/judging-pack.md, architecture.md Runtime):
+404 for an unknown scenario or card, 422 when the scenario's card is known and is another. D3 and D8 first have the
+worker re-read `/v1/bootstrap` (human window, decision deadline, long-poll wait); a new `pack_version` syncs the
+reference data before D8 lists the catalogue, so `make demo-live` compiles the instruction the platform serves now. D2 replays only scenarios the local pack has purchases for (404 otherwise).
 
 **Scenario bindings.** The served catalogue names no card. The platform names one in the `/v1/bootstrap` `profile`
 (one scenario), in every run's `fixture_profiles` and in every authorization; the worker stores each sighting
@@ -95,12 +97,13 @@ its holder (`customer_id`, `customer_name`); when that card is not the one D3 wa
 before), the policy moves there: a copy of the mandate (same Viseca mandate) becomes that card's active policy and the
 original is marked revoked (docs/decisions.md). D4 and D7 name the holder too.
 
-**`make demo-live SCEN=<id>`** never decides: it drives the server at `ONEGUARD_API` (default
+**`make demo-live SCEN=<id>`** never decides: it drives the server at `ONEGUARD_API_URL` (default
 `https://oneguard.fly.dev`): D8 → D7 (an unfinished newest run, or the scenario's `active_run_id`: that run is named,
 exit 1, nothing changed; `--force` / `make demo-live FORCE=1` skips this and sends D3 `force: true`) → C1 on the scenario's card (unknown:
 `--card`, else the bootstrap profile's) → C2 → D3, prints `Sign in as <name> (<customer_id>, card <card_id>)` from
-D3's reply, then follows D4 and the customer's C6 read-only. Only when no OneGuard server answers `/healthz` there does
-it fall back to a worker in its own process, and says so.
+D3's reply, then follows D4 and the customer's C6 read-only. **`make demo-offline SCEN=<id>`** calls D2 on the same
+server. Both probe `/healthz` first: when no OneGuard server answers there they say so and exit 1, and start nothing
+(no run, no replay, no worker of their own).
 
 ---
 
@@ -137,6 +140,9 @@ DryRunResult { sample_size, would_violate, would_fit, would_ask, insight,
                              outcome: 'fit'|'violate'|'ask', reason }],    // NEW, ≤3 rows
                agent_history?: { attempts: number, approved: number } }   // NEW: history rows with initiator_type 'agent',
                                               // customer-level (all the customer's cards); the rest of the dry run is card-scoped
+                                              // a known-shop check (merchant.known_shop / familiar_on_card, or requires_known_shop
+                                              // alone) makes a purchase at a shop the card had not bought from before 'ask', never
+                                              // 'violate': the same for a form and an instruction draft
 
 PolicyDraft  { draft_id, card_id, instruction, checks: RuleCheck[],   // instruction: the C1 text verbatim, or exactly
                                               // "Built from the form" for a form draft; never the check texts
@@ -193,8 +199,11 @@ Decision {
   confirmable?: { rule_id: string, phrase: string } | null,  // NEW: step-up decided by one `unverifiable` rule
                                               // (§3.3); phrase = its value. Approving can be remembered for the shop
   run_id?: string,                            // NEW: the run this decision belongs to (decisions.run_id); C6 sends it
-  run_started_at?: string                     // NEW: that run's start, REAL clock (runs.started_at); C6 sends it
+  run_started_at?: string,                    // NEW: that run's start, REAL clock (runs.started_at); C6 sends it
                                               // when the run has a `runs` row. The UI lists a card's newest run
+  policy_applied?: { mandate_id: string,      // NEW: the policy this decision was checked against
+                     source: 'confirmed' | 'platform',   // platform = the Viseca mandate's own rules (no confirmed policy bound)
+                     checks: RuleCheck[] } | null,       // what decided, whatever the card's policy is now
 }
 
 Evidence  { rule: string,                     // which check or signal
@@ -264,6 +273,12 @@ expire — that is a broken state, not a degraded one.
   (`field`, `operator`, `value`, `currency?`, `scope?`, `period_days?`) in Viseca's rule
   format. **The UI only ever sees `text`; `checks` sent back in C2 are treated as accepted
   ids.** Unknown id → 422. Edited text is ignored.
+- Two checks have no typed rule behind them; they show Policy flags so the customer sees
+  them before confirming: `requested_item` ("Only the item you asked for: <item>", C5) and
+  `nothing_extra` ("Nothing added that you didn't ask for", C10), both `source: 'exact'`,
+  `kind: 'item'`, after the rule checks. The engine reads the flags, never these checks.
+  C2 accepts their ids and, like any exact check, refuses a draft that drops one
+  (`missing` names the id); C4 treats one already in force as nothing to add.
 - C2 refuses a draft with no checks before anything else: 409 `lint_failed`, message
   "Not confirmed: no restriction could be read.", `detail: { missing: ['per_order_limit'] }`.
   Nothing is sent to Viseca and no mandate is stored.
@@ -288,11 +303,13 @@ expire — that is a broken state, not a degraded one.
 | `field` | meaning |
 |---|---|
 | `authorization.billing_amount_chf` | total in CHF, delivery included (never add delivery again) |
+| `authorization.billing_amount_chf` with `value: "last_price_at_shop"` (a reference, not a number; `currency: CHF`, `scope: purchase`) | the total against the customer's last approved total at this purchase's `merchant_id`: history's last approved price there, replaced by this run's latest final approval there (declines and pending step-ups set no price; a step-up the customer approved does). No earlier payment at the shop: `unknown`, never a pass. "If a price changes, ask me" for several subscriptions is `=` with `on_fail: ask`: evidence "CHF 14.90 at Streamly; last time it was CHF 12.90", counterfactual "Would approve at CHF 12.90, the price last time". Not a per-order cap (lint still asks for one). `LedgerView.last_price_chf_by_merchant` carries the prices |
 | `authorization.billing_amount_chf` + `scope: period`, `period_days: 7` | rolling window; sum of **final approvals** whose simulated timestamp ≥ current − 7×24h |
 | `cart.purchases_in_period` + `scope: period`, `period_days: N` | integer; purchases on this card in the rolling window of N×24h before the current simulated timestamp: **final approvals + pending step-ups** (declines and expired step-ups never count; a redelivered live id counts once). This purchase is compared as count + 1: `<= 1`, `period_days: 1` is "one a day", so a second purchase fails. Operators `<=` / `<` only. Fail: `period_count_exceeded`; evidence "You allowed one order per day; one was already approved today at 12:10" (time of the latest approval, Europe/Zurich), message "Declined CHF 32.00: You allowed one order per day; one was already approved today at 12:10.", counterfactual "Would approve from tomorrow at 12:10."; a breach caused only by pending step-ups asks (`period_reserved_pending`, M5) |
 | `merchant.merchant_category` | trusted catalogue category |
 | `merchant.known_shop` | `"true"` if ≥1 approved purchase by this customer at this `merchant_id` on any of their cards (history + this run's finals); customer-level per rules.md Q7. `merchant.familiar_on_card` is accepted as an alias for the same check |
 | `items[].item_category` | every cart line must satisfy `in` / `not_in` |
+| `items[].contains_alcohol` | `"false"` ("no alcohol"): every cart line must be known not to be an alcoholic drink. `"true"` when the catalogue's text for the `item_id` or the shop's `item_name` / `item_details` names alcohol (allowlisted lexicon: wine, beer, spirits, Wein, Bier, vin, birra…); `"false"` for a line whose category cannot be a drink (household, electronics, …), or whose texts name no alcohol and no bare drinks word, or say "alcohol-free" / "soft drinks"; `unknown` when drinks are named without saying which, or alcohol and alcohol-free together. The catalogue naming alcohol wins over the shop's text. Fail: `item_mismatch`, "Wine and spirits is alcohol, which you excluded" |
 | `items[].size_eu` | regex-extracted from `item_details`; `unknown` if absent |
 | `items[].size_letter` | regex-extracted letter size (XS–XXXL, small/medium/large) from `item_details`; `unknown` if absent (C6, clothing) |
 | `order.return_window_days` | regex-extracted from `item_details`; `unknown` if absent; `order_returnable == "false"` ⇒ 0 |
@@ -367,6 +384,10 @@ fields, never in place of them. Both default to unknown, and unknown is never a 
 - `DELETE /v1/mandates/{TM}` at Viseca; our mandate flips to `status: 'revoked'`, never
   deleted. Pending step-ups are shown as cancelled **only** after Viseca confirms their
   state. A revoked card can receive a new policy (new draft → new mandate).
+- Viseca keeps one active mandate per team, so a policy confirmed on any card supersedes
+  the others there. A DELETE answered 404 or 409 (already revoked or superseded) is done:
+  C5 still answers `204` and logs the platform's status. Only another platform failure is
+  a `503 upstream_unavailable` (our policy stays revoked; the customer may try again).
 - Session freeze (`session.trust = 'frozen'`) is engine state, not a mandate change: after a
   burst the engine step-ups the next otherwise-clean purchase once (`session_watch`;
   `session_recovered` on approval), then relaxes; a no or a timeout keeps the watch on. The
@@ -436,7 +457,9 @@ Development only: `stub`, emitted only while `ONEGUARD_STUBS` stubs `decide`
 (`backend/oneguard/engine/stubs.py`); never in a live run.
 
 Any new code is added here before it is emitted. The UI maps codes to labels with a
-neutral fallback for unknown codes.
+neutral fallback for unknown codes; `frontend/src/lib/reasonCodes.ts` labels exactly this
+list (no more, no less), and `frontend/tests/reasonCodes.test.ts` holds it and the mock
+fixtures to it.
 
 ---
 
@@ -470,6 +493,7 @@ neutral fallback for unknown codes.
 
 15. Approvals pending card: `uncertainty.note` shows only when it says something the message does not (`lib/decisionMessage.ts` `noteAddsToMessage`); the note is usually the uncertain evidence row's detail, which the card lists anyway.
 16. Operator strip (`?demo=1`, operator only): reads D5 GET on each poll and labels the toggle with what the server reports (on, off, live only, replay only), never an assumed "on"; D1's 404 reads as "no replay yet", not as the backend being unreachable.
+17. `Decision.policy_applied` - DecisionDetail's "Policy applied" shows these checks (the rules that decided), with a note when they are the platform mandate's rules or differ from the card's current policy; the card link (manage / revoke) stays. Absent: the card's current policy, as before.
 
 No customer endpoint changes. No screen removals. Tighten UI stays dormant.
 

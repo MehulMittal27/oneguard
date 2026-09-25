@@ -69,7 +69,7 @@ cd frontend && npm install && npm run dev
 ```
 
 Live run (event day): `make demo-live SCEN=SCEN0135` has the cloud app
-(`https://oneguard.fly.dev`; another with `ONEGUARD_API=http://localhost:8000`) compile and
+(`https://oneguard.fly.dev`; another with `ONEGUARD_API_URL=http://localhost:8000`) compile and
 confirm the scenario's instruction, start the Viseca run and decide it; the terminal prints
 `Sign in as <name> (<customer id>, card <card id>)` and follows the decisions (default
 `SCEN0101`). The scenarios the sandbox serves, and their customers, are in

@@ -2,6 +2,7 @@
 
 ``decide_event`` calls the lane functions in this order:
 
+0. ``Ledger.note_event``: the ledger keeps the purchase's device and shop country (W1, W3)
 1. redelivery of a stored live ``authorization_id`` → the stored result, nothing counted (M7)
 2. ``build_facts``
 3. ``Ledger.view``; ``facts.merchant_known`` / ``merchant_known_on_card`` from it (Q7, C9)
@@ -36,6 +37,7 @@ from typing import Any
 
 from oneguard import __version__
 from oneguard.api import models as api
+from oneguard.api import policies
 from oneguard.engine import stubs
 from oneguard.engine.ledger_base import Ledger, LedgerEntry
 from oneguard.engine.policy import COUNT_FIELD, add_ledger_results
@@ -191,6 +193,7 @@ def decide_event(
     customer_id = event["mandate"]["customer_id"]
     card_id = auth["card_id"]
 
+    ctx.ledger.note_event(event)  # W1, W3 learn this purchase's device and country if approved
     stored = ctx.ledger.get(auth["authorization_id"])
     if stored is not None:
         view = ctx.ledger.view(
@@ -353,6 +356,21 @@ def confirmable(entry: LedgerEntry, policy: Policy) -> api.Confirmable | None:
     return api.Confirmable(rule_id=rule.id, phrase=phrase)
 
 
+def policy_applied(event: dict, entry: LedgerEntry, policy: Policy) -> api.PolicyApplied | None:
+    """The checks this decision was made under, as the customer reads them (the flag checks
+    C5 / C10 included, policies.flag_checks). ``platform``
+    when the policy is the platform mandate's snapshot (no confirmed policy was bound to it:
+    its id is the event's mandate id). None for a policy with no rules (an unknown replay)."""
+    if not policy.rules:
+        return None
+    platform = policy.mandate_id == (event.get("mandate") or {}).get("mandate_id")
+    return api.PolicyApplied(
+        mandate_id=entry.mandate_id,
+        source="platform" if platform else "confirmed",
+        checks=policies.policy_checks(policy.rules, policies.flags_of(policy)),
+    )
+
+
 def to_api_decision(
     event: dict,
     entry: LedgerEntry,
@@ -419,6 +437,7 @@ def to_api_decision(
         explanation_source=entry.explanation_source,
         resolved_by=entry.resolved_by,
         confirmable=confirmable(entry, policy),
+        policy_applied=policy_applied(event, entry, policy),
         run_id=entry.run_id,
         run_started_at=run_started_at,
     )

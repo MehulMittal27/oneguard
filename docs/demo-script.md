@@ -24,8 +24,8 @@ were checked with the same pipeline and the scenario's policy fixture.
 ## Roles and screens
 
 - **Operator**: laptop terminal with `API=https://oneguard.fly.dev` exported, runs the curl
-  commands below. Nothing on stage needs `make`; `make demo-offline` only targets
-  `localhost:8000`.
+  commands below. Nothing on stage needs `make`; `make demo-offline` calls the same D2 on
+  `ONEGUARD_API_URL` (default the cloud app) and starts nothing when it does not answer.
 - **Customer / presenter**: one browser on `https://oneguard.fly.dev/?demo=1`, projected.
   `?demo=1` adds the dark **Operator** strip above the phone frame: the current replay's
   `scenario · card`, `n/total delivered`, `running`/`idle`, and the **Soft signals: on**
@@ -52,11 +52,13 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
    `fly deploy` from here until the show ends.
 
 2. **Health**: `curl -s $API/healthz | jq '{worker: .worker.state, polling: .worker.polling, ok: .worker.ok, signals, model_loaded, database: .database.ok}'`.
-   Expect `worker: "polling"`, `polling: true`, `ok: true`, `signals.enabled: true`,
-   `model_loaded: true` (Laya loaded) and `database: true`. `worker: "standby"` means a
-   second process holds the store's worker lease (for example a laptop `make serve` with
-   the Supabase `.env` sourced): stop that process. `model_loaded: false` means Laya did
-   not load on this deploy: step 4 then shows keywords only; say so rather than claim Laya.
+   Expect `worker: "polling"`, `polling: true`, `ok: true`, `signals.backend: "keywords"`,
+   `signals.configured: "keywords"`, `signals.enabled: true`, `model_loaded: false` and
+   `database: true`. The cloud runs
+   keyword soft signals (Fly secret `ONEGUARD_SOFT_SIGNALS=keywords`, docs/decisions.md), so
+   `model_loaded: false` is expected. `worker: "standby"` means a second process holds the
+   store's worker lease (for example a laptop `make serve` with the Supabase `.env`
+   sourced): stop that process.
 
 3. **Soft signals on** (the strip's button always starts as "on" after a reload and does
    not read the server, so make the server agree):
@@ -75,7 +77,7 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
 
    | Card | Customer | Scenario | Instruction to send (verbatim, the scenario's cardholder instruction) | Checks the draft must show |
    |---|---|---|---|---|
-   | CA0039 | Oliver Graf (CU0019) | SCEN0004 | Buy the 27-inch monitor I chose, from a seller I have bought from before, for CHF 400 or less. Do not add anything I did not ask for. Ask me when uncertain. | CHF 400 per order; only sellers you have bought from before; the 27-inch monitor; nothing added |
+   | CA0039 | Oliver Graf (CU0019) | SCEN0004 | Buy the 27-inch monitor I chose, from a seller I have bought from before, for CHF 400 or less. Do not add anything I did not ask for. Ask me when uncertain. | CHF 400 per order; only sellers you have bought from before; requested item and nothing-added flags set (policy flags on this build, not visible checks) |
    | CA0023 | Giulia Rossi (CU0012) | SCEN0003 | The agent may buy clothing for me, up to CHF 250 per order, from shops I have used before. Pause anything that looks like someone other than me is driving the session. Ask me when uncertain. | CHF 250 per order; only clothing; only shops you have bought from before |
    | CA0011 | Jonas Frei (CU0006) | SCEN0002 | Replace my worn road-running shoes in size 43. Buy only from a specialist sports retailer, only if the order can be returned within 14 days or more, and pay no more than CHF 200. Ask me when uncertain. | CHF 200 per order; size 43; returns 14 days or more; sporting goods shop |
 
@@ -103,12 +105,17 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
 
    Run each `confirm` only after reading its draft. Expect `compiler: "llm"` and
    `status: "active"`. If a draft misses a check from the table (the rule-based fallback,
-   for one, reads no item and no "nothing added" check for CA0039), do not confirm it: run
+   for one, sets neither the requested-item nor the nothing-added flag for CA0039), do not confirm it: run
    `draft` again. The replay decides with this mandate, and the matrix outcomes assume those
    checks. Keep this CA0039 check as a safety line even once the requested-item compiler
    fix (in progress on `p4/requested-item`) lands: that fix should make the draft pass on
    its own. A card that already has an active policy from a rehearsal needs nothing; CA0023
    is revoked on stage, so after each rehearsal it needs a new one.
+
+   Confirming a policy on stage supersedes the platform's active mandate (the sandbox
+   keeps one active mandate per team; docs/decisions.md). That is irrelevant unless a
+   judging run is open, so no judging run during the stage demo. Revoking a superseded
+   policy still succeeds (C5 answers 204).
 
 6. **Rehearsal replay** (at least 3 minutes before going on stage, so its step-ups have
    expired by then): replay both stage scenarios at full speed and compare with the matrix.
@@ -279,18 +286,25 @@ curl -s -X POST $API/api/dev/replay/restart -H 'Content-Type: application/json' 
 
 About 3 s later the newest run shows the same eleven outcomes; open **Earlier runs (n)** and
 the step-2 run (the latest "Started ...") to compare row by row. Switch to the `/healthz`
-tab and reload: `"signals": {"backend": "laya", "enabled": false, "model_loaded": true}`
-and top-level `"model_loaded": true`: the model is loaded, it is just not consulted.
+tab and reload: `"signals": {"backend": "keywords", "configured": "keywords", "enabled": false, "model_loading": false, "model_loaded": false}`
+and top-level `"model_loaded": false`: the cloud's soft signal is the keyword detector, and
+it is switched off for this replay.
 
 **Say**: the deterministic gate decides; with every model off the outcomes are identical
 (proven for all 45 pack purchases in the matrix, signals on vs off). A soft signal can only
-move an approve to an ask, never approve or soften a decline.
+move an approve to an ask, never approve or soften a decline. The small model (Laya) is
+measured but not on the cloud: on Fly's CPUs it does not answer a purchase inside its
+500 ms budget, so the cloud keeps keywords (Laya demoed on the laptop):
+
+| Fly machine (lhr, 4 GB) | per purchase P50 / P95 | per item line P50 / P95 |
+|---|---|---|
+| `shared-cpu-4x` (burst balance used up) | 328 / 3,712 ms | 320 / 3,996 ms |
+| `performance-2x` (2 dedicated CPUs) | 683 / 1,333 ms | 670 / 861 ms |
 
 Press **Soft signals: off** again so it reads **Soft signals: on** before leaving the step.
 
 **Fallback**: if an outcome differs, it can only be an approve with signals on that asked
-(more cautious); say that. If `/healthz` shows `model_loaded: false`, say Laya did not load
-on this deploy and the soft signal fell back to keywords; the decisions are the same.
+(more cautious); say that.
 
 ### 5. The sandbox path: live judging run on record (0:25) - Hannah Chen, CA1643, SCEN0104
 

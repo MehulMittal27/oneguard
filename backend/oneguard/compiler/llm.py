@@ -17,6 +17,7 @@ from decimal import Decimal
 from typing import Any
 
 from oneguard.compiler.draft import (
+    ALCOHOL_FIELD,
     COUNT_FIELD,
     COUNTRY_NAMES,
     FIELDS,
@@ -28,17 +29,22 @@ from oneguard.compiler.draft import (
     ParsedDraft,
     RuleSpec,
     finalize,
+    last_price_at_shop,
     next_weekday,
     number,
 )
 from oneguard.compiler.lint import stated_boundary
 from oneguard.compiler.parser import (
+    NO_ALCOHOL,
     each_is_per_purchase,
+    excluded_item_categories,
     is_product_question,
+    per_item_amount,
+    price_change_clause,
     product_categories,
     product_question,
 )
-from oneguard.compiler.resolve import last_price
+from oneguard.compiler.resolve import at_several_shops, last_price
 from oneguard.engine.types import HistoryIndex
 from oneguard.llm.provider import Provider
 
@@ -67,7 +73,8 @@ SCHEMA: dict[str, Any] = {
                     "value_number": _NULLABLE({"type": "number"}),
                     "value_text": _NULLABLE({"type": "string"}),
                     "value_list": _NULLABLE({"type": "array", "items": {"type": "string"}}),
-                    "value_from": {"type": "string", "enum": ["literal", "last_price", "next_weekday"]},
+                    "value_from": {"type": "string",
+                                   "enum": ["literal", "last_price", "last_price_at_shop", "next_weekday"]},
                     "currency": _NULLABLE({"type": "string", "enum": ["CHF", "EUR", "GBP", "USD"]}),
                     "scope": _NULLABLE({"type": "string", "enum": ["purchase", "period"]}),
                     "period_days": _NULLABLE({"type": "integer"}),
@@ -137,10 +144,10 @@ EXAMPLES: list[tuple[str, dict[str, Any]]] = [
         },
     ),
     (
-        # per-order vs period amounts, "never spend more than", item types, known shop, shop type
+        # per-order vs period amounts, "never spend more than", item types, known shop, shop type, alcohol
         (
-            "Buy groceries and household basics at supermarkets I already use. Never spend more than "
-            "CHF 80 per order or CHF 200 in any 14-day window."
+            "Buy groceries and household basics at supermarkets I already use. No alcohol. Never spend "
+            "more than CHF 80 per order or CHF 200 in any 14-day window."
         ),
         {
             "uncertainty_policy": "ask",
@@ -152,6 +159,7 @@ EXAMPLES: list[tuple[str, dict[str, Any]]] = [
                 _example_rule("merchant.merchant_category", "=", "at supermarkets", value_text="groceries",
                               source="inferred"),
                 _example_rule(KNOWN_SHOP_FIELD, "=", "supermarkets I already use", value_text="true"),
+                _example_rule(ALCOHOL_FIELD, "=", "No alcohol", value_text="false"),
                 _example_rule("authorization.billing_amount_chf", "<=", "Never spend more than CHF 80 per order",
                               value_number=80, currency="CHF", scope="purchase"),
                 _example_rule("authorization.billing_amount_chf", "<=", "CHF 200 in any 14-day window",
@@ -201,8 +209,9 @@ EXAMPLES: list[tuple[str, dict[str, Any]]] = [
                 _example_rule(KNOWN_SHOP_FIELD, "=", "No new services", value_text="true"),
                 _example_rule("unverifiable", "=", "no premium tiers", value_text="no premium tiers"),
                 _example_rule("items[].item_category", "not_in", "no gift cards", value_list=["gift_card"]),
-                _example_rule("unverifiable", "=", "If a price changes, ask me",
-                              value_text="the price has not changed since last time", on_fail="ask"),
+                _example_rule("authorization.billing_amount_chf", "=", "If a price changes, ask me",
+                              value_from="last_price_at_shop", currency="CHF", scope="purchase",
+                              source="inferred", on_fail="ask"),
             ],
             "open_questions": ["No amount stated: what is the most one purchase may cost?"],
         },
@@ -290,6 +299,7 @@ Use ONLY these fields (docs/api-contract.md §3.3):
 | merchant.merchant_category | trusted shop type, one of: {", ".join(MERCHANT_CATEGORIES)} |
 | {KNOWN_SHOP_FIELD} | "true": the customer has bought at this shop before ("shops I use regularly", "a seller I have bought from before") |
 | items[].item_category | every cart line must satisfy in / not_in; values: {", ".join(ITEM_CATEGORIES)} |
+| {ALCOHOL_FIELD} | "false": no alcoholic drink on any cart line ("no alcohol", "no wine or beer"); read from the item and the catalogue |
 | items[].size_eu | EU size read from the product text (number) |
 | items[].size_letter | letter size: {", ".join(SIZE_LETTERS)} |
 | order.return_window_days | return window in days; ">=" N for "returnable within N days or more" |
@@ -350,9 +360,10 @@ Rules:
   dinners" is the item types and the weekdays; "one lunch delivery a day" is the item types and
   the count.
 - Excluded types ("no gift cards, no cosmetics"; flights and insurance are "travel") are one
-  "not_in" rule; list values come only from the item_category values above. A thing no category
-  holds ("no alcohol": wine is groceries; "no premium tiers"; "no annual prepayments") is one
-  unverifiable rule each.
+  "not_in" rule; list values come only from the item_category values above. Alcohol is no
+  category (wine is groceries): "no alcohol" / "no wine" is one {ALCOHOL_FIELD} "=" "false" rule.
+  A thing no field holds ("no premium tiers"; "no annual prepayments") is one unverifiable rule
+  each.
 - Known shop: "shops I use", "supermarkets I already use", "my usual services", "my current
   subscriptions", "no new services" all mean {KNOWN_SHOP_FIELD} "true".
 - Shop type words: "outdoor" / "sports" -> sporting_goods; "at supermarkets" ->
@@ -367,8 +378,10 @@ Rules:
   item word inside it ("one lunch delivery a day") is still its own items[].item_category rule.
 - A booking: the category (hotel), the place and the dates (unverifiable, one rule each), the
   price per night (items[].unit_price_chf), "refundable rate" -> order.order_cancellable "true".
-- "If a price changes, ask me" with no single price stated -> an unverifiable rule, value_text
-  "the price has not changed since last time", on_fail "ask".
+- "If a price changes, ask me" with no single price stated (several subscriptions) ->
+  authorization.billing_amount_chf "=", value_from "last_price_at_shop", value_number null,
+  currency "CHF", scope "purchase", source "inferred", on_fail "ask": each payment is compared
+  with the last price paid at the same shop.
 - "If the session looks unusual ... stop and ask me" is not a rule: those checks always run.
 - words: the customer's phrase for this rule, copied verbatim from the instruction.
 - source "exact" when the customer said it directly, "inferred" when you mapped it (lunch -> dining).
@@ -386,10 +399,23 @@ def _norm(text: str) -> str:
     return " ".join(text.lower().split())
 
 
+_EXCLUDED = r"\b(?:no|never|without|except|excluding)\s+(?:any\s+)?"
+
+
+def _no_alcohol(raw: dict[str, Any], words: str) -> dict[str, Any]:
+    return raw | {"field": ALCOHOL_FIELD, "operator": "=", "value_number": None, "value_list": None,
+                  "value_text": "false", "value_from": "literal", "words": words}
+
+
 def _split_exclusions(raw: dict[str, Any], instruction: str) -> list[dict[str, Any]]:
     """An excluded-types rule naming things no item category holds ("no alcohol, no gift
-    cards"): the categories stay one not_in rule, each other thing becomes an unverifiable
-    rule in the customer's words. Tighter, never looser: nothing excluded is dropped."""
+    cards"): the categories stay one not_in rule, alcohol becomes the per-line alcohol
+    rule, each other thing an unverifiable rule in the customer's words. A model's
+    unverifiable "no alcohol" is the alcohol rule too. Tighter, never looser: nothing
+    excluded is dropped."""
+    said = re.fullmatch(rf"{_EXCLUDED}(?P<what>.+?)\W*", (raw["words"] or "").strip(), re.IGNORECASE)
+    if raw["field"] == "unverifiable" and said and NO_ALCOHOL.fullmatch(said.group("what")):
+        return [_no_alcohol(raw, raw["words"].strip())]
     values = [v.strip().lower() for v in raw["value_list"] or []]
     if raw["field"] != "items[].item_category" or raw["operator"] != "not_in" \
             or all(v in ITEM_CATEGORIES for v in values):
@@ -399,9 +425,11 @@ def _split_exclusions(raw: dict[str, Any], instruction: str) -> list[dict[str, A
     for v in values:
         if v in ITEM_CATEGORIES:
             continue
-        said = re.search(rf"\b(?:no|never|without|except|excluding)\s+(?:any\s+)?{re.escape(v.replace('_', ' '))}\w*",
-                         instruction, re.IGNORECASE)
+        said = re.search(rf"{_EXCLUDED}{re.escape(v.replace('_', ' '))}\w*", instruction, re.IGNORECASE)
         words = said.group(0) if said else f"no {v.replace('_', ' ')}"
+        if NO_ALCOHOL.fullmatch(v.replace("_", " ")):
+            out.append(_no_alcohol(raw, words))
+            continue
         out.append(raw | {"field": "unverifiable", "operator": "=", "value_list": None, "value_text": words,
                           "words": words})
     return out
@@ -424,11 +452,17 @@ def _convert(
     common: dict[str, Any] = {"field": field, "operator": op, "words": words or shown, "source": source,
                               "on_fail": raw["on_fail"]}
     value_from = raw["value_from"]
+    meant = requested_item or instruction  # what "last time" points at: the parser's words
 
+    if value_from == "last_price_at_shop" or (value_from == "last_price" and history is not None
+                                               and at_several_shops(history, card_id, meant)):
+        if field != "authorization.billing_amount_chf":
+            return None, unreadable
+        return last_price_at_shop(words or shown, operator=op, on_fail=raw["on_fail"]), None
     if value_from == "last_price":
         if field != "authorization.billing_amount_chf" or history is None:
             return None, unreadable
-        found = last_price(history, card_id, requested_item or words or instruction)
+        found = last_price(history, card_id, meant)
         if found is None:
             return None, f'I found no earlier purchase for "{requested_item or shown}": what price should I expect?'
         price, row = found
@@ -451,8 +485,10 @@ def _convert(
             return None, unreadable
         value = number(Decimal(str(raw["value_number"])))
         if field in ("authorization.billing_amount_chf", "items[].unit_price_chf"):
-            if field == "items[].unit_price_chf" and each_is_per_purchase(instruction, words):
-                field = common["field"] = "authorization.billing_amount_chf"  # the parser's reading of "each"
+            if field == "items[].unit_price_chf" and (  # per item only where the parser reads it per item
+                    per_item_amount(instruction, Decimal(str(value))) is False
+                    or each_is_per_purchase(instruction, words)):
+                field = common["field"] = "authorization.billing_amount_chf"  # tighter, never looser
             if op in ("<", "<=", "=") and (said := stated_boundary(instruction, value)):
                 common["operator"] = said  # T3: the boundary is the customer's word, never the model's
             scope = raw["scope"] or "purchase"
@@ -478,6 +514,10 @@ def _convert(
         return RuleSpec(**common, value=list(dict.fromkeys(values))), None
     text = (raw["value_text"] or "").strip()
     if field == "unverifiable":
+        if price_change_clause(words) and raw["on_fail"] == "ask":  # the price-change clause has a field now
+            return last_price_at_shop(words, on_fail="ask"), None
+        if cats := excluded_item_categories(words):  # "no insurance" is the travel type, as the parser reads it
+            return RuleSpec(**common | {"field": "items[].item_category", "operator": "not_in"}, value=cats), None
         return RuleSpec(**common, value=words or text), None
     if field == "authorization.delivery_by":
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
@@ -488,6 +528,7 @@ def _convert(
         "merchant.merchant_country": tuple(COUNTRY_NAMES),
         "items[].size_letter": SIZE_LETTERS,
         KNOWN_SHOP_FIELD: ("true",),
+        ALCOHOL_FIELD: ("false",),
         "order.order_returnable": ("true",),
         "order.order_cancellable": ("true",),
         "cart.recurring": ("true", "false"),

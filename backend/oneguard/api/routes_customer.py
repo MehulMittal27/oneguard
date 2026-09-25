@@ -147,6 +147,18 @@ def mandate_policy(row: Mandate) -> Policy:
     return policies.policy_of(row.mandate_id, row.status, row.instruction, rules, flags, row.uncertainty_policy)
 
 
+def decided_by_platform(event: dict, entry: LedgerEntry) -> Policy:
+    """The policy a decision with no stored mandate was checked against: the platform
+    mandate's rules from its stored event (as the worker did, ``policy_from_snapshot``),
+    else a policy without rules (a replay whose policy was never stored)."""
+    from oneguard.viseca.worker import policy_from_snapshot
+
+    mandate = event.get("mandate") or {}
+    if mandate.get("mandate_id") == entry.mandate_id and mandate.get("hard_rules"):
+        return policy_from_snapshot(mandate)
+    return Policy(mandate_id=entry.mandate_id, status="active", instruction="", rules=[], uncertainty_policy="ask")
+
+
 def build_decisions(
     stored: list[queries.StoredDecision], history: HistoryIndex, mandates: dict[str, Mandate]
 ) -> list[api.Decision]:
@@ -165,9 +177,7 @@ def build_decisions(
             log.error("decision %s has no stored event; left out of C6", item.entry.live_authorization_id)
             continue
         view = merchant_view(item.entry, by_run[item.entry.run_id], history)
-        policy = decided_under.get(item.entry.mandate_id) or Policy(
-            mandate_id=item.entry.mandate_id, status="active", instruction="", rules=[], uncertainty_policy="ask"
-        )
+        policy = decided_under.get(item.entry.mandate_id) or decided_by_platform(item.event, item.entry)
         decisions.append(to_api_decision(item.event, item.entry, view, policy, item.run_started_at))
     return decisions
 
@@ -219,18 +229,18 @@ async def create_draft(card_id: str, body: api.PolicyDraftRequest, request: Requ
         instruction = body.instruction or ""
         if not instruction.strip():
             raise ApiError(422, "validation", "The instruction is empty.")
-        compiled = await _compile(s, instruction, card_id)
+        compiled = await _compile(s, instruction, card_id, customer_id)
         rules, flags = _unique_ids(compiled.rules), policies.flags_of(compiled)
         uncertainty = compiled.uncertainty_policy
         open_questions = list(compiled.open_questions)
         dry_run = compiled.dry_run
         compiler = compiled.compiler
-    if not rules:
+    checks = policies.policy_checks(rules, flags)
+    if not checks:
         open_questions = [policies.NO_CHECKS_QUESTION, *(q for q in open_questions if q != policies.NO_CAP_QUESTION)]
     elif policies.per_order_cap(rules) is None and policies.NO_CAP_QUESTION not in open_questions:
         open_questions.append(policies.NO_CAP_QUESTION)
 
-    checks = [policies.rule_check(r) for r in rules]
     draft = api.PolicyDraft(
         draft_id=f"pd_{secrets.token_hex(8)}",
         card_id=card_id,
@@ -260,11 +270,11 @@ async def create_draft(card_id: str, body: api.PolicyDraftRequest, request: Requ
     return reply(draft)
 
 
-async def _compile(s: Services, instruction: str, card_id: str) -> CompiledDraft:
+async def _compile(s: Services, instruction: str, card_id: str, customer_id: str) -> CompiledDraft:
     compile_instruction = s.functions["compile_instruction"]
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(compile_instruction, instruction, s.history, card_id, s.provider),
+            asyncio.to_thread(compile_instruction, instruction, s.history, card_id, s.provider, customer_id=customer_id),
             s.compile_timeout_s,
         )
     except TimeoutError:
@@ -319,17 +329,22 @@ async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: R
             )
         draft_rules, flags = policies.load_rules(row.rules, row.checks)
         by_id = {r.id: r for r in draft_rules}
+        shown = policies.flag_checks(flags)
         chosen = [c.id for c in body.checks]
-        unknown = [i for i in chosen if i not in by_id]
+        unknown = [i for i in chosen if i not in by_id and i not in {c.id for c in shown}]
         if unknown:
             raise ApiError(422, "validation", "Some checks are not part of this draft.", {"unknown": unknown})
         accepted = [r for r in draft_rules if r.id in set(chosen)]
         missing, reasons = s.functions["lint_accepted"](draft_rules, [r.id for r in accepted])
+        # A flag check has no typed rule for lint to see; it is exact, so it may not be dropped either.
+        dropped = [c for c in shown if c.id not in set(chosen)]
+        missing = [*missing, *(c.id for c in dropped)]
+        reasons = [*reasons, *(f'you stated "{c.text}" and it was left out' for c in dropped)]
         if missing:
             raise ApiError(409, "lint_failed", "Not confirmed: " + "; ".join(reasons) + ".", {"missing": missing})
         flags = policies.accepted_flags(flags, draft_rules, accepted)
         uncertainty = body.uncertainty_policy
-        checks = [policies.rule_check(r) for r in accepted]
+        checks = policies.policy_checks(accepted, flags)
 
         viseca_draft_id = viseca_mandate_id = None
         if s.client is not None:
@@ -401,6 +416,8 @@ async def tighten_policy(card_id: str, body: api.TightenRequest, request: Reques
         added: list[Rule] = []
         unknown: list[str] = []
         for check in body.add_checks:
+            if check.id in policies.FLAG_CHECK_IDS and check.id in {c["id"] for c in row.checks}:
+                continue  # a flag check already in force: nothing to add
             if check.id not in proposed and check.id not in in_force:
                 unknown.append(check.id)
                 continue
@@ -434,7 +451,7 @@ async def tighten_policy(card_id: str, body: api.TightenRequest, request: Reques
             s.db_engine,
             row.mandate_id,
             rules=policies.store_rules(new_rules, flags),
-            checks=[policies.rule_check(r).model_dump(mode="json") for r in new_rules],
+            checks=[c.model_dump(mode="json") for c in policies.policy_checks(new_rules, flags)],
             uncertainty_policy=uncertainty,
         )
         s.bind_mandate(updated)
@@ -444,8 +461,11 @@ async def tighten_policy(card_id: str, body: api.TightenRequest, request: Reques
 async def revoke_at_platform(s: Services, row: Mandate, *, strict: bool) -> None:
     """Revoke at Viseca (the worker flips its policy first, so nothing more is approved).
 
-    A platform that already has it revoked (404 / 409) counts as done. With ``strict``
-    any other failure is a 503; otherwise it is logged.
+    A platform that no longer has it active counts as done: 404, or 409 because it is
+    already revoked or was superseded (the sandbox keeps one active mandate per team, so
+    confirming any policy supersedes the previous one). Its state is read and logged,
+    never shown to the customer. With ``strict`` any other failure (5xx, network,
+    timeout) is a 503 and nothing is retried; otherwise it is logged.
     """
     tm = row.viseca_mandate_id
     if not tm or s.client is None:
@@ -457,7 +477,10 @@ async def revoke_at_platform(s: Services, row: Mandate, *, strict: bool) -> None
             await s.platform(s.client.delete_mandate(tm))
     except VisecaError as exc:
         if exc.status in (404, 409):
-            log.info("Viseca already has mandate %s revoked (%s)", tm, exc.code)
+            log.info(
+                "Viseca no longer has mandate %s active (%s %s); platform status: %s",
+                tm, exc.status, exc.code, await _platform_status(s, tm),
+            )  # fmt: skip
             return
         if not strict:
             log.error("could not revoke replaced mandate %s at Viseca: %s", tm, exc)
@@ -469,6 +492,17 @@ async def revoke_at_platform(s: Services, row: Mandate, *, strict: bool) -> None
             "did not confirm. Try again.",
             {"platform_status": exc.status, "platform_code": exc.code},
         ) from None
+
+
+async def _platform_status(s: Services, tm: str) -> str:
+    """The mandate's status at Viseca for the log (``revoked``, ``superseded``, ...)."""
+    if s.client is None:
+        return "unread (no platform)"
+    try:
+        mandate = await s.platform(s.client.get_mandate(tm))
+        return str(mandate.get("status")) if isinstance(mandate, dict) else "unread (no body)"
+    except VisecaError as exc:
+        return f"unread ({exc.status or 'network'} {exc.code})"
 
 
 @router.post("/cards/{card_id}/policy/revoke", status_code=204)

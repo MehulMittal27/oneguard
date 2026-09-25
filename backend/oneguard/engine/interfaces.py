@@ -106,14 +106,17 @@ def rewrite_explanation(
 
 
 def compile_instruction(
-    text: str, history: HistoryIndex, card_id: str, provider: Provider,
+    text: str, history: HistoryIndex, card_id: str, provider: Provider, customer_id: str | None = None,
     *, confirmed_at: datetime | None = None,
 ) -> CompiledDraft:
     """P4 compiler/. Instruction → typed rules + dry-run (§10, api-contract §3.2).
 
-    Relative dates ("by Friday") count from the card's simulated present (its latest
-    history row, M6). ``confirmed_at``, when given, replaces it with its Europe/Zurich
-    date; no route passes it (C2 does not pass the real clock, api-contract §3.2)."""
+    ``customer_id`` is the card's owner, for the dry run's customer-level
+    ``agent_history``; without it the card's history names the customer. Relative dates
+    ("by Friday") count from the card's simulated present (its latest history row, M6).
+    ``confirmed_at``, when given, replaces it with its Europe/Zurich date; no route
+    passes it (C2 does not pass the real clock, api-contract §3.2).
+    """
     raise NotImplementedError
 
 
@@ -129,11 +132,13 @@ def lint_accepted(rules: list[Rule], accepted_ids: list[str]) -> tuple[list[str]
     raise NotImplementedError
 
 
-def dry_run(policy: Policy, history: HistoryIndex, card_id: str) -> DryRunResult:
+def dry_run(policy: Policy, history: HistoryIndex, card_id: str, customer_id: str) -> DryRunResult:
     """P4 compiler/dryrun.py. The policy's rules over the card's recent history (T5).
 
     Used for C1 drafts from an instruction or a form. Reads ``HistoryIndex`` only;
-    a preview, never a decision.
+    a preview, never a decision. Card-scoped, except ``agent_history``: the
+    ``customer_id``'s agent purchases across all their cards. A known-shop check makes a
+    purchase at a shop the card had not bought from before ``ask``, as the form preview.
     """
     raise NotImplementedError
 

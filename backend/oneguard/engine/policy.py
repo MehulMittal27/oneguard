@@ -23,7 +23,8 @@ for a fail, a ``counterfactual`` (what would have passed). Explanations are buil
 these strings, so they are written for the customer.
 
 Period limits (C2, ``scope == "period"``: spend, or a purchase count with the field
-``cart.purchases_in_period``) and remembered confirmations need the ledger,
+``cart.purchases_in_period``), the last price at this shop (an order-total rule whose
+value is ``LAST_PRICE_AT_SHOP``) and remembered confirmations need the ledger,
 which ``evaluate_rules`` does not receive. ``add_ledger_results(rules, facts, policy,
 ledger)`` adds them: the pipeline calls it after ``evaluate_rules`` (and after tier 2), so
 decide.py and explain.py both see them (P2 request to P1: one line in pipeline.py). Until
@@ -65,6 +66,10 @@ NO_HISTORY = ("You have no purchase history yet, so I can't tell whether you've 
               " - approve once and I'll remember it")
 NO_HISTORY_COUNTERFACTUAL = "Would approve at this shop next time if you approve this one"
 KNOWN_SHOP_FIELDS = ("merchant.known_shop", "merchant.familiar_on_card")  # api-contract §3.3: the same check
+ALCOHOL_FIELD = "items[].contains_alcohol"  # api-contract §3.3: C4 "no alcohol", every cart line
+# api-contract §3.3: an order-total rule whose value is this reference compares the total with
+# the customer's last approved price at this purchase's shop (LedgerView, add_ledger_results).
+LAST_PRICE_AT_SHOP = "last_price_at_shop"
 
 _NUMERIC_FIELDS = {
     "authorization.billing_amount_chf",
@@ -86,6 +91,7 @@ _LABELS = {
     "items[].quantity": "quantity",
     "cart.quantity": "number of items",
     "items[].item_category": "item type",
+    ALCOHOL_FIELD: "alcohol",
     "items[].size_eu": "size",
     "items[].size_letter": "size",
     "order.return_window_days": "return window",
@@ -155,6 +161,11 @@ def _requested_lines(facts: Facts, policy: Policy) -> list[ItemFacts]:
     return list(facts.items)
 
 
+def is_last_price_rule(rule: Rule) -> bool:
+    """"Same price as last time at this shop": the value is the ledger's, per purchase."""
+    return rule.field == "authorization.billing_amount_chf" and rule.value == LAST_PRICE_AT_SHOP
+
+
 def _rule_value_chf(rule: Rule) -> Any:
     """T4: a limit stated in another currency is converted to CHF before comparing."""
     if rule.field in _MONEY_FIELDS and rule.currency and rule.currency != "CHF" and rule.value is not None:
@@ -219,6 +230,7 @@ def _facts_for(field: str, facts: Facts, policy: Policy) -> tuple[list[FactValue
         "items[].unit_price_chf": lambda ln: _fv(ln.unit_price_chf),
         "items[].quantity": lambda ln: _fv(ln.quantity),
         "items[].size_eu": lambda ln: ln.size_eu,
+        ALCOHOL_FIELD: lambda ln: ln.contains_alcohol,
         "items[].size_letter": lambda ln: getattr(ln, "size_letter", None) or FactValue(
             known=False, source="regex", detail="letter sizes are not in the contract yet"),
     }
@@ -354,15 +366,26 @@ def _fail_text(rule: Rule, target: Any, failing: list[tuple[FactValue, ItemFacts
         return f"Quantity {seen}; you allowed {allowed}", f"Would approve with a quantity of {allowed}"
     if (known := _YES_NO.get((field, op, str(rule.value).lower()))) is not None:
         return known
+    if field == ALCOHOL_FIELD and op == "=" and str(rule.value).lower() == "false":
+        bad = [ln for _, ln in failing if ln is not None]
+        return _alcohol_clause(bad), _without(bad)
     label = _LABELS.get(field, "value").capitalize()
     asked = " ".join(part for part in (_OP_WORDS[op], want) if part)
     shown = ", ".join(_fmt(field, v.value) for v, _ in failing)
     return f"{label}: {shown}; you asked for {asked}", f"Would approve with {_want_phrase(rule, target)}"
 
 
-def _unknown_text(rule: Rule, target: Any, fv: FactValue) -> tuple[str, str] | None:
+def _alcohol_clause(lines: list[ItemFacts]) -> str:
+    """"Wine and spirits is alcohol, which you excluded"."""
+    names = _both(list(dict.fromkeys(ln.item_name for ln in lines)))
+    return f"{names} {'is' if len(lines) == 1 else 'are'} alcohol, which you excluded"
+
+
+def _unknown_text(rule: Rule, target: Any, fv: FactValue, line: ItemFacts | None = None) -> tuple[str, str] | None:
     """A typed rule the shop's text leaves open, when its field has a template: "Returns:
     not stated; you asked for 14 days or more". None keeps the fact's own reason."""
+    if rule.field == ALCOHOL_FIELD and line is not None:
+        return f"{line.item_name} {fv.detail}", f"Would approve without {line.item_name}"
     if "not stated" not in fv.detail or CONTRADICTORY in fv.detail:
         return None
     if rule.field == "order.return_window_days" and rule.operator in (">=", ">"):
@@ -413,6 +436,9 @@ def evaluate_typed_rule(rule: Rule, facts: Facts, policy: Policy) -> RuleResult:
                           detail=f'No data to check "{rule.text or rule.id}"')
     if (shared := _shared_check(rule, facts)) is not None:
         return _asked_if_broken(rule, shared)
+    if is_last_price_rule(rule):  # add_ledger_results replaces this with the ledger's price
+        return RuleResult(rule_id=rule.id, outcome="unknown", source="history",
+                          detail=f"Couldn't look up your last price at {facts.merchant_name}")
     looked_up = _facts_for(rule.field, facts, policy)
     if looked_up is None:
         return RuleResult(rule_id=rule.id, outcome="unknown", source="event",
@@ -423,24 +449,26 @@ def evaluate_typed_rule(rule: Rule, facts: Facts, policy: Policy) -> RuleResult:
     failing, unknown = [], []
     for fv, line in zip(values, lines, strict=True):
         if not fv.known:
-            unknown.append(fv)
+            unknown.append((fv, line))
         elif not _compare(fv.value, rule.operator, target):
             failing.append((fv, line))
 
-    source = next((fv.source for fv in [f for f, _ in failing] or unknown or values), "event")
+    source = next((fv.source for fv in [f for f, _ in failing + unknown] or values), "event")
     if failing:
         clause, counterfactual = _fail_text(rule, target, failing, facts)
         return _asked_if_broken(rule, RuleResult(rule_id=rule.id, outcome="fail", source=source,
                                                  detail=clause, counterfactual=counterfactual))
     if unknown:
-        templated = _unknown_text(rule, target, unknown[0])
+        templated = _unknown_text(rule, target, *unknown[0])
         if templated is not None:
             return RuleResult(rule_id=rule.id, outcome="unknown", source=source,
                               detail=templated[0], counterfactual=templated[1])
-        reason = unknown[0].detail or "not stated"
+        reason = unknown[0][0].detail or "not stated"
         flag = " (the shop contradicts itself)" if reason.startswith(CONTRADICTORY) else ""
         return RuleResult(rule_id=rule.id, outcome="unknown", source=source,
                           detail=f"{label.capitalize()} unknown{flag}: {reason}")
+    if rule.field == ALCOHOL_FIELD:
+        return RuleResult(rule_id=rule.id, outcome="pass", source=source, detail="No alcohol in the cart")
     seen = ", ".join(sorted({_fmt(rule.field, fv.value) for fv in values}))
     return RuleResult(rule_id=rule.id, outcome="pass", source=source,
                       detail=f"{label.capitalize()}: {seen}. Meets {_want_phrase(rule, target)}")
@@ -701,6 +729,30 @@ def is_unverifiable(rule: Rule, facts: Facts, policy: Policy) -> bool:
     return not rule.field or _facts_for(rule.field, facts, policy) is None
 
 
+def evaluate_last_price_rule(rule: Rule, facts: Facts, last_chf: float | None) -> RuleResult:
+    """C1 "same price as last time at this shop" (``LAST_PRICE_AT_SHOP``): this order's total
+    against ``last_chf``, the customer's last approved total at this ``merchant_id``
+    (``LedgerView.last_price_chf_by_merchant``). No earlier payment there is unknown, never
+    a pass (P3); a changed price follows ``on_fail`` (``ask``: the uncertainty setting)."""
+    shop = facts.merchant_name
+    if last_chf is None:
+        return RuleResult(rule_id=rule.id, outcome="unknown", source="history",
+                          detail=f"You haven't paid {shop} before, so there is no last price to compare")
+    now, last = _money(facts.billing_amount_chf), _money(last_chf)
+    op = rule.operator or "="
+    if _compare(Decimal(str(facts.billing_amount_chf)), op, Decimal(str(last_chf))):
+        same = "the same as" if op == "=" else "within"
+        return RuleResult(rule_id=rule.id, outcome="pass", source="history",
+                          detail=f"{now} at {shop}, {same} the {last} you paid last time")
+    if op == "=":
+        detail, counterfactual = f"{now} at {shop}; last time it was {last}", f"Would approve at {last}, the price last time"
+    else:
+        broken, within = _limit_words(op, last)
+        detail, counterfactual = f"{now} at {shop} is {broken} the {last} you paid last time", f"Would approve {within}"
+    return _asked_if_broken(rule, RuleResult(rule_id=rule.id, outcome="fail", source="history",
+                                             detail=detail, counterfactual=counterfactual))
+
+
 def checks_known_shop(result: RuleResult, rule: Rule | None) -> bool:
     """C9: the ``requires_known_shop`` flag's result, or a typed rule on a known-shop field."""
     return rule.field in KNOWN_SHOP_FIELDS if rule is not None else result.rule_id == "C9"
@@ -731,6 +783,7 @@ def add_ledger_results(
       covers one window (the shortest period); a period rule with a different window is
       unknown rather than checked against the wrong numbers (P3).
     - C9: unknown with no purchase history yet; remembered per shop (``_known_shop_with_ledger``).
+    - C1 at the last price at this shop: from ``last_price_chf_by_merchant`` (``evaluate_last_price_rule``).
     - Ask once, then remember: an unknown restriction no data can check passes when the
       customer already approved it for this shop and every item in the cart.
     """
@@ -741,6 +794,8 @@ def add_ledger_results(
         rule = by_id.get(res.rule_id)
         if checks_known_shop(res, rule):
             res = _known_shop_with_ledger(res, facts, ledger, confirmed)
+        elif rule is not None and is_last_price_rule(rule):
+            res = evaluate_last_price_rule(rule, facts, ledger.last_price_chf_by_merchant.get(facts.merchant_id))
         elif (res.outcome == "unknown" and rule is not None and confirmed
                 and is_unverifiable(rule, facts, policy)
                 and all(confirmation_key(rule.id, facts.merchant_id, ln.item_id) in confirmed

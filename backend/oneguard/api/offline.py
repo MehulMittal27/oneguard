@@ -178,6 +178,13 @@ class OfflineRunner:
         state.task = asyncio.create_task(self._run(state, ctx), name=f"replay-{state.run_id}")
         return state.status()
 
+    async def finished(self) -> api.ReplayStatus | None:
+        """Wait until the replay has delivered its last event; its step-ups stay open."""
+        state = self._state
+        if state is not None and state.task is not None:
+            await asyncio.gather(state.task, return_exceptions=True)
+        return self.status()
+
     def bind_policy(self, policy: Policy) -> None:
         """A tightened or revoked policy applies to the running replay's next purchase (T6)."""
         state = self._state

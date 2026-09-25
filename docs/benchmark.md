@@ -145,10 +145,27 @@ then per item line 168, about 340 model calls after the load):
   when the balance runs out. The short run above stayed inside it (1% steal); the model load
   plus a few hundred calls did not (P95 over 3.5 s), and the full `--laya` run (1,120 calls)
   reached 57% steal and had not finished after 30 minutes. So the shared P95 is above 450 ms
-  and the machine moves to `performance-2x` (dedicated CPUs, docs/decisions.md).
+  and the machine moved to `performance-2x` (dedicated CPUs, docs/decisions.md).
 - The budget is per purchase: `pipeline.py` gives `soft_signals` one budget, and
   `LayaSignals` waits that long for one job that asks every item line in turn. Past it the
   keyword answer stands (`source: merchant_text`): the decision is the one `keywords` would
   give, never less cautious, and it waits at most the budget. The pack has no model-only
   trigger, so its outcomes do not change. The unfinished job keeps the one Laya thread busy,
   so a purchase right behind it waits in the queue and can fall back too.
+
+Fly, `performance-2x` (2 dedicated CPUs) with 4 GB in lhr, image `oneguard:9a1a68a`, 24 Sep
+2026, fresh machines:
+
+| run | stage | n | P50 ms | P95 ms | max ms |
+|---|---|---:|---:|---:|---:|
+| `--reps 3` | soft_signals per purchase | 135 | 683.3 | 1333.0 | 1681.8 |
+| `--reps 3` | agent_directed per item line | 168 | 669.6 | 861.1 | 1011.9 |
+| `--reps 10` (sustained) | soft_signals per purchase | 450 | 784.2 | 1467.8 | 1793.0 |
+| `--reps 10` (sustained) | agent_directed per item line | 560 | 739.5 | 865.6 | 1201.5 |
+
+- Load 21-24 s. No throttling (the sustained run stays near the short one), but two cores are
+  slower per call than four shared ones with burst left: every purchase (135/135, 450/450)
+  went over 500 ms.
+- Per-purchase P95 1.3-1.5 s is above 900 ms, so the cloud went back to keywords
+  (docs/decisions.md): Fly secret `ONEGUARD_SOFT_SIGNALS=keywords`, same image.
+

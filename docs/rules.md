@@ -60,17 +60,17 @@ The first step that applies decides.
 | Tier | When | What |
 |---|---|---|
 | 1 | Every purchase | Deterministic rules, protections, warning signs (§4–§8). |
-| 2 | Only when a customer rule is `unknown` because a needed fact could not be extracted deterministically | Constrained LLM fact extraction from shop text: schema-validated, 1.5 s timeout, evidence `source: model`. |
+| 2 | Only when a customer rule is `unknown` because a needed fact could not be extracted deterministically | Constrained LLM fact extraction from shop text: schema-validated, 1.5 s timeout, evidence `source: model`. Size and return window only; recurring billing is regex only. |
 | 3 | After the decision is posted | LLM explanation rewrite from structured evidence only (E8). The template message is the fallback and is always posted first. |
 
 ## 5. Customer rules (apply only when stated)
 
 | ID | Rule | Fail → | Unknown → |
 |---|---|---|---|
-| C1 | **Order limit.** Total in CHF, delivery included, vs the per-order limit. "At or below / no more than / max / up to" → equal passes. "Under / less than / below" → equal fails. | Decline | Uncertainty setting (total missing) |
+| C1 | **Order limit.** Total in CHF, delivery included, vs the per-order limit. "At or below / no more than / max / up to" → equal passes. "Under / less than / below" → equal fails. "Same price as last time" is a limit taken from history: one shop's last price, resolved when the instruction is compiled; or, when the customer pays several shops (several subscriptions, "if a price changes, ask me"), the value `last_price_at_shop`: each purchase against the customer's last approved total at its own `merchant_id` (history, then this run's final approvals). A changed price follows `on_fail` (`ask`: the uncertainty setting). | Decline | Uncertainty setting (total missing; no earlier payment at this shop for `last_price_at_shop`) |
 | C2 | **Period limit.** Final approvals in the window + reserved pending + this purchase ≤ limit. "Any seven days" = rolling 168 h before purchase time. "Per month" = rolling 30 days unless "calendar month". Declines never count. A purchase count per period ("one a day", "two orders a week", field `cart.purchases_in_period`) counts the same way: final approvals + pending step-ups on this card in the window + this purchase ≤ the count; declines never count, a redelivery counts once, and a breach caused only by pending step-ups asks (M5). | Decline | Uncertainty setting (count not available, or its window differs from the policy's shortest period) |
 | C3 | **Allowed item types.** Every cart line's `item_category` in the allowed set. Shop category proves nothing about the basket. | Decline | — |
-| C4 | **Blocked item types.** No cart line in the blocked set. | Decline | — |
+| C4 | **Blocked item types.** No cart line in the blocked set. "No alcohol" is no category (wine is groceries): it is the per-line fact `items[].contains_alcohol`, read by an allowlisted lexicon (English, German, French, Italian) over the item's name and details and the catalogue's text for its `item_id`, only on lines whose category can be a drink. The catalogue naming alcohol wins over the shop's text. | Decline | Uncertainty setting (alcohol only: drinks named without saying which, or alcohol and alcohol-free together) |
 | C5 | **Specific item.** The item bought is the item asked for; a similar item is not it (trail ≠ road shoe; gift voucher ≠ monitor). | Decline | — |
 | C6 | **Item details.** Named details (size, colour, model, dimensions) match. Often only in shop text: extract, trust nothing else in it. | Decline | Uncertainty setting (not stated or self-contradictory) |
 | C7 | **Order terms.** Returns/cancellation/warranty as named. "14 days or more" → 14 passes, 7 fails. "Final sale / no returns / non-returnable" = 0 days. Cancellation reads `order_cancellable`: `"false"` fails a named cancellation term. When sources disagree, the stricter applies. | Decline | Uncertainty setting (not stated, `order_returnable = "unknown"`, or `order_cancellable = "unknown"` when cancellation is named) |
