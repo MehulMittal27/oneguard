@@ -1,7 +1,6 @@
-import { useEffect, useState } from 'react'
-import { getAccounts } from '../../api/accounts'
+import { useState } from 'react'
 import { compilePolicy, confirmPolicy } from '../../api/policy'
-import type { Account, FormInput, Mandate, PolicyDraft } from '../../api/types'
+import type { FormInput, Mandate, PolicyDraft } from '../../api/types'
 import { useCustomer } from '../../state/CustomerContext'
 import { DeviceGateCancelled, useDevice } from '../../state/DeviceContext'
 import { usePolicy } from '../../state/PolicyContext'
@@ -22,8 +21,6 @@ const EMPTY_FORM: FormInput = {
 }
 
 type Step = 'describe' | 'reading' | 'timeout' | 'check' | 'confirmed'
-type AccountStatus = 'loading' | 'error' | 'ready'
-
 /**
  * Owns the new-policy flow's state machine (DESIGN.md #7/#13-16, C1/C2).
  * No router exists yet — the flow is a sibling "mode" to the tab bar,
@@ -55,42 +52,29 @@ export function NewPolicyFlow({
   // too long" (NewPolicyTimeout's copy) — a separate inline error instead.
   const [confirmError, setConfirmError] = useState(false)
   const [formError, setFormError] = useState(false)
-  // Which card the policy applies to — starts at whichever card this flow
-  // was opened for (Home/Accounts/Card detail), but the customer can pick a
-  // sibling card on the same account before compiling (D-050). Only fetched
-  // for the "Applies to" picker; while it loads or after it fails the picker
-  // shows that state with a retry, and the flow itself is not blocked.
-  const [account, setAccount] = useState<Account | null>(null)
-  const [accountStatus, setAccountStatus] = useState<AccountStatus>('loading')
-  const [accountAttempt, setAccountAttempt] = useState(0)
-  const [selectedCardId, setSelectedCardId] = useState(cardId)
-
-  useEffect(() => {
-    if (!signedInAs) return
-    let cancelled = false
-    getAccounts(signedInAs.customer_id)
-      .then((accounts) => {
-        if (cancelled) return
-        setAccount(accounts.find((a) => a.cards.some((c) => c.card_id === cardId)) ?? null)
-        setAccountStatus('ready')
-      })
-      .catch(() => {
-        if (cancelled) return
-        setAccountStatus('error')
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [signedInAs, cardId, accountAttempt])
-
+  const [compileError, setCompileError] = useState('')
+  const [compileTimedOut, setCompileTimedOut] = useState(false)
+  const [compileFallback, setCompileFallback] = useState(false)
   async function readWithAi() {
+    setCompileError('')
+    setCompileTimedOut(false)
+    setCompileFallback(false)
     setStep('reading')
     try {
-      const result = await compilePolicy(selectedCardId, { instruction })
+      const result = await compilePolicy(cardId, { instruction })
+      if (result.compiler === 'fallback') {
+        setCompileError('AI reading unavailable — rule-based reading used.')
+        setCompileFallback(true)
+        setStep('timeout')
+        return
+      }
       setDraft(result)
       setUncertaintyPolicy(result.uncertainty_policy)
       setStep('check')
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Policy reading failed.'
+      setCompileError(message)
+      setCompileTimedOut(/tim(?:e|ed)\s*out|took too long/i.test(message))
       setStep('timeout')
     }
   }
@@ -98,7 +82,7 @@ export function NewPolicyFlow({
   async function submitForm() {
     setFormError(false)
     try {
-      const result = await compilePolicy(selectedCardId, { form })
+      const result = await compilePolicy(cardId, { form })
       setDraft(result)
       setUncertaintyPolicy(result.uncertainty_policy)
       setStep('check')
@@ -150,13 +134,11 @@ export function NewPolicyFlow({
   if (step === 'timeout') {
     return (
       <NewPolicyTimeout
-        instruction={instruction}
-        onCancel={onClose}
+        onBack={() => setStep('describe')}
+        errorMessage={compileError}
+        timedOut={compileTimedOut}
+        fallback={compileFallback}
         onRetry={readWithAi}
-        onUseForm={() => {
-          setAiOn(false)
-          setStep('describe')
-        }}
       />
     )
   }
@@ -164,7 +146,6 @@ export function NewPolicyFlow({
   if (step === 'check' && draft) {
     return (
       <NewPolicyCheck
-        cardId={selectedCardId}
         draft={draft}
         uncertaintyPolicy={uncertaintyPolicy}
         onChangeUncertaintyPolicy={setUncertaintyPolicy}
@@ -179,9 +160,6 @@ export function NewPolicyFlow({
 
   return (
     <NewPolicyDescribe
-      cardId={selectedCardId}
-      cards={account?.cards ?? []}
-      onSelectCard={setSelectedCardId}
       instruction={instruction}
       onChangeInstruction={setInstruction}
       form={form}
@@ -192,11 +170,6 @@ export function NewPolicyFlow({
       onSubmitForm={submitForm}
       onCancel={onClose}
       formError={formError}
-      accountStatus={accountStatus}
-      onRetryAccounts={() => {
-        setAccountStatus('loading')
-        setAccountAttempt((attempt) => attempt + 1)
-      }}
     />
   )
 }

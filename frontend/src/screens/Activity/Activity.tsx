@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import type { Decision } from '../../api/types'
 import { DecisionMark } from '../../components/DecisionMark'
-import { EarlierRuns } from '../../components/EarlierRuns'
 import { dateKey, formatShortDate } from '../../lib/datetime'
 import { countDecisions, splitByRun } from '../../lib/runs'
+import { formatChf } from '../../lib/money'
+import { ShieldIcon } from '../../components/icons/lucide'
 import { useDecisions } from '../../state/DecisionsContext'
 import { DecisionDetail } from '../DecisionDetail/DecisionDetail'
 
@@ -65,16 +66,30 @@ export function Activity({
 
   // Each card's newest run is the list; older runs fold under "Earlier runs"
   // (lib/runs.ts). Counts are of what the list shows.
-  const { current, earlier } = splitByRun(decisions)
+  const { current } = splitByRun(decisions)
+  const newestTimestamp = current.reduce(
+    (latest, decision) =>
+      decision.occurred_at > latest ? decision.occurred_at : latest,
+    current[0]?.occurred_at ?? '',
+  )
+  const windowStart = newestTimestamp
+    ? new Date(new Date(newestTimestamp).getTime() - 7 * 24 * 60 * 60 * 1000).toISOString()
+    : ''
+  const recent = current.filter((decision) => decision.occurred_at >= windowStart)
   const matches = (d: Decision) => filter === 'all' || d.decision === filter
   const byNewest = (a: Decision, b: Decision) => b.occurred_at.localeCompare(a.occurred_at)
 
-  const counts = countDecisions(current)
+  const counts = countDecisions(recent)
+  const safeguarded = recent.filter(
+    (d) => d.decision === 'stopped' || (d.decision === 'uncertain' && d.uncertain_outcome === 'expired'),
+  )
+  const processed = recent.filter(
+    (d) => d.decision === 'approved' || (d.decision === 'uncertain' && d.uncertain_outcome === 'approved'),
+  )
+  const safeguardedChf = safeguarded.reduce((sum, d) => sum + d.billing_amount_chf, 0)
+  const processedChf = processed.reduce((sum, d) => sum + d.billing_amount_chf, 0)
 
-  const filtered = current.filter(matches).sort(byNewest)
-  const earlierRuns = earlier
-    .map((run) => ({ ...run, decisions: run.decisions.filter(matches).sort(byNewest) }))
-    .filter((run) => run.decisions.length > 0)
+  const filtered = recent.filter(matches).sort(byNewest)
 
   const groups: { key: string; label: string; rows: Decision[] }[] = []
   for (const decision of filtered) {
@@ -115,8 +130,36 @@ export function Activity({
     <div className="flex flex-col gap-7 px-8 pt-9 pb-9 sm:pt-5">
       <div>
         <h1 className="font-display text-[30px] font-bold text-ink">Activity</h1>
-        <p className="text-[15px] text-ink-muted">Every purchase your agent has proposed.</p>
+        <p className="text-[15px] text-ink-muted">
+          Every purchase your agent proposed, and what your rules did about it.
+        </p>
       </div>
+
+      <p className="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
+        Last 7 days
+      </p>
+      <section className="grid grid-cols-2 rounded-card border border-hairline bg-surface p-4">
+        <div className="pr-3">
+          <p className="flex items-center gap-1.5 text-[12px] font-medium text-approved">
+            <ShieldIcon size={15} strokeWidth={2} /> Amount safeguarded
+          </p>
+          <p className="mt-2 font-display text-[32px] leading-none font-bold text-approved tabular-nums">
+            {formatChf(safeguardedChf)}
+          </p>
+          <p className="mt-1 text-[11px] text-ink-muted">
+            {safeguarded.length} stopped or expired unpaid
+          </p>
+        </div>
+        <div className="border-l border-hairline pl-3">
+          <p className="text-[12px] font-medium text-ink-muted">Amount processed</p>
+          <p className="mt-2 font-display text-[24px] leading-none font-bold text-ink tabular-nums">
+            {formatChf(processedChf)}
+          </p>
+          <p className="mt-1 text-[11px] text-ink-muted">
+            {processed.length} approved
+          </p>
+        </div>
+      </section>
 
       {/*
         Full-bleed scroller: the negative margin lets a chip run to the screen
@@ -126,7 +169,7 @@ export function Activity({
         chips and pushes them off-screen instead of overflowing inside itself.
       */}
       <div
-        className="scrollbar-none -mx-8 flex min-w-0 gap-2 overflow-x-auto px-8"
+        className="flex w-full flex-nowrap items-center justify-start gap-1"
         role="tablist"
         aria-label="Filter by decision"
       >
@@ -140,9 +183,8 @@ export function Activity({
               role="tab"
               aria-selected={isActive}
               onClick={() => setFilter(id)}
-              className={`flex min-h-11 shrink-0 items-center gap-1.5 rounded-pill border-2 px-4 text-[13px] transition-colors ${
-                isActive ? `${style.active} font-semibold` : `${style.rest} font-medium`
-              }`}
+              className={`inline-flex min-h-11 shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-xl border-2 px-1.5 text-[11px] transition-colors ${isActive ? `${style.active} font-semibold` : `${style.rest} font-medium`
+                }`}
             >
               {label}
               <span className="tabular-nums">{counts[id]}</span>
@@ -177,9 +219,7 @@ export function Activity({
       )}
 
       {status === 'ready' && groups.length === 0 && (
-        <p className="text-[15px] text-ink-muted">
-          {earlierRuns.length > 0 ? 'Nothing here in the latest run.' : 'Nothing here yet.'}
-        </p>
+        <p className="text-[15px] text-ink-muted">Nothing here in the last 7 days.</p>
       )}
 
       {status === 'ready' &&
@@ -193,6 +233,8 @@ export function Activity({
                 <DecisionMark
                   key={decision.authorization_id}
                   decision={decision}
+                  timestamp="time"
+                  compact
                   onClick={() => selectDecision(decision)}
                 />
               ))}
@@ -200,7 +242,6 @@ export function Activity({
           </div>
         ))}
 
-      {status === 'ready' && <EarlierRuns runs={earlierRuns} onSelect={selectDecision} />}
     </div>
   )
 }

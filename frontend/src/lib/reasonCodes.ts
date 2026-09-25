@@ -13,18 +13,18 @@
  */
 const REASON_LABEL: Record<string, string> = {
   // §4 "Existing"
-  within_limits: 'Within your limits',
+  within_limits: 'Within limits',
   rule_satisfied: 'Matched your rules',
-  per_order_limit_exceeded: 'Over your per-order limit',
+  per_order_limit_exceeded: 'Over per-order limit',
   period_limit_exceeded: 'Over your limit for this period',
-  merchant_category_mismatch: "Not the kind of shop you allowed",
+  merchant_category_mismatch: 'Item outside policy',
   unfamiliar_merchant: "A shop you haven't used before",
   lookalike_merchant: "A shop whose name imitates one you use",
-  item_mismatch: "Not the item you asked for",
-  unrequested_item: 'Something you did not ask for was in the basket',
+  item_mismatch: 'Item outside policy',
+  unrequested_item: 'Item outside policy',
   return_terms_unknown: "The shop didn't state its return terms",
   return_window_too_short: 'The return window is shorter than you allow',
-  duplicate_suspected: 'Looks like a repeat of an order you already placed',
+  duplicate_suspected: 'Possible duplicate',
   injection_suspected: "The shop's text tried to instruct your agent",
   new_device_burst: 'Several orders from a device new to this card',
   card_or_authority_inactive: 'This card or policy is not active',
@@ -64,6 +64,17 @@ const NEUTRAL_FALLBACK = 'Another check your rules ran'
 /** The customer-facing label for a reason code; never throws, never blank. */
 export function reasonLabel(code: string): string {
   return REASON_LABEL[code] ?? NEUTRAL_FALLBACK
+}
+
+/** The artifact gives a boundary-equal order its own reason chip. */
+export function decisionReasonLabel(code: string, evidenceDetails: string[]): string {
+  if (
+    code === 'within_limits' &&
+    evidenceDetails.some((detail) => /exactly (?:your|the) CHF .+ limit/i.test(detail))
+  ) {
+    return 'At per-order limit'
+  }
+  return reasonLabel(code)
 }
 
 /** True when the code is one this build knows how to word. */

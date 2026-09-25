@@ -115,6 +115,7 @@ function SignedInShell() {
               onBack={() => setCardDetailId(null)}
               onGoToApprovals={goToApprovals}
               onAddPolicy={setFlowCardId}
+              onOpenActivity={openActivity}
               onGoHome={goHome}
             />
           ) : (

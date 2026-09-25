@@ -64,39 +64,45 @@ function formToDraft(cardId: string, form: FormInput): PolicyDraft {
   const checks: RuleCheck[] = []
   if (form.per_order_limit_chf != null) {
     checks.push({
-      id: 'per_order',
+      id: 'per_order_limit',
       text: `Total at or below CHF ${form.per_order_limit_chf} per order`,
       source: 'exact',
       uncertainty: null,
+      kind: 'amount',
     })
   }
   if (form.period_limit_chf != null && form.period_days != null) {
     checks.push({
-      id: 'period',
+      id: 'period_limit',
       text: `Total at or below CHF ${form.period_limit_chf} across any ${form.period_days} days`,
       source: 'exact',
       uncertainty: null,
+      kind: 'period',
     })
   }
   if (form.categories.length > 0) {
     checks.push({
-      id: 'category',
-      text: `Only these purchase types: ${form.categories.join(', ')}`,
+      id: 'item_categories',
+      text: `Only these purchase types: ${[...new Set(form.categories)].sort().map((category) => category.replace(/_/g, ' ')).join(', ')}`,
       source: 'exact',
       uncertainty: null,
+      kind: 'item',
     })
   }
-  checks.push({
-    id: 'sellers',
-    text: form.sellers_used_before_only ? 'From sellers you have used before' : 'Any seller',
-    source: 'exact',
-    uncertainty: null,
-  })
+  if (form.sellers_used_before_only) {
+    checks.push({
+      id: 'known_shop',
+      text: 'Only from shops you have bought from before',
+      source: 'exact',
+      uncertainty: null,
+      kind: 'merchant',
+    })
+  }
 
   return {
     draft_id: `draft-form-${Date.now()}`,
     card_id: cardId,
-    instruction: '', // form path has no free text — the checks above are the whole policy
+    instruction: 'Built from the form',
     checks,
     uncertainty_policy: form.uncertainty_policy,
     open_questions: [],
@@ -142,7 +148,14 @@ export async function compilePolicy(
     body: JSON.stringify(input),
   })
   if (!response.ok) {
-    throw new Error(`Failed to compile policy (${response.status})`)
+    let message = `Policy reading failed (${response.status})`
+    try {
+      const body = (await response.json()) as { error?: { message?: string } }
+      if (body.error?.message) message = body.error.message
+    } catch {
+      // Keep the status-based message when the server response has no JSON body.
+    }
+    throw new Error(message)
   }
   return (await response.json()) as PolicyDraft
 }

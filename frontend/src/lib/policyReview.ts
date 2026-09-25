@@ -8,9 +8,16 @@ import type { PolicyDraft, RuleCheck } from '../api/types'
 export const NO_CHECKS_QUESTION =
   "I couldn't read a spending limit or item type - try 'groceries, max CHF 120 per order'"
 
+export const MISSING_ORDER_LIMIT_QUESTION =
+  'Add a per-order spending limit before confirming this policy.'
+
+function hasPerOrderLimit(checks: RuleCheck[]): boolean {
+  return checks.some((check) => check.kind === 'amount' || /\bper order\b/i.test(check.text))
+}
+
 /** C2 refuses a draft with no checks, so the screen never offers to confirm one. */
 export function canConfirmDraft(draft: Pick<PolicyDraft, 'checks'>): boolean {
-  return draft.checks.length > 0
+  return draft.checks.length > 0 && hasPerOrderLimit(draft.checks)
 }
 
 /**
@@ -18,8 +25,10 @@ export function canConfirmDraft(draft: Pick<PolicyDraft, 'checks'>): boolean {
  * otherwise, for a draft with no checks, the question that says what to write.
  */
 export function reviewQuestions(draft: Pick<PolicyDraft, 'checks' | 'open_questions'>): string[] {
-  if (draft.open_questions.length > 0) return draft.open_questions
-  return canConfirmDraft(draft) ? [] : [NO_CHECKS_QUESTION]
+  const questions = [...draft.open_questions]
+  if (!hasPerOrderLimit(draft.checks)) questions.push(MISSING_ORDER_LIMIT_QUESTION)
+  if (questions.length > 0) return questions
+  return draft.checks.length === 0 ? [NO_CHECKS_QUESTION] : []
 }
 
 /**

@@ -1,16 +1,13 @@
 import type { FormInput } from '../../api/types'
+import { CheckIcon, PlusIcon } from '../../components/icons/lucide'
 
 // A representative sample of DESIGN.md's category vocabulary
 // (data/merchants.csv / items.csv have the full list).
 const CATEGORIES = [
   'groceries',
-  'clothing',
-  'electronics',
-  'sporting_goods',
+  'household',
   'dining',
-  'subscriptions',
-  'health',
-  'books',
+  'food_delivery',
 ]
 
 const PERIOD_OPTIONS = [7, 14, 30] as const
@@ -41,7 +38,9 @@ export function NewPolicyForm({
           Spending limits
         </p>
         <label className="flex flex-col gap-1.5">
-          <span className="text-[13px] font-medium text-ink-soft">Per-order limit (CHF)</span>
+          <span className="text-[15px] font-medium text-ink">Each order up to</span>
+          <span className="flex items-center gap-3">
+          <span className="text-[14px] font-semibold text-ink-muted">CHF</span>
           <input
             type="number"
             min={0}
@@ -53,11 +52,15 @@ export function NewPolicyForm({
                 per_order_limit_chf: e.target.value === '' ? null : Number(e.target.value),
               })
             }
-            className="h-11.5 rounded-row border border-border-quiet bg-surface-sunken px-4 text-[15px] text-ink tabular-nums"
+            className="h-12 min-w-0 flex-1 rounded-row border border-border-quiet bg-surface px-4 text-[15px] text-ink tabular-nums"
           />
+          </span>
+          <span className="text-[13px] text-ink-muted">Delivery counts toward the limit.</span>
         </label>
         <label className="flex flex-col gap-1.5">
-          <span className="text-[13px] font-medium text-ink-soft">Period total (CHF)</span>
+          <span className="text-[15px] font-medium text-ink">Total across the period up to</span>
+          <span className="flex items-center gap-3">
+          <span className="text-[14px] font-semibold text-ink-muted">CHF</span>
           <input
             type="number"
             min={0}
@@ -67,20 +70,26 @@ export function NewPolicyForm({
               onChange({
                 ...form,
                 period_limit_chf: e.target.value === '' ? null : Number(e.target.value),
+                period_days: e.target.value === '' ? null : form.period_days,
               })
             }
-            className="h-11.5 rounded-row border border-border-quiet bg-surface-sunken px-4 text-[15px] text-ink tabular-nums"
+            className="h-12 min-w-0 flex-1 rounded-row border border-border-quiet bg-surface px-4 text-[15px] text-ink tabular-nums"
           />
+          </span>
         </label>
+        <p className="text-[13px] font-medium text-ink-soft">Period</p>
         <div className="flex gap-2">
           {PERIOD_OPTIONS.map((days) => (
             <button
               key={days}
               type="button"
+              disabled={form.period_limit_chf == null}
               aria-pressed={form.period_days === days}
               onClick={() => onChange({ ...form, period_days: days })}
               className={`h-11 flex-1 rounded-tile text-[13px] font-medium ${
-                form.period_days === days
+                form.period_limit_chf == null
+                  ? 'cursor-not-allowed border border-hairline bg-surface-sunken text-ink-muted opacity-60'
+                  : form.period_days === days
                   ? 'bg-ink text-on-ink'
                   : 'border border-hairline bg-surface-sunken text-ink-soft'
               }`}
@@ -89,6 +98,13 @@ export function NewPolicyForm({
             </button>
           ))}
         </div>
+        <p className="text-[13px] leading-[1.45] text-ink-muted">
+          {form.period_limit_chf == null
+            ? 'Enter a period total before choosing its rolling window.'
+            : form.period_days == null
+              ? 'Choose a period window to apply this total. Older orders drop off day by day; only approved purchases count.'
+              : 'A rolling window: older orders drop off day by day. Only approved purchases count.'}
+        </p>
       </section>
 
       <section className="flex flex-col gap-3">
@@ -104,16 +120,21 @@ export function NewPolicyForm({
                 type="button"
                 aria-pressed={active}
                 onClick={() => toggleCategory(category)}
-                className={`min-h-11 rounded-pill px-4 text-[13px] font-medium ${
-                  active ? 'bg-ink text-on-ink' : 'border border-hairline bg-surface-sunken text-ink-soft'
+                className={`flex min-h-11 items-center gap-1.5 rounded-pill px-4 text-[13px] font-medium ${
+                  active ? 'bg-ink text-on-ink' : 'border border-hairline bg-surface text-ink-soft'
                 }`}
               >
-                {category.replace('_', ' ')}
+                {active ? <CheckIcon size={14} strokeWidth={2.4} /> : <PlusIcon size={14} strokeWidth={2.4} />}
+                {category === 'food_delivery' ? 'Food delivery' : category[0].toUpperCase() + category.slice(1)}
               </button>
             )
           })}
         </div>
-        <p className="text-[13px] text-ink-muted">Leave all unselected to allow any category.</p>
+        <p className="text-[13px] text-ink-muted">
+          {form.categories.length > 0
+            ? 'Anything outside these is uncertain, so it asks you first.'
+            : 'Choose categories to add item rules. Other purchase limits still apply.'}
+        </p>
       </section>
 
       <section className="flex flex-col gap-3">
@@ -150,7 +171,7 @@ export function NewPolicyForm({
           {/* Never "approve" — PolicyInput never offers it (frontend/.claude/DESIGN.md). */}
           {[
             { value: 'ask' as const, label: 'Ask me' },
-            { value: 'decline' as const, label: 'Block' },
+            { value: 'decline' as const, label: 'Stop it' },
           ].map((option) => (
             <button
               key={option.value}
@@ -167,6 +188,9 @@ export function NewPolicyForm({
             </button>
           ))}
         </div>
+        <p className="text-[13px] leading-[1.45] text-ink-muted">
+          Ask me: you get a card in Approvals and about two minutes to answer. If time runs out, nothing is paid. There is no “approve when unsure” option.
+        </p>
       </section>
     </div>
   )
