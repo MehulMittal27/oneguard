@@ -49,7 +49,7 @@ The plain limit only sees the amount. OneGuard still approves 8 of 8 ordinary pu
 | 🔴 Prompt injection in shop text | 1 | 299.00 |
 
 Outcomes are from our own answer key (`docs/acceptance-oracle.yaml`), written from each
-customer's instruction; Viseca publishes none. "Plain spending limit" declines only amounts
+customer's instruction. "Plain spending limit" declines only amounts
 over the stated per-order limit. Amounts are `billing_amount_chf` in
 `data/purchase_attempts.csv`.
 
