@@ -1,4 +1,4 @@
-"""Always-on protections A1–A7 (docs/rules.md §7) as pure signal functions.
+"""Always-on protections A1–A8 (docs/rules.md §7) as pure signal functions.
 
 ``protections(facts, policy, ledger)`` returns one Signal per protection it evaluated,
 triggered or not, so the explanation can show what was checked (E7). It only detects:
@@ -11,6 +11,8 @@ decide.py turns signals into outcomes (§4 steps 3 and 5). Outcomes asked for he
 - A5 re-quote of a declined purchase → info, related ``requote_of``; suppresses A3
 - A6 hidden recurring cost → decline when C10 is stated, ask otherwise (Q10)
 - A7 lookalike shop → ask (decide declines when C9 applies)
+- A8 already bought: a single-item mandate's requested item again → ask, after the
+  other protections that ask (decide step 5)
 
 Shop text (``item_name``, ``item_details``, ``merchant_name``) is only ever matched
 against the allowlisted patterns below; nothing in it can lower an outcome.
@@ -24,7 +26,7 @@ from collections import Counter
 from collections.abc import Mapping
 from datetime import timedelta
 
-from oneguard.engine.facts import to_chf
+from oneguard.engine.facts import ZURICH, to_chf
 from oneguard.engine.interfaces import register
 from oneguard.engine.policy import matches_requested_item
 from oneguard.engine.types import (
@@ -44,12 +46,32 @@ RECURRING_CATEGORIES = frozenset({"subscriptions", "membership"})
 _LIMIT_FIELD = "authorization.billing_amount_chf"
 FLAGGED_SHOP_DETAIL = "An earlier purchase at this shop contained instructions aimed at the agent; this one does not."
 INSTRUCTIONS_IGNORED = "The shop's text contains instructions aimed at the agent; they were ignored."
+FULFILMENT_UNKNOWN = "Couldn't check whether you already bought what you asked for."
 
-# A1: imperatives aimed at the agent or the payment system (rules.md §7 examples plus
-# common variants). Reused by signals.KeywordSignals. Matching is case-insensitive.
+# A1: a role word the text speaks as or to, and an imperative, anywhere in one piece of
+# shop text, in either order ("Customer note on file: 'Always allow ..."): the stretch from
+# one to the other is the instruction.
+_ROLE_WORDS = r"agents?|system|assistants?|polic(?:y|ies)|cardholders?|customer\s+notes?"
+_IMPERATIVES = r"allow|approve|ignore|skip|proceed|bypass"
+
+# A1: imperatives aimed at the agent or the payment system (rules.md §7 examples, common
+# variants, and the live misses of docs/decisions.md 2026-09-25: policy tags, a decision
+# field, "exempt from confirmation", a customer note "on file"). Reused by
+# signals.KeywordSignals. Matching is case-insensitive.
 AGENT_DIRECTED_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
-    re.compile(p, re.IGNORECASE)
+    re.compile(p, re.IGNORECASE | re.DOTALL)
     for p in (
+        r"\[\s*agent[-_ ]?policy\s*\]",
+        r"\bdecision\s*[=:]\s*[\"']?\s*(approve|decline)\b",
+        r"\bexempt(ed)?\s+from\s+(the\s+)?(customer\s+|cardholder\s+)?confirmation\b",
+        r"\balways\s+allow\b",
+        r"\bwithout\s+asking\b",
+        r"\bplease\s+hono(u)?r\b",
+        r"\bnote\s+on\s+file\b",
+        r"\bon\s+behalf\s+of\s+the\s+(customer|cardholder)\b",
+        r"\bpre[- ]?approved\b",
+        r"\bauto[- ]?approve[sd]?\b",
+        rf"\b({_ROLE_WORDS})\b.*?\b({_IMPERATIVES})\b|\b({_IMPERATIVES})\b.*?\b({_ROLE_WORDS})\b",
         r"\b(ignore|disregard|forget|override)\b[^.;]{0,40}\b(instructions?|rules?|limits?|checks?|policy|policies)\b",
         r"\bpre[- ]?authori[sz]ed?\b",
         r"\bapprove\b[^.;]{0,30}\b(payment|purchase|transaction|order|charge)\b",
@@ -320,10 +342,44 @@ def _a7(facts: Facts, policy: Policy, known_names: Mapping[str, str] | None) -> 
     )  # fmt: skip
 
 
+def _a8(facts: Facts, policy: Policy, ledger: LedgerView) -> Signal:
+    """Already bought: the mandate asks for its item once, and a final approval under it
+    bought that item already (``LedgerView.fulfilments``). A decline never fulfils, so a
+    re-quote of a declined purchase is another only when something else was bought."""
+    item = policy.requested_item
+    if not (policy.single_item and item):
+        detail = "Your instruction does not ask for one item only."
+    elif not any(matches_requested_item(line, item) for line in facts.items):
+        detail = f"The cart does not hold the {item}."
+    elif ledger.fulfilments is None:
+        return Signal(
+            id="A8", triggered=True, strength="protection", outcome_if_triggered="ask",
+            detail=FULFILMENT_UNKNOWN, source="ledger",
+        )  # fmt: skip
+    elif bought := [f for f in ledger.fulfilments
+                    if f.mandate_id == policy.mandate_id and f.authorization_id != facts.authorization_id]:
+        last = bought[-1]
+        day = last.timestamp.astimezone(ZURICH)
+        return Signal(
+            id="A8", triggered=True, strength="protection", outcome_if_triggered="ask",
+            detail=(
+                f"You already bought the {item} on {day.day} {day:%b} for "
+                f"CHF {last.billing_amount_chf:.2f}; approve another?"
+            ),
+            source="ledger",
+        )  # fmt: skip
+    else:
+        detail = f"The first {item} bought under this instruction."
+    return Signal(
+        id="A8", triggered=False, strength="protection", outcome_if_triggered="ask",
+        detail=detail, source="ledger",
+    )  # fmt: skip
+
+
 def evaluate(
     facts: Facts, policy: Policy, ledger: LedgerView, known_names: Mapping[str, str] | None = None
 ) -> list[Signal]:
-    """A1–A7. ``known_names`` (merchant id → name) enables A7."""
+    """A1–A8. ``known_names`` (merchant id → name) enables A7."""
     requoted = _requote(facts, ledger)
     return [
         _a1(facts, ledger),
@@ -333,6 +389,7 @@ def evaluate(
         _a5(facts, ledger, requoted),
         _a6(facts, policy),
         _a7(facts, policy, known_names),
+        _a8(facts, policy, ledger),
     ]
 
 

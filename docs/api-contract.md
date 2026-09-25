@@ -162,11 +162,17 @@ MandateUsage { per_order_limit_chf: number|null,                      // NEW —
                period_spent_chf: number,       // final approvals only (incl. human-approved step-ups)
                period_window_start: string,    // simulated time, ISO 8601
                pending_chf: number,            // stepped-up, awaiting the customer — not spent
-               fulfilment?: { bought: number, requested: number } | null,   // single-item mandates
+               fulfilment?: { bought: number, requested: number } | null,   // single-item mandates (A8):
+                                                                            // final approvals of the requested
+                                                                            // item in the latest run, of 1
                confirmations?: [{ rule_text: string, merchant_name: string,  // NEW: "things you've confirmed":
                                   item_name: string }],                     // remembered yeses (ask once,
                                                                             // then remember); names untrusted
                as_of: string }                 // simulated time of the last decision
+                                               // Counted from the card's newest run, whichever mandate
+                                               // decided it (a D3 move re-ids the policy mid-run; a new
+                                               // policy shows the card's last run until its own); no
+                                               // period limit: the window is the whole run
 
 Decision {
   authorization_id, customer_id, card_id,
@@ -330,10 +336,11 @@ expire — that is a broken state, not a degraded one.
 | `items[].quantity` | every cart line's `quantity` |
 | `cart.quantity` | total quantity of the requested item across all cart lines (all lines when no item is requested); "two tickets" is 1 line × 2 or 2 lines × 1 |
 | `merchant.merchant_country` | trusted catalogue country, ISO 3166 alpha-2 (e.g. `"CH"`) |
+| `merchant.merchant_city` | trusted catalogue city as the event spells it (e.g. `"Munich"`); `unknown` if the event has none. Fail: "SummitStay is in Lucerne, not Munich", counterfactual "Would approve at a shop in Munich" |
 | `authorization.delivery_by` | the live `delivery_by` date, compared as a date; `unknown` if `null` |
 | `authorization.weekday` | purchase time in Europe/Zurich, `"mon"`..`"sun"` |
 | `authorization.local_hour` | purchase time in Europe/Zurich, 0–23; time-of-day rules |
-| `unverifiable` | a stated restriction no field can check (e.g. "from the official ticket seller"); always `unknown`, so C11 applies |
+| `unverifiable` | a stated restriction no field can check (e.g. "from the official ticket seller"); always `unknown`, so C11 applies. Evidence `Can't check "from the official ticket seller" from the data; you decide` (the rule's value, quoted once) |
 
 C2 (`scope: period`) is not evaluated with the other customer rules: it needs the run's spending memory. C2 and remembered answers are added by the pipeline via `policy.add_ledger_results`, from the LedgerView's spent and reserved amounts (M4, M5), its purchase count (`period_count`, `period_reserved_count`: the same window and card as the spend) and `confirmed_keys`, so decide and explain both see them. The same step makes a known-shop check (`merchant.known_shop`, `merchant.familiar_on_card`, or the `requires_known_shop` flag, C9) `unknown` when the LedgerView knows no shop at all (no purchase history yet), with reason code `no_purchase_history`. `confirmed_keys` holds `rule|merchant|item` (read for `unverifiable` rules) and `rule|merchant|*` (read for a known-shop check: one yes covers the shop).
 
@@ -513,10 +520,11 @@ fixtures to it.
 
 15. Approvals pending card: `uncertainty.note` shows only when it says something the message does not (`lib/decisionMessage.ts` `noteAddsToMessage`); the note is usually the uncertain evidence row's detail, which the card lists anyway.
 16. Operator strip (`?demo=1`, operator only): reads D5 GET on each poll and labels the toggle with what the server reports (on, off, live only, replay only), never an assumed "on"; D1's 404 reads as "no replay yet", not as the backend being unreachable.
-17. `Decision.policy_applied` - DecisionDetail's "Policy applied" shows these checks (the rules that decided), with a note when they are the platform mandate's rules or differ from the card's current policy; the card link (manage / revoke) stays. Absent: the card's current policy, as before.
-18. Operator console at `/ops` (desktop, operator only, never linked from the phone UI): a separate page of the same build (`src/ops/`), reading `/healthz`, D2, D3, D5, D7, D9, C6 (with `?operator=1`, §3.4) and C3's card, plus the passport endpoints when the backend has them (else "Passport —"). It follows D7: whatever run started last, from any source, is the one it shows. It never answers a step-up and never enrols, approves or removes a device; the customer does that on the phone.
-19. Phone UI deep links, both read once at load: `?customer=<customer_id>` signs in as that customer and skips the picker (session only, nothing stored; an unknown id shows the picker); `?embed=1` draws the phone UI without `DeviceFrame`'s bezel, for the console's embedded phone (an iframe of `/?customer=<id>&embed=1`, 390×844).
-20. Sign-in footer: "Powered by OneGuard" (small), the same line the console carries.
+17. `Decision.policy_applied` - DecisionDetail's "Policy applied" shows these checks (the rules that decided), with a note when they are the platform mandate's rules or differ from the card's current policy (another mandate id and other checks: a D3 move keeps the checks under a new id); the card link (manage / revoke) stays. Absent: the card's current policy, as before.
+18. Home follows each poll: `OverviewHero` counts the same decisions as Activity's filter chips (each card's newest run, `lib/runs.ts` `countDecisions`, no simulated-day window), and each "Active policies" row shows its `Mandate.usage` (re-read by C3 after every decisions poll): "CHF x of CHF y" with a bar and "This week · n purchases" for a period limit, "CHF x spent" and "This run · n purchases" without one, plus what is waiting.
+19. Operator console at `/ops` (desktop, operator only, never linked from the phone UI): a separate page of the same build (`src/ops/`), reading `/healthz`, D2, D3, D5, D7, D9, C6 (with `?operator=1`, §3.4) and C3's card, plus the passport endpoints when the backend has them (else "Passport —"). It follows D7: whatever run started last, from any source, is the one it shows. It never answers a step-up and never enrols, approves or removes a device; the customer does that on the phone.
+20. Phone UI deep links, both read once at load: `?customer=<customer_id>` signs in as that customer and skips the picker (session only, nothing stored; an unknown id shows the picker); `?embed=1` draws the phone UI without `DeviceFrame`'s bezel, for the console's embedded phone (an iframe of `/?customer=<id>&embed=1`, 390×844).
+21. Sign-in footer: "Powered by OneGuard" (small), the same line the console carries.
 
 No customer endpoint changes. No screen removals. Tighten UI stays dormant.
 

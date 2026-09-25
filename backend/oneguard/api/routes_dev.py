@@ -304,7 +304,7 @@ async def _move_policy(s: Services, mandate_id: str, card_id: str, customer_id: 
             s.bind_mandate(old)
             if old.viseca_mandate_id and old.viseca_mandate_id != moved.viseca_mandate_id:
                 await revoke_at_platform(s, old, strict=False)
-        s.bind_mandate(moved)
+        s.bind_mandate(moved, moved=True)
     return moved.mandate_id
 
 
@@ -529,11 +529,14 @@ async def ledger_snapshot(card_id: str, request: Request) -> JSONResponse:
         raise not_found(f"No card {card_id}.")
     entries = await s.db(queries.latest_run_decisions, s.db_engine, card_id=card_id)
     mandate = await s.db(queries.latest_mandate, s.db_engine, card_id)
-    rules = policies.load_rules(mandate.rules, mandate.checks)[0] if mandate else []
+    rules, flags = policies.load_rules(mandate.rules, mandate.checks) if mandate else ([], {})
     mandate_id = entries[-1].mandate_id if entries else (mandate.mandate_id if mandate else "")
-    if mandate is not None and mandate.mandate_id != mandate_id:
-        rules = []
-    usage = policies.usage(rules, entries, entries[-1].ts_sim if entries else s.now())
+    if mandate is not None and mandate_id not in await s.db(queries.policy_lineage, s.db_engine, mandate.mandate_id):
+        rules, flags = [], {}
+    marked = await s.db(queries.requested_item_marks, s.db_engine, [e.live_authorization_id for e in entries]) \
+        if flags.get("single_item") else {}
+    usage = policies.usage(rules, entries, entries[-1].ts_sim if entries else s.now(),
+                           policies.fulfilment(flags, entries, marked))
     frozen = False
     if entries:
         period = policies.period_limit(rules)

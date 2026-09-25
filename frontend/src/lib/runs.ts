@@ -64,6 +64,28 @@ export function splitByRun(decisions: Decision[]): RunSplit {
   return { current, earlier }
 }
 
+export interface DecisionCounts {
+  all: number
+  approved: number
+  stopped: number
+  uncertain: number
+}
+
+/**
+ * The counts Activity's filter chips and Home's `OverviewHero` both show, taken
+ * from the same list (`splitByRun(...).current`) so the two can never disagree.
+ * No time window: a run spanning more simulated days than any window would drop
+ * its early purchases from one screen and not the other.
+ */
+export function countDecisions(decisions: Decision[]): DecisionCounts {
+  return {
+    all: decisions.length,
+    approved: decisions.filter((d) => d.decision === 'approved').length,
+    stopped: decisions.filter((d) => d.decision === 'stopped').length,
+    uncertain: decisions.filter((d) => d.decision === 'uncertain').length,
+  }
+}
+
 /**
  * A run's start as "Thu 24 Sep · 14:03". Unlike `occurred_at`, which is
  * simulated time shown in UTC (`datetime.ts`), a run starts on the real clock,

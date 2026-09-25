@@ -311,9 +311,11 @@ def _mandate(row: Mandate, usage: api.MandateUsage | None) -> api.Mandate:
 
 
 async def _with_usage(s: Services, row: Mandate) -> api.Mandate:
-    rules, _ = policies.load_rules(row.rules, row.checks)
-    entries = await s.db(queries.latest_run_decisions, s.db_engine, card_id=row.card_id, mandate_id=row.mandate_id)
-    return _mandate(row, policies.usage(rules, entries, row.confirmed_at))
+    rules, flags = policies.load_rules(row.rules, row.checks)
+    entries = await s.db(queries.latest_run_decisions, s.db_engine, card_id=row.card_id)
+    marked = await s.db(queries.requested_item_marks, s.db_engine, [e.live_authorization_id for e in entries]) \
+        if flags.get("single_item") else {}
+    return _mandate(row, policies.usage(rules, entries, row.confirmed_at, policies.fulfilment(flags, entries, marked)))
 
 
 @router.post("/policy-drafts/{draft_id}/confirm", response_model=api.Mandate)

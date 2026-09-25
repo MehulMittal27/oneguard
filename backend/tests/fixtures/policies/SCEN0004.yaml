@@ -8,6 +8,7 @@ blocked_item_categories: null
 requires_known_shop: true
 nothing_extra: true
 shop_type: null
+single_item: true
 rules:
   - {id: C9, field: merchant.familiar_on_card, operator: "=", value: "true", currency: null, scope: null, period_days: null, text: "Only sellers you have bought from before", source: exact, kind: merchant}
   - {id: C1, field: authorization.billing_amount_chf, operator: "<=", value: 400, currency: CHF, scope: purchase, period_days: null, text: "Total at or below CHF 400 per order", source: exact, kind: amount}

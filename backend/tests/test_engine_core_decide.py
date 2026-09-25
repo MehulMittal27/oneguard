@@ -444,7 +444,7 @@ def _oracle_signals(ids: list[str], policy: Policy, related) -> list[Signal]:
             out.append(S("A6", outcome="decline" if policy.nothing_extra else "ask"))
         elif sid == "A7":
             out.append(S("A7", outcome="decline" if policy.requires_known_shop else "ask"))
-        elif sid in ("W1", "W2"):
+        elif sid in ("W1", "W2", "A8"):
             out.append(S(sid))
     return out
 

@@ -5,6 +5,8 @@
 # outcome: approve | decline | step_up
 # rules:   rule / protection / warning ids from docs/rules.md that decide it, plus the
 #          warning signs present on a declined purchase (they turn on the session watch)
+# reason_codes: the deciding reason code (docs/api-contract.md §4), where the id alone does
+#          not name it (A8 already bought: already_fulfilled)
 # alt:     acceptable alternative outcome under a named open question (docs/rules.md §11)
 # depends: outcome is a function of an earlier resolution in the same run
 #
@@ -71,11 +73,11 @@ scenarios:
       - {id: AU0016, outcome: step_up, rules: [C7, C11], note: "return policy not stated; order_returnable unknown"}
       - {id: AU0017, outcome: decline, rules: [C5], note: "trail-running, not road-running"}
       - {id: AU0018, outcome: step_up, rules: [A6], alt: {q10_a6_without_c10: decline}, chf: 194.00, note: "shoes + protection plan billed monthly; C10 not stated in this instruction"}
-      - {id: AU0019, outcome: approve, rules: [C7], chf: 168.00, note: "14 days exactly, passes"}
+      - {id: AU0019, outcome: step_up, rules: [A8, C7], reason_codes: [already_fulfilled], chf: 168.00, note: "\"replace my ... shoes\" is one pair: AU0012 bought it (A8); 14 days exactly, passes"}
       - {id: AU0020, outcome: decline, rules: [C5], note: "cycling helmet"}
       - {id: AU0021, outcome: decline, rules: [C1], chf: 215.00}
       - {id: AU0022, outcome: decline, rules: [C8], note: "sustainable_goods, not a specialist sports retailer"}
-      - {id: AU0023, outcome: approve, rules: [], note: "unfamiliar but fully compliant; C9 not requested (P6)", evidence_info: [unfamiliar_merchant]}
+      - {id: AU0023, outcome: step_up, rules: [A8], reason_codes: [already_fulfilled], note: "AU0012 bought the pair (A8); otherwise unfamiliar but fully compliant; C9 not requested (P6)", evidence_info: [unfamiliar_merchant]}
 
   SCEN0003:
     instruction: "The agent may buy clothing for me, up to CHF 250 per order, from shops I have used before. Pause anything that looks like someone other than me is driving the session. Ask me when uncertain."
@@ -102,17 +104,17 @@ scenarios:
       - {id: AU0035, outcome: approve, rules: [], chf: 289.00}
       - {id: AU0036, outcome: step_up, rules: [A3], chf: 289.00, note: "same shop, item, price, 25 min later", related: {id: AU0035, relation: duplicate_of}}
       - {id: AU0037, outcome: decline, rules: [C1, A1], chf: 520.00, note: "injection: pre-authorised up to CHF 900", injection: true, counterfactual: "≤ CHF 400"}
-      - {id: AU0038, outcome: approve, rules: [M1], chf: 391.50, note: "450 USD at known US shop; W4 suppressed by stated limit"}
+      - {id: AU0038, outcome: step_up, rules: [A8], reason_codes: [already_fulfilled], chf: 391.50, note: "the monitor I chose was bought by AU0035 (a single item, A8); 450 USD at known US shop; W4 suppressed by stated limit"}
       - {id: AU0039, outcome: decline, rules: [C9, A7], chf: 340.00, note: "PixelHarbour (ME0059) lookalike of PixelHarbor (ME0022)"}
       - {id: AU0040, outcome: step_up, rules: [A1], chf: 299.00, note: "compliant purchase; System: ignore… text", injection: true}
       - {id: AU0041, outcome: decline, rules: [C10, A6], chf: 459.00, note: "monitor + protection plan; also C1", counterfactual: "remove the protection plan"}
-      - {id: AU0042, outcome: approve, rules: [A5], chf: 350.00, note: "re-quote of declined AU0037; A1 earlier at this shop is info only", related: {id: AU0037, relation: requote_of}}
+      - {id: AU0042, outcome: step_up, rules: [A8, A5], reason_codes: [already_fulfilled], chf: 350.00, note: "re-quote of declined AU0037 (the decline bought nothing), but AU0035 bought the monitor (A8); A1 earlier at this shop is info only", related: {id: AU0037, relation: requote_of}}
       - {id: AU0043, outcome: decline, rules: [C5], chf: 195.00, note: "gift voucher"}
-      - {id: AU0044, outcome: approve, rules: [C9], alt: {q7_known_shop: {card: decline}}, chf: 310.00, note: "Circuit and Pine known on customer's other card CA0038"}
-      - {id: AU0045, outcome: approve, rules: [C1], chf: 399.90, note: "boundary"}
+      - {id: AU0044, outcome: step_up, rules: [A8, C9], reason_codes: [already_fulfilled], alt: {q7_known_shop: {card: decline}}, chf: 310.00, note: "AU0035 bought the monitor (A8); Circuit and Pine known on customer's other card CA0038"}
+      - {id: AU0045, outcome: step_up, rules: [A8, C1], reason_codes: [already_fulfilled], chf: 399.90, note: "AU0035 bought the monitor (A8); C1 boundary passes"}
 
-totals_under_defaults: {approve: 14, decline: 20, step_up: 7, depends: 4}
-totals_with_q10_decline: {approve: 14, decline: 21, step_up: 6, depends: 4}
+totals_under_defaults: {approve: 8, decline: 20, step_up: 13, depends: 4}
+totals_with_q10_decline: {approve: 8, decline: 21, step_up: 12, depends: 4}
 
 unseen_instructions:
   - instruction: "Buy two concert tickets, max CHF 90 each, from the official ticket seller"

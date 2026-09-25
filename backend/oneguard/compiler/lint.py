@@ -2,7 +2,8 @@
 
 - T1 every amount the customer wrote is used by a rule or raised as a question;
 - T2 no invented limits: every stated number in a rule appears in the instruction,
-  unless the compiler resolved it (``ParsedDraft.resolved``: history, a date);
+  unless the compiler resolved it (``ParsedDraft.resolved``: history, a date, nights x a
+  per-night price);
 - T3 boundary words kept: "under" is ``<``, "at or below / or less / max / up to" is ``<=``;
 - T4 a foreign-currency limit is shown converted to CHF;
 - T5 a per-order amount cap is present, or an open question asks for one;

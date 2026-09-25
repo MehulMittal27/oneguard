@@ -3,7 +3,7 @@ import type { Decision } from '../../api/types'
 import { DecisionMark } from '../../components/DecisionMark'
 import { EarlierRuns } from '../../components/EarlierRuns'
 import { dateKey, formatShortDate } from '../../lib/datetime'
-import { splitByRun } from '../../lib/runs'
+import { countDecisions, splitByRun } from '../../lib/runs'
 import { useDecisions } from '../../state/DecisionsContext'
 import { DecisionDetail } from '../DecisionDetail/DecisionDetail'
 
@@ -69,12 +69,7 @@ export function Activity({
   const matches = (d: Decision) => filter === 'all' || d.decision === filter
   const byNewest = (a: Decision, b: Decision) => b.occurred_at.localeCompare(a.occurred_at)
 
-  const counts = {
-    all: current.length,
-    approved: current.filter((d) => d.decision === 'approved').length,
-    stopped: current.filter((d) => d.decision === 'stopped').length,
-    uncertain: current.filter((d) => d.decision === 'uncertain').length,
-  }
+  const counts = countDecisions(current)
 
   const filtered = current.filter(matches).sort(byNewest)
   const earlierRuns = earlier

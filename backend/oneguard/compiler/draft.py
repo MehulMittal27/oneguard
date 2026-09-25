@@ -11,6 +11,7 @@ Vocabulary: docs/api-contract.md §3.3. Money: rules.md M1, M2, T4.
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any, Literal
@@ -44,6 +45,17 @@ COUNTRY_NAMES: dict[str, str] = {
     "CH": "Switzerland", "DE": "Germany", "FR": "France", "IT": "Italy", "AT": "Austria",
     "NL": "the Netherlands", "GB": "the United Kingdom", "US": "the United States",
 }
+# The catalogue's shop cities (merchants.csv), as events spell them, keyed by how a
+# customer may write them. A city outside this list stays a restriction no data can check.
+CITY_NAMES: dict[str, str] = {
+    **{c.lower(): c for c in (
+        "Amsterdam", "Annecy", "Basel", "Berlin", "Bern", "Biel", "Boston", "Chur", "Como", "Fribourg",
+        "Freiburg", "Geneva", "Innsbruck", "Interlaken", "Lausanne", "London", "Lucerne", "Lugano",
+        "Lyon", "Milan", "Munich", "Neuchatel", "Portland", "St. Gallen", "Winterthur", "Zurich")},
+    "zürich": "Zurich", "genève": "Geneva", "geneve": "Geneva", "luzern": "Lucerne",
+    "münchen": "Munich", "muenchen": "Munich", "neuchâtel": "Neuchatel", "milano": "Milan",
+    "st gallen": "St. Gallen", "sankt gallen": "St. Gallen", "basle": "Basel",
+}
 SIZE_LETTERS: tuple[str, ...] = ("XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL")
 
 ValueType = Literal["number", "text", "list", "date", "none"]
@@ -66,6 +78,7 @@ FIELDS: dict[str, tuple[ValueType, tuple[str, ...], RuleKind]] = {
     "merchant.merchant_category": ("text", ("=", "!="), "merchant"),
     "merchant.familiar_on_card": ("text", ("=",), "merchant"),
     "merchant.merchant_country": ("text", ("=", "!="), "merchant"),
+    "merchant.merchant_city": ("text", ("=", "!="), "merchant"),
     "authorization.delivery_by": ("date", ("<=",), "terms"),
     "authorization.weekday": ("list", ("in", "not_in"), "other"),
     "authorization.local_hour": ("number", ("<", "<=", ">=", ">"), "other"),
@@ -79,6 +92,8 @@ EVENING_HOURS: tuple[int, int] = (17, 23)
 # The engine evaluates C9 through this field (engine/policy.py); api-contract §3.3
 # names merchant.known_shop as the same check.
 KNOWN_SHOP_FIELD = "merchant.familiar_on_card"
+COUNTRY_FIELD = "merchant.merchant_country"
+CITY_FIELD = "merchant.merchant_city"
 
 
 class _Model(BaseModel):
@@ -118,6 +133,7 @@ class ParsedDraft(_Model):
     requires_known_shop: bool = False
     nothing_extra: bool = False
     shop_type: str | None = None
+    single_item: bool = False
     resolved: dict[str, str] = Field(default_factory=dict)  # rule id -> where its value came from
     asked_about: dict[str, str] = Field(default_factory=dict)  # rule id -> the words that allow on_fail ask
 
@@ -173,6 +189,10 @@ def next_weekday(after: date, weekday: str) -> date:
 
 
 # --- Wording -------------------------------------------------------------------------
+FROM_PERIOD_LIMIT = "the period limit"
+"""``RuleSpec.value_from`` of a per-order cap derived from a period limit (``parser.period_cap``)."""
+
+
 def _limit_text(spec: RuleSpec, subject: str, tail: str) -> str:
     chf = to_chf(spec.value, spec.currency)
     bound = {"<=": "at or below", "<": "under", "=": "exactly"}[spec.operator]
@@ -201,6 +221,8 @@ def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
     if f == "authorization.billing_amount_chf" and v == LAST_PRICE_AT_SHOP:
         bound = {"=": "the same as", "<=": "at or below", "<": "under"}[op]
         text = f"Total {bound} your last payment at the same shop"
+    elif f == "authorization.billing_amount_chf" and spec.value_from == FROM_PERIOD_LIMIT:
+        text = _limit_text(spec, "Each payment", "")
     elif f == "authorization.billing_amount_chf" and spec.scope == "period":
         text = _limit_text(spec, "Total", f" across any {spec.period_days or 7} days")
     elif f == "authorization.billing_amount_chf":
@@ -240,6 +262,8 @@ def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
     elif f == "merchant.merchant_country":
         where = COUNTRY_NAMES.get(str(v), str(v))
         text = f"Only shops in {where} ({v})" if op == "=" else f"No shops in {where} ({v})"
+    elif f == "merchant.merchant_city":
+        text = f"Only shops in {v}" if op == "=" else f"No shops in {v}"
     elif f == "authorization.delivery_by":
         d = date.fromisoformat(str(v))
         text = f"Delivered on or before {d.strftime('%a')} {d.day} {d.strftime('%b %Y')}"
@@ -292,6 +316,7 @@ def _base_id(spec: RuleSpec) -> str:
     return {
         "cart.quantity": "C12-qty", "items[].quantity": "C12-qty", COUNT_FIELD: "C12-count",
         "items[].unit_price_chf": "C12-price", "merchant.merchant_country": "C12-country",
+        "merchant.merchant_city": "C12-city",
         "authorization.delivery_by": "C12-delivery", "authorization.weekday": "C12-day",
         "authorization.local_hour": "C12-hour", "cart.recurring": "C12-recurring",
     }[f]
@@ -359,6 +384,35 @@ def to_rule(spec: RuleSpec, taken: set[str], requested_item: str | None = None) 
     )
 
 
+_COUNT = re.compile(r"^(?:two|three|four|five|six|seven|eight|nine|ten|\d+|some|several|pairs|sets)$",
+                    re.IGNORECASE)
+
+
+def names_one_item(instruction: str, requested_item: str | None) -> bool:
+    """The instruction asks for its requested item once: "the X I chose" (picked,
+    selected), "one X", "a X", "an X", "new X" ("I need new hiking boots"), "replace my X",
+    "get me X", with up to four words before the item's last word ("the 27-inch monitor I
+    chose", "a pair of trail shoes", "replace my worn road-running shoes"). Both compiler
+    paths set ``single_item`` from here, on the customer's words; a count of two or more
+    ("two new shirts", "get me three shirts") or a plural with none of these cues ("buy the
+    running shoes", "renew my membership") is not one item. Its first final approval
+    fulfils the mandate (A8)."""
+    words = re.findall(r"[\w'-]+", (requested_item or "").lower())
+    if not words:
+        return False
+    text = " ".join(instruction.split())
+    head = re.escape(words[-1])
+    one = re.compile(rf"(?=\b(?:a|an|one|new|replace\s+(?:my|our|the)|get\s+(?:me|us))\s+"
+                     rf"(?P<gap>(?:[\w'-]+\s+){{0,4}}?){head}\b)", re.IGNORECASE)  # overlapping
+    picked = re.compile(rf"\bthe\s+(?:[\w'-]+\s+){{0,4}}?{head}\s+(?:I|we)\s+(?:have\s+)?(?:chose|chosen|picked|selected)\b",
+                        re.IGNORECASE)
+    for m in one.finditer(text):
+        before = re.findall(r"[\w'-]+", text[: m.start()])[-1:]
+        if not any(_COUNT.match(w) for w in m.group("gap").split() + before):
+            return True
+    return bool(picked.search(text))
+
+
 def finalize(
     instruction: str,
     specs: list[RuleSpec],
@@ -368,7 +422,8 @@ def finalize(
     requested_item: str | None = None,
     nothing_extra: bool = False,
 ) -> ParsedDraft:
-    """Give specs ids and texts, drop exact duplicates, restate the convenience fields."""
+    """Give specs ids and texts, drop exact duplicates, restate the convenience fields
+    (``single_item`` from the customer's words, ``names_one_item``)."""
     seen: set[tuple] = set()
     unique: list[RuleSpec] = []
     for spec in specs:
@@ -403,6 +458,7 @@ def finalize(
         requires_known_shop=any(r.field == KNOWN_SHOP_FIELD and r.on_fail == "decline" for r in rules),
         nothing_extra=nothing_extra,
         shop_type=shop[0] if shop else None,
+        single_item=names_one_item(instruction, requested_item),
         resolved=resolved,
         asked_about=asked_about,
     )
