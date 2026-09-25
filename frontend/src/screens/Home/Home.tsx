@@ -6,6 +6,7 @@ import { CountdownBar } from '../../components/CountdownBar'
 import { DecisionMark } from '../../components/DecisionMark'
 import { EarlierRuns } from '../../components/EarlierRuns'
 import { OverviewHero } from '../../components/OverviewHero'
+import { PendingDevicesCard } from '../../components/PendingDevicesCard'
 import { AccountsIcon, BackChevronIcon, BellIcon, PlusIcon } from '../../components/icons/lucide'
 import { formatShortDate } from '../../lib/datetime'
 import { formatChf } from '../../lib/money'
@@ -221,6 +222,11 @@ export function Home({
             )}
           </button>
         )}
+
+        <PendingDevicesCard
+          cardIds={accounts.flatMap((account) => account.cards.map((card) => card.card_id))}
+          onOpenCard={onViewPolicy}
+        />
 
         {status === 'ready' && latest.length > 0 && (
           <section className="flex flex-col gap-3">

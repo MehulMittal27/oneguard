@@ -3,6 +3,7 @@ import { getAccounts } from '../../api/accounts'
 import { compilePolicy, confirmPolicy } from '../../api/policy'
 import type { Account, FormInput, Mandate, PolicyDraft } from '../../api/types'
 import { useCustomer } from '../../state/CustomerContext'
+import { DeviceGateCancelled, useDevice } from '../../state/DeviceContext'
 import { NewPolicyCheck } from './NewPolicyCheck'
 import { NewPolicyDescribe } from './NewPolicyDescribe'
 import { NewPolicyReading } from './NewPolicyReading'
@@ -35,6 +36,7 @@ export function NewPolicyFlow({
   onConfirmed: (mandate: Mandate) => void
 }) {
   const { signedInAs } = useCustomer()
+  const { withDevice } = useDevice()
   const [step, setStep] = useState<Step>('describe')
   const [aiOn, setAiOn] = useState(true)
   const [instruction, setInstruction] = useState('')
@@ -104,10 +106,14 @@ export function NewPolicyFlow({
     setConfirming(true)
     setConfirmError(false)
     try {
-      const mandate = await confirmPolicy({ ...draft, uncertainty_policy: uncertaintyPolicy })
+      // C2 is signed by this device on the draft's card: enrolled silently when
+      // it is the card's first, else approved first by one that controls it.
+      const mandate = await withDevice(draft.card_id, () =>
+        confirmPolicy({ ...draft, uncertainty_policy: uncertaintyPolicy }),
+      )
       onConfirmed(mandate)
-    } catch {
-      setConfirmError(true)
+    } catch (caught) {
+      if (!(caught instanceof DeviceGateCancelled)) setConfirmError(true)
     } finally {
       setConfirming(false)
     }

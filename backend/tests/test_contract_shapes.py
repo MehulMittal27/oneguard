@@ -431,6 +431,7 @@ def test_policy_draft_request_needs_exactly_one_input(body: dict) -> None:
         ("decisions.json", "decisions", api.Decision),
         ("customers.json", "customers", api.Customer),
         ("accounts.json", "accounts", api.Account),
+        ("passport.json", "devices", api.Device),
     ],
 )
 def test_frontend_mock_fixtures_validate(fixture: str, key: str, model: type[BaseModel]) -> None:
@@ -711,3 +712,26 @@ def test_the_lint_stub_counts_only_an_upper_bound_as_a_per_order_cap() -> None:
         assert stubs.STUBS["lint_accepted"]([amount(floor)], ["C1"])[0] == ["per_order_limit"]
     for cap in ("<", "<=", "="):
         assert stubs.STUBS["lint_accepted"]([amount(cap)], ["C1"]) == ([], [])
+
+
+def test_the_mock_passport_and_receipt_are_real_signed_documents() -> None:
+    """passport.json holds what a local OneGuard signed, with its public key: the shapes validate
+    and each signature checks out over the canonical bytes (docs/passport.md §2.1, §2.2)."""
+    import base64
+
+    from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
+    from oneguard.passport.canonical import canonical
+
+    fixture = json.loads((FRONTEND_FIXTURES / "passport.json").read_text(encoding="utf-8"))
+    (key,) = [api.PublicKey.model_validate(k) for k in fixture["keys"]]
+    passport = api.Passport.model_validate(fixture["passport"])
+    receipt = api.Receipt.model_validate(fixture["receipts"]["AU0037"])
+    assert passport.document["type"] == "oneguard.passport/1"
+    assert receipt.document["would_approve_if"] == [
+        {"field": "authorization.billing_amount_chf", "operator": "<=", "value": 400}
+    ]
+    public = load_pem_public_key(key.public_key_pem.encode())
+    for signed in (passport, receipt):
+        assert signed.key_id == key.key_id
+        public.verify(base64.b64decode(signed.signature), canonical(signed.document))  # raises if changed

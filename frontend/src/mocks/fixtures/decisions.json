@@ -354,7 +354,15 @@
       "order_returnable": "true",
       "delivery_by": null,
       "counterfactual": "Would approve at CHF 400 or less.",
-      "explanation_source": "template"
+      "explanation_source": "template",
+      "would_approve_if": [
+        {
+          "field": "authorization.billing_amount_chf",
+          "operator": "<=",
+          "value": 400
+        }
+      ],
+      "receipt_id": "rc_34458465286f766409c0e75c"
     },
     {
       "mock": true,

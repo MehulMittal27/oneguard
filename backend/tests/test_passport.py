@@ -237,3 +237,17 @@ def test_asks_and_approvals_have_no_would_approve_if(scen0004: dict[str, Decisio
             assert decided.would_approve_if is None, decided.live_authorization_id
         else:
             assert decided.would_approve_if, decided.live_authorization_id
+
+
+def test_canonical_matches_the_browser_byte_for_byte() -> None:
+    """The same expectations as frontend/tests/passport.test.ts: a device signs these bytes in
+    the browser and the backend checks them here."""
+    assert canonical({"b": 1, "10": 2, "2": 3}) == b'{"10":2,"2":3,"b":1}'
+    signed = {
+        "method": "POST", "path": "/api/cards/CA0039/policy/tighten", "ts": 1790000000, "nonce": "abc",
+        "body": {"add_checks": [{"id": "C2", "text": "Total at or below CHF 300 across any 7 days"}]},
+    }  # fmt: skip
+    assert canonical(signed) == (
+        b'{"body":{"add_checks":[{"id":"C2","text":"Total at or below CHF 300 across any 7 days"}]},'
+        b'"method":"POST","nonce":"abc","path":"/api/cards/CA0039/policy/tighten","ts":1790000000}'
+    )
