@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import secrets
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -32,14 +33,21 @@ from oneguard.api import models as api
 from oneguard.api import policies, queries
 from oneguard.api.errors import ApiError, not_found
 from oneguard.api.offline import live_ids
-from oneguard.api.routes_customer import reply, revoke_at_platform, services
+from oneguard.api.routes_customer import (
+    reissue_passport,
+    reply,
+    revoke_at_platform,
+    services,
+)
 from oneguard.api.services import ScenarioBinding, Services
 from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import LedgerEntry
 from oneguard.engine.types import CompiledDraft, Policy
+from oneguard.passport import devices as device_store
 from oneguard.replay.events import Pack, build_events
 from oneguard.store.db import session
 from oneguard.store.schema import Run, ScenarioCatalogue
+from oneguard.store.seed import ENV_VAR
 from oneguard.viseca.client import RUNS_DISABLED_MESSAGE, VisecaError, runs_allowed
 from oneguard.viseca.worker import PLATFORM_PENDING, first_value, run_finished
 
@@ -284,6 +292,7 @@ async def _refuse_while_running(s: Services, scenario_id: str) -> None:
 async def _move_policy(s: Services, mandate_id: str, card_id: str, customer_id: str) -> str:
     """The run's card differs from the policy's: move the policy there (D3)."""
     async with s.policy_lock:
+        source_card = [m.card_id for m in (await s.db(queries.mandates_by_id, s.db_engine, [mandate_id])).values()]
         moved, replaced = await s.db(
             queries.move_mandate, s.db_engine, mandate_id, card_id, customer_id, s.now(), f"md_{secrets.token_hex(8)}"
         )
@@ -293,6 +302,8 @@ async def _move_policy(s: Services, mandate_id: str, card_id: str, customer_id: 
             if old.viseca_mandate_id and old.viseca_mandate_id != moved.viseca_mandate_id:
                 await revoke_at_platform(s, old, strict=False)
         s.bind_mandate(moved, moved=True)
+        for card in dict.fromkeys([card_id, *source_card]):
+            await reissue_passport(s, card)
     return moved.mandate_id
 
 
@@ -512,3 +523,17 @@ async def ledger_snapshot(card_id: str, request: Request) -> JSONResponse:
             frozen=frozen,
         )
     )
+
+
+@router.post("/devices/reset/{card_id}", response_model=api.DeviceReset)
+async def reset_devices(card_id: str, request: Request) -> JSONResponse:
+    """Remove every device on the card, so the next one enrols as its first: issuer-side
+    recovery in a real rollout (docs/passport.md). Refused (403) when ``ONEGUARD_ENV=prod``."""
+    if os.environ.get(ENV_VAR, "").strip().lower() == "prod":
+        raise ApiError(403, "forbidden", "Resetting a card's devices is operator recovery and is off in production.")
+    s = services(request)
+    if await s.db(queries.card_customer, s.db_engine, card_id) is None:
+        raise not_found(f"No card {card_id}.")
+    removed = await s.db(device_store.reset, s.db_engine, card_id, s.now())
+    await reissue_passport(s, card_id)
+    return reply(api.DeviceReset(card_id=card_id, removed=removed))

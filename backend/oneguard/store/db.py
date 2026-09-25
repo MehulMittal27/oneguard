@@ -21,10 +21,11 @@ from contextlib import contextmanager
 from functools import cache
 from typing import Any
 
-from sqlalchemy import URL, Engine, create_engine, event
+from sqlalchemy import URL, Engine, create_engine, event, inspect
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
+from sqlalchemy.schema import Column
 
 DATABASE_URL_ENV = "ONEGUARD_DATABASE_URL"
 DEFAULT_DATABASE_URL = "sqlite:///./oneguard.sqlite"
@@ -118,11 +119,43 @@ def session(engine: Engine | None = None) -> Iterator[Session]:
             raise
 
 
-def init_db(engine: Engine | None = None) -> None:
-    """Create every table that does not exist yet (no migrations, docs/database.md §4)."""
+def init_db(engine: Engine | None = None) -> list[str]:
+    """Create every table that does not exist yet, then add the nullable columns a model
+    gained since its table was created (docs/database.md §4). Never drops, never rewrites.
+    Returns the ``table.column`` names it added."""
     from oneguard.store.schema import Base
 
-    Base.metadata.create_all(engine or get_engine())
+    engine = engine or get_engine()
+    Base.metadata.create_all(engine)
+    return add_missing_columns(engine)
+
+
+def add_missing_columns(engine: Engine) -> list[str]:
+    """``ALTER TABLE … ADD COLUMN`` for every model column its existing table lacks.
+
+    Only nullable columns without a server default are added (existing rows read NULL),
+    so the change is additive and safe on a live store; a missing NOT NULL column is an
+    error, never a guess. Idempotent: a second run finds nothing to add.
+    """
+    from oneguard.store.schema import Base
+
+    added: list[str] = []
+    existing = inspect(engine)
+    for table in Base.metadata.sorted_tables:
+        if not existing.has_table(table.name):
+            continue
+        have = {c["name"] for c in existing.get_columns(table.name)}
+        missing: list[Column[Any]] = [c for c in table.columns if c.name not in have]
+        for column in missing:
+            if not column.nullable or column.server_default is not None:
+                raise RuntimeError(f"{table.name}.{column.name} is missing and not nullable; this needs a reset")
+            kind = column.type.compile(dialect=engine.dialect)
+            preparer = engine.dialect.identifier_preparer
+            ddl = f"ALTER TABLE {preparer.format_table(table)} ADD COLUMN {preparer.quote(column.name)} {kind}"
+            with engine.begin() as conn:
+                conn.exec_driver_sql(ddl)
+            added.append(f"{table.name}.{column.name}")
+    return added
 
 
 def drop_db(engine: Engine | None = None) -> None:

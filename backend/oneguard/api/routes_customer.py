@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from oneguard.api import models as api
 from oneguard.api import policies, queries
+from oneguard.api.auth import require_device
 from oneguard.api.errors import ApiError, not_found
 from oneguard.api.services import Services
 from oneguard.engine.ledger_base import LedgerEntry
@@ -296,7 +297,7 @@ async def _compile(s: Services, instruction: str, card_id: str, customer_id: str
 # C2 -------------------------------------------------------------------------------------
 
 
-def _mandate(row: Mandate, usage: api.MandateUsage | None) -> api.Mandate:
+def _mandate(row: Mandate, usage: api.MandateUsage | None, passport: api.PassportSummary | None = None) -> api.Mandate:
     return api.Mandate(
         mandate_id=row.mandate_id,
         card_id=row.card_id,
@@ -307,6 +308,22 @@ def _mandate(row: Mandate, usage: api.MandateUsage | None) -> api.Mandate:
         status="active" if row.status == "active" else "revoked",
         confirmed_at=row.confirmed_at,
         usage=usage,
+        passport=passport,
+    )
+
+
+async def _passport_summary(s: Services, row: Mandate) -> api.PassportSummary | None:
+    """The mandate's passport, latest version (none before the book has issued one)."""
+    if s.book is None:
+        return None
+    latest = (await s.db(s.book.summaries, [row.mandate_id])).get(row.mandate_id)
+    if latest is None:
+        return None
+    return api.PassportSummary(
+        passport_id=latest.passport_id,
+        version=latest.version,
+        issued_at=latest.issued_at,
+        devices_count=len(latest.document.get("devices") or []),
     )
 
 
@@ -315,13 +332,29 @@ async def _with_usage(s: Services, row: Mandate) -> api.Mandate:
     entries = await s.db(queries.latest_run_decisions, s.db_engine, card_id=row.card_id)
     marked = await s.db(queries.requested_item_marks, s.db_engine, [e.live_authorization_id for e in entries]) \
         if flags.get("single_item") else {}
-    return _mandate(row, policies.usage(rules, entries, row.confirmed_at, policies.fulfilment(flags, entries, marked)))
+    return _mandate(
+        row,
+        policies.usage(rules, entries, row.confirmed_at, policies.fulfilment(flags, entries, marked)),
+        await _passport_summary(s, row),
+    )
+
+
+async def reissue_passport(s: Services, card_id: str, reason: str = "confirmed") -> None:
+    """A new passport version for what just changed on the card. The change itself is
+    already stored: a failure here is logged and the background sweep issues it later."""
+    if s.book is None:
+        return
+    try:
+        await s.db(s.book.sync_passports, card_id=card_id, first_reason=reason)
+    except Exception:
+        log.exception("passport of card %s not reissued now; the sweep will", card_id)
 
 
 @router.post("/policy-drafts/{draft_id}/confirm", response_model=api.Mandate)
 async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: Request) -> JSONResponse:
     """C2: the checks sent back are accepted ids; their text is ignored.
 
+    Signed by a device enrolled on the draft's card (§3.10), else 401 and nothing changes.
     A draft with no checks at all is refused (409 ``lint_failed``) before anything else.
     The accepted subset is re-linted (a per-purchase cap, no dropped ``exact`` check),
     then created and confirmed at Viseca with the instruction verbatim (a form draft sends
@@ -333,6 +366,7 @@ async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: R
         row = await s.db(queries.draft, s.db_engine, draft_id)
         if row is None:
             raise not_found(f"No policy draft {draft_id}.")
+        await require_device(request, s, row.card_id)
         if row.confirmed_at is not None:
             raise ApiError(409, "draft_confirmed", "This draft is already confirmed.")
         if not row.checks:
@@ -394,6 +428,7 @@ async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: R
             s.bind_mandate(old)
             await revoke_at_platform(s, old, strict=False)
         s.bind_mandate(mandate)
+        await reissue_passport(s, row.card_id)
         return reply(await _with_usage(s, mandate))
 
 
@@ -415,9 +450,11 @@ async def tighten_policy(card_id: str, body: api.TightenRequest, request: Reques
 
     ``add_checks`` are ids of checks this card's drafts proposed (their text is ignored).
     Changing a check already in force is not an addition (409); an unknown id is 422.
+    Signed by a device enrolled on the card (§3.10).
     """
     s = services(request)
     await _card_customer(s, card_id)
+    await require_device(request, s, card_id)
     async with s.policy_lock:
         row = await s.db(queries.latest_mandate, s.db_engine, card_id)
         if row is None or row.status != "active":
@@ -467,6 +504,7 @@ async def tighten_policy(card_id: str, body: api.TightenRequest, request: Reques
             uncertainty_policy=uncertainty,
         )
         s.bind_mandate(updated)
+        await reissue_passport(s, card_id)
         return reply(await _with_usage(s, updated))
 
 
@@ -521,10 +559,12 @@ async def _platform_status(s: Services, tm: str) -> str:
 async def revoke_policy(card_id: str, request: Request) -> Response:
     """C5: the policy flips to revoked and is revoked at Viseca; purchases are untouched.
 
-    Revoking an already revoked policy re-confirms it at Viseca (idempotent).
+    Revoking an already revoked policy re-confirms it at Viseca (idempotent). Signed by a
+    device enrolled on the card (§3.10).
     """
     s = services(request)
     await _card_customer(s, card_id)
+    await require_device(request, s, card_id)
     async with s.policy_lock:
         row = await s.db(queries.latest_mandate, s.db_engine, card_id)
         if row is None:
@@ -534,6 +574,7 @@ async def revoke_policy(card_id: str, request: Request) -> Response:
                 queries.update_mandate, s.db_engine, row.mandate_id, status="revoked", revoked_at=s.now()
             )
             s.bind_mandate(row)
+            await reissue_passport(s, card_id)
         await revoke_at_platform(s, row, strict=True)
     return Response(status_code=204)
 
@@ -543,6 +584,24 @@ async def revoke_policy(card_id: str, request: Request) -> Response:
 
 @router.post("/authorizations/{authorization_id}/resolve", status_code=204)
 async def resolve_step_up(authorization_id: str, body: api.ResolveRequest, request: Request) -> Response:
-    """C8: the customer's answer; 409 when not awaiting one or the window has closed."""
-    await services(request).resolve(authorization_id, body.decision)
+    """C8: the customer's answer; 409 when not awaiting one or the window has closed.
+
+    Signed by a device enrolled on the purchase's card (§3.10). The receipt is re-signed
+    with the answer and the device that gave it.
+    """
+    s = services(request)
+    stored = await s.db(queries.decision, s.db_engine, authorization_id)
+    if stored is None:
+        raise not_found(f"No purchase {authorization_id}.")
+    device_id = await require_device(request, s, stored.entry.card_id)
+    if s.book is not None:
+        s.book.note_answer(authorization_id, device_id)
+    await s.resolve(authorization_id, body.decision)
+    if s.book is not None:
+        try:
+            await s.db(s.book.sync_receipts, [authorization_id])
+        except Exception:
+            log.exception("receipt of %s not re-signed now; the sweep will", authorization_id)
+        if body.decision == "approve":  # a remembered confirmation is part of the passport
+            await reissue_passport(s, stored.entry.card_id)
     return Response(status_code=204)

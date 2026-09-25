@@ -1,4 +1,4 @@
-# OneGuard - demo script: stage vs record (6 minutes)
+# OneGuard - demo script: stage vs record (7 minutes)
 
 Judges must see three things (challenge brief): an ordinary purchase with little friction;
 an ambiguous, unsafe or manipulated purchase getting a useful intervention; the human
@@ -9,7 +9,7 @@ One line: **Agents may propose. OneGuard decides.**
 
 The demo is split in two:
 
-- **Stage** (6 min, live in front of the judges): offline replay of the public data pack on
+- **Stage** (7 min, live in front of the judges): offline replay of the public data pack on
   the cloud app (`https://oneguard.fly.dev`), through the same engine, ledger and UI as a
   live run. D2 (`POST /api/dev/replay/restart`) feeds the pack's purchases; nothing on stage
   talks to the Viseca sandbox, so nothing on stage can be starved or expire undelivered.
@@ -64,13 +64,32 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
    not read the server, so make the server agree):
    `curl -s -X POST $API/api/dev/soft-signals -H 'Content-Type: application/json' -d '{"enabled":true}'`.
 
+3a. **The operator terminal controls the stage cards** (docs/passport.md §4). Confirming,
+   revoking and answering are device-bound: a plain `curl` gets `401`. The terminal is a
+   device of its own (the key `make demo-live` uses), and in production nothing resets a
+   card's devices, so it is enrolled on every stage card first and approves the others:
+
+   ```sh
+   cd backend && . .venv/bin/activate && export ONEGUARD_API_URL=$API
+   og() { python -m oneguard.passport.cli "$@"; }   # og enrol|devices|approve|remove|confirm|revoke
+   og enrol CA0039 CA0023 CA0011
+   ```
+
+   Each card prints `enrolled` (its first device, e.g. right after a deploy: backfilled
+   passports have no device) or `pending` (a device from an earlier rehearsal controls it:
+   approve the terminal from there, card → **Passport** → **Approve**). `og devices CA0039`
+   lists who controls a card. CA0001 is left to the stage laptop (steps 4 and 1).
+
 4. **Alex Meier's card CA0001 has no active policy.** Step 1 can only open the new-policy
    flow on a card without an active policy (an active one offers only **Revoke**).
 
    ```sh
    curl -s $API/api/cards/CA0001/policy | jq '.mandate | {status, instruction}'
-   curl -s -X POST $API/api/cards/CA0001/policy/revoke -w '%{http_code}\n'   # only if status is "active"; expect 204
    ```
+
+   If `status` is `"active"`, revoke it in the stage browser (step 8's profile): sign in as
+   Alex Meier → Card CA0001 → **Revoke**. The stage laptop is CA0001's device from the last
+   rehearsal, or becomes its first device with this revoke.
 
 5. **The three public cards' mandates, via C1 then C2.** For each row, create the draft,
    read its checks, then confirm with the draft's own checks:
@@ -90,10 +109,8 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
        curl -s -X POST $API/api/cards/$1/policy-drafts -H 'Content-Type: application/json' -d @- |
        tee /tmp/draft-$1.json | jq '{draft_id, compiler, checks: [.checks[] | "\(.text) (\(.source))"], open_questions}'
    }
-   confirm() {  # confirm <card_id>: C2 with the draft's own checks
-     jq '{checks, uncertainty_policy, open_questions}' /tmp/draft-$1.json |
-       curl -s -X POST $API/api/policy-drafts/$(jq -r .draft_id /tmp/draft-$1.json)/confirm \
-         -H 'Content-Type: application/json' -d @- | jq '{mandate_id, card_id, status}'
+   confirm() {  # confirm <card_id>: C2 with the draft's own checks, signed by the terminal (step 3a)
+     og confirm /tmp/draft-$1.json
    }
    draft CA0039 "Buy the 27-inch monitor I chose, from a seller I have bought from before, for CHF 400 or less. Do not add anything I did not ask for. Ask me when uncertain."
    confirm CA0039
@@ -104,7 +121,7 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
    ```
 
    Run each `confirm` only after reading its draft. Expect `compiler: "llm"` and
-   `status: "active"`. If a draft misses a check from the table (the rule-based fallback,
+   `active, passport version 1`. If a draft misses a check from the table (the rule-based fallback,
    for one, sets neither the requested-item nor the nothing-added flag for CA0039), do not confirm it: run
    `draft` again. The replay decides with this mandate, and the matrix outcomes assume those
    checks. Keep this CA0039 check as a safety line even once the requested-item compiler
@@ -116,6 +133,22 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
    keeps one active mandate per team; docs/decisions.md). That is irrelevant unless a
    judging run is open, so no judging run during the stage demo. Revoking a superseded
    policy still succeeds (C5 answers 204).
+
+5a. **Stage laptop and Yasin's phone control the stage cards.** In the stage browser, sign
+   in as each card's holder, open the card (Accounts → the card, or Home → Active
+   policies), scroll to **Passport** and tap **Add this device**; name it "Stage laptop" and
+   tap **Ask to add**. Then approve it from the terminal:
+
+   ```sh
+   og approve CA0039 --label "Stage laptop"; og approve CA0023 --label "Stage laptop"
+   ```
+
+   Do the same on Yasin's phone for CA0039 and CA0023 (label "Yasin's phone"). The sheet
+   on the phone finishes by itself once approved. Check: `og devices CA0039` lists the
+   terminal, "Stage laptop" and "Yasin's phone" as `enrolled`. A card already listing
+   "Stage laptop" as `enrolled` from a rehearsal needs nothing. Use one browser profile for
+   the stage laptop from here on: the device key lives in that profile (IndexedDB); a
+   private window or another profile is another device, which is what beat 2b uses.
 
 6. **Rehearsal replay** (at least 3 minutes before going on stage, so its step-ups have
    expired by then): replay both stage scenarios at full speed and compare with the matrix.
@@ -149,16 +182,17 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
    Third tab: `docs/replay-matrix.md` and `docs/benchmark.md` on GitHub. Have the SCEN0001
    instruction on the clipboard.
 
-## Stage (6:00)
+## Stage (7:00)
 
 | # | Beat | Signed in as | Time | Clock |
 |---|---|---|---:|---:|
 | 1 | Policy screen, typed live | Alex Meier (CU0001), card CA0001 | 0:50 | 0:50 |
 | 2 | Manipulated agent, SCEN0004 replay | Oliver Graf (CU0019), card CA0039 | 1:15 | 2:05 |
-| 3 | Session integrity + revoke, SCEN0003 replay | Giulia Rossi (CU0012), card CA0023 | 2:40 | 4:45 |
-| 4 | Chaos toggle off, same outcomes, /healthz | Oliver Graf (CU0019), card CA0039 | 0:30 | 5:15 |
-| 5 | Live judging run on record | Hannah Chen (CU1415), card CA1643 | 0:25 | 5:40 |
-| 6 | Closing | (none) | 0:20 | 6:00 |
+| 2b | Passport: what the agent was told, receipt, devices | Oliver Graf (CU0019), card CA0039 | 1:00 | 3:05 |
+| 3 | Session integrity + revoke, SCEN0003 replay | Giulia Rossi (CU0012), card CA0023 | 2:40 | 5:45 |
+| 4 | Chaos toggle off, same outcomes, /healthz | Oliver Graf (CU0019), card CA0039 | 0:30 | 6:15 |
+| 5 | Live judging run on record | Hannah Chen (CU1415), card CA1643 | 0:25 | 6:40 |
+| 6 | Closing | (none) | 0:20 | 7:00 |
 
 ### 1. Policy (0:50) - Alex Meier, CA0001, SCEN0001's instruction
 
@@ -229,6 +263,35 @@ answers a step-up.
 timeout; say "no answer is never a yes" and move on. If the replay does not start (strip
 says "no replay running" or curl returns an error), repeat the curl once; if it still fails,
 open the rehearsal run under **Earlier runs (n)** and walk the same rows there.
+
+### 2b. Passport (1:00) - Oliver Graf, CA0039
+
+Still signed in as Oliver Graf, on the SCEN0004 run just shown.
+
+1. **Activity** → PixelHarbor 520.00 (AU0037). Under the untrusted shop text: **What your
+   agent was told** - "Would approve at CHF 400.00 or less." Tap **Verify** on the
+   **Receipt** line: "Signed by OneGuard, unchanged".
+2. Tap the **Re-quote of** link back from PixelHarbor 350.00 (AU0042), or open it from
+   **Activity**: approved, "it re-quotes the CHF 520.00 order declined 5 days earlier and is
+   within your limits" - the agent came back inside the leash.
+3. **Policy applied** → Card CA0039 → scroll to **Passport**: the QR code, "Version n ·
+   issued …", the devices (Stage laptop, Yasin's phone, the terminal). Tap **Verify**:
+   "Valid · signed with key ogk_…".
+4. Second browser window (a private window: another device): open `$API`, sign in as
+   Oliver Graf, Card CA0039 → **Passport** → **Add this device**, name "Second phone",
+   **Ask to add**: "Waiting for approval". Back in the stage window, Home shows **A device
+   is waiting for your approval** → tap it → **Approve**. The private window's sheet closes
+   by itself; the passport is a new version with three devices.
+
+**Say**: the policy is a signed document anyone can check - scan the QR with a phone. Every
+decision has a signed receipt. Only a device the customer approved can change the leash
+or answer for it; the agent is told exactly what would pass, and nothing more.
+
+**After the beat** (or before the next rehearsal): remove "Second phone" (stage window,
+**Remove** on its row, or `og remove CA0039 --label "Second phone"`).
+
+**Fallback**: if a Verify fails to reach the server, skip it; the QR opens the same check on
+any phone (`/verify`).
 
 ### 3. Session integrity and control (2:40) - Giulia Rossi, CA0023, SCEN0003
 
@@ -348,7 +411,11 @@ On the GitHub tab:
   pending step-up holds the team's only delivery slot for up to 120 s, and anything queued
   behind it expires undelivered (docs/decisions.md, laptop run diagnosis).
 - **Customer**: signed in as Hannah Chen on the phone before the first purchase, answers
-  every step-up in **Approvals** within seconds.
+  every step-up in **Approvals** within seconds. Answering is device-bound and
+  `make demo-live` makes the terminal the card's first device, so the phone's first answer
+  opens **Add this device**: name it, **Ask to add**, and the operator approves at once
+  (`og approve CA1643 --label "<name>"`, typed in advance); the answer then goes through by
+  itself. From then on the phone answers directly.
 - **Only the cloud decides**: no laptop `make serve` with the Supabase `.env` sourced while
   a run is live (`/healthz` `worker.state` must be `polling` on Fly).
 - Other judging scenarios (`docs/judging-pack.md`) are recorded the same way, each on its

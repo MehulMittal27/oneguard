@@ -12,6 +12,7 @@ import {
   LogOut,
   Plus,
   ShieldCheck,
+  Smartphone,
   X,
 } from 'lucide-react'
 import type { IconProps } from './IconProps'
@@ -85,6 +86,10 @@ export function SpinnerIcon({ size = 28, strokeWidth = 2.5 }: IconProps) {
   return (
     <LoaderCircle size={size} strokeWidth={strokeWidth} aria-hidden="true" className="animate-spin" />
   )
+}
+
+export function DeviceIcon({ size = 20, strokeWidth = 1.8 }: IconProps) {
+  return <Smartphone size={size} strokeWidth={strokeWidth} aria-hidden="true" />
 }
 
 export type { IconProps } from './IconProps'

@@ -25,6 +25,7 @@ from oneguard.engine import stubs
 from oneguard.engine.ledger_base import LedgerEntry
 from oneguard.engine.types import HistoryIndex
 from oneguard.llm.provider import Provider
+from oneguard.passport.book import PassportBook
 from oneguard.store.schema import Mandate
 from oneguard.viseca.client import VisecaClient, VisecaError
 from oneguard.viseca.worker import NotAwaitingAnswer, VisecaWorker, WindowClosed
@@ -69,6 +70,8 @@ class Services:
     offline: OfflineRunner
     client: VisecaClient | None = None
     worker: VisecaWorker | None = None
+    book: PassportBook | None = None
+    """Passports and receipts (docs/passport.md); opened by the lifespan."""
     scenarios: dict[str, list[ScenarioBinding]] = field(default_factory=dict)
     """customer id → the local pack's scenarios on their cards; ``bindings`` adds the platform's."""
     implementations: Mapping[str, Callable[..., Any]] | None = None

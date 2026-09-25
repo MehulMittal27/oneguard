@@ -1,5 +1,6 @@
 import type { ComponentType } from 'react'
 import type { Decision, DecisionRelation, EvidenceItem, UncertainOutcome } from '../../api/types'
+import { AgentToldBlock } from '../../components/AgentToldBlock'
 import { DecisionMark } from '../../components/DecisionMark'
 import { NetworkState } from '../../components/NetworkState'
 import type { IconProps } from '../../components/icons/IconProps'
@@ -323,6 +324,8 @@ export function DecisionDetail({
           </p>
         </div>
       )}
+
+      <AgentToldBlock decision={decision} />
 
       <section className="flex flex-col gap-3">
         <p className="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
