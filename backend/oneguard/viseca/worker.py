@@ -1135,12 +1135,15 @@ class VisecaWorker:
         viseca_mandate_id: str | None = None,
         total: int | None = None,
         platform_mandate: api.PlatformMandate | None = None,
+        card_id: str | None = None,
     ) -> RunStatus:
         """Follow a run from its creation, so its progress is read while nothing arrives.
 
         A run not seen before is a run start: ``/v1/bootstrap`` is re-read in the background
         unless it was just read (``BOOTSTRAP_FRESH_S``). ``platform_mandate``: D3's check of
         the mandate at the platform, shown by D4 and D7 and stored with the run's row.
+        ``card_id``: the card D3 learnt from the platform's reply, so D4 and D7 name it (and
+        its holder) before the first purchase arrives; the first purchase's card wins.
         """
         if viseca_run_id not in self._runs:
             self._run_started(viseca_run_id)
@@ -1149,6 +1152,7 @@ class VisecaWorker:
         run.viseca_mandate_id = viseca_mandate_id or run.viseca_mandate_id
         run.total = max(run.total, total or 0)
         run.platform_mandate = platform_mandate or run.platform_mandate
+        run.card_id = run.card_id or card_id
         return run.status()
 
     async def wait_run_recorded(self, viseca_run_id: str) -> RunStatus:
@@ -1339,11 +1343,18 @@ class VisecaWorker:
             return True
 
     async def revoke(self, viseca_mandate_id: str) -> None:
-        """Revoke a mandate: locally at once (nothing more is approved), then at Viseca."""
+        """Revoke a mandate: locally at once (nothing more is approved), then at Viseca.
+
+        A policy that already ended here keeps its own ending: one an operator's judging run
+        superseded (D3) is not relabelled as revoked by the customer."""
         self._revoked.add(viseca_mandate_id)
-        revoked = {"status": "revoked", "revoked_at": self._now()}
-        if viseca_mandate_id in self._policies:
-            self._policies[viseca_mandate_id] = self._policies[viseca_mandate_id].model_copy(update=revoked)
+        bound = self._policies.get(viseca_mandate_id)
+        if bound is not None and bound.status not in ("active", "none"):
+            revoked = {"status": bound.status, "revoked_at": bound.revoked_at}
+        else:
+            revoked = {"status": "revoked", "revoked_at": self._now()}
+        if bound is not None:
+            self._policies[viseca_mandate_id] = bound.model_copy(update=revoked)
         for run in self._runs.values():
             if run.viseca_mandate_id == viseca_mandate_id and run.ctx is not None:
                 run.ctx.policy = run.ctx.policy.model_copy(update=revoked)
@@ -2993,7 +3004,7 @@ class VisecaWorker:
     def _mark_mandate_revoked(self, viseca_mandate_id: str) -> None:
         with session(self._db_engine) as s:
             for mandate in s.scalars(select(Mandate).where(Mandate.viseca_mandate_id == viseca_mandate_id)):
-                if mandate.status != "revoked":
+                if mandate.status == "active":  # an ended one (revoked, superseded) keeps its ending
                     mandate.status = "revoked"
                     mandate.revoked_at = self._now()
 

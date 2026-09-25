@@ -389,16 +389,25 @@ class PlatformMandate(ApiModel):
 
     ``status_before``: what ``GET /v1/mandates/{id}`` said (``active``, ``superseded``,
     ``revoked``, ...; ``missing`` for a 404; null when the platform did not answer and the
-    run was started anyway). ``reregistered``: the same policy was created and confirmed
-    at the platform again, under ``viseca_mandate_id`` (``previous_viseca_mandate_id`` the
-    one it replaced); the local policy kept its id and stayed active."""
+    run was started anyway, or D3 registered the scenario's instruction). ``reregistered``:
+    the same policy was created and confirmed at the platform again, under
+    ``viseca_mandate_id`` (``previous_viseca_mandate_id`` the one it replaced); the local
+    policy kept its id and stayed active.
+
+    ``registered_for_run`` (D3 ``policy: "scenario"``): D3 compiled the scenario's
+    cardholder instruction, registered it at the platform as ``viseca_mandate_id`` and made
+    it the card's active policy for this run, without the customer's confirmation;
+    ``replaced_mandate_id`` is the card's policy it superseded (absent: the card had none),
+    ``previous_viseca_mandate_id`` that policy's platform mandate."""
 
     status_before: str | None
     reregistered: bool
     viseca_mandate_id: str
     previous_viseca_mandate_id: str | None = None
+    registered_for_run: bool | None = None
+    replaced_mandate_id: str | None = None
 
-    _omit_if_none = frozenset({"previous_viseca_mandate_id"})
+    _omit_if_none = frozenset({"previous_viseca_mandate_id", "registered_for_run", "replaced_mandate_id"})
 
 
 class LiveRun(ApiModel):
@@ -568,13 +577,17 @@ class ReplayRestartRequest(ApiModel):
 
 
 class CreateRunRequest(ApiModel):
-    """D3. ``force``: start even while the scenario (or another) has a run in progress."""
+    """D3. ``force``: start even while the scenario (or another) has a run in progress.
+    ``policy``: ``card`` (default) runs under the card's active policy; ``scenario``
+    compiles the scenario's cardholder instruction verbatim and makes it the card's active
+    policy for the run, replacing the one it had (the operator console's judging run)."""
 
-    _omit_if_none = frozenset({"force"})
+    _omit_if_none = frozenset({"force", "policy"})
 
     scenario_id: str
     card_id: str
     force: bool | None = None
+    policy: Literal["card", "scenario"] | None = None
 
 
 class ScenariosResponse(ApiModel):

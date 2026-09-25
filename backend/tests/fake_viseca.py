@@ -27,6 +27,8 @@ behaviour the worker depends on:
   scenario's purchases (``served_scenarios``) under the served id, on the card of their
   fixture profile (``fixture_profiles``) when one is set;
 - ``tables.fx_rates`` can be replaced (``FakeConfig.fx_rates``) to serve rates that differ;
+- with ``check_instruction``, a run whose mandate's instruction is not the scenario's
+  ``cardholder_instruction`` exactly is 409 ``instruction_mismatch`` with the live message;
 - the team keeps one active mandate: confirming a draft supersedes the active one
   (``status: "superseded"``, as the live sandbox showed on 25 Sep 2026); revoking a
   superseded mandate is 409 ``mandate_inactive`` (assumed, like PATCH and scenario runs);
@@ -128,6 +130,10 @@ class FakeConfig:
     fixture_profiles: dict[str, dict[str, str]] = field(default_factory=dict)
     """Served-only scenario id → the ``{profile_id, customer_id, card_id}`` its runs use: the
     replayed purchases are rewritten onto that card (``fixture_profiles`` in the run view)."""
+    check_instruction: bool = False
+    """As the live sandbox (25 Sep 2026): a run's mandate must carry the scenario's
+    ``cardholder_instruction`` exactly, else 409 ``instruction_mismatch``. Off by default, so
+    a test can run a scenario under a policy of its own (a form policy's sentences)."""
 
 
 JUDGING_EXTRA: dict[str, list[dict[str, Any]]] = {
@@ -257,6 +263,10 @@ class FakeRun:
     auths: list[FakeAuth]
 
 
+INSTRUCTION_MISMATCH = "The mandate instruction must exactly match the selected cardholder instruction"
+"""The live sandbox's message for 409 ``instruction_mismatch`` (25 Sep 2026, 08:53Z)."""
+
+
 def _error(status: int, code: str, message: str, details: list[Any] | None = None) -> JSONResponse:
     error: dict[str, Any] = {"code": code, "message": message}
     if details is not None:
@@ -325,6 +335,14 @@ class FakeViseca:
         held, self.held = self.held or [], None
         for run in held:
             self._queue(run, run.auths[0])
+
+    def instruction_of(self, scenario_id: str) -> str:
+        """The scenario's ``cardholder_instruction`` as the catalogue serves it (a served-only
+        row, else the pack's)."""
+        for row in self.config.served_extra.get("scenario_catalogue", []):
+            if row["scenario_id"] == scenario_id:
+                return str(row["cardholder_instruction"])
+        return str(self.pack.scenarios[scenario_id]["cardholder_instruction"])
 
     def by_source(self, run_id: str, source_id: str) -> FakeAuth:
         return next(a for a in self.runs[run_id].auths if a.source_id == source_id)
@@ -649,6 +667,8 @@ class FakeViseca:
             source = fake.config.served_scenarios.get(scenario_id, scenario_id)
             if source not in fake.pack.scenarios:
                 return _error(404, "not_found", "unknown scenario")
+            if fake.config.check_instruction and mandate["instruction"] != fake.instruction_of(scenario_id):
+                return _error(409, "instruction_mismatch", INSTRUCTION_MISMATCH)
             run_id = "run_" + secrets.token_hex(8)
             suffix = run_id[-8:]
             live = {

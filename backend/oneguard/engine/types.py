@@ -201,7 +201,8 @@ class Policy(_Model):
     for the card, so nothing is approved). ``card_id`` is the card the policy was
     confirmed for (None: not tied to a card, e.g. a replay's compiled policy); a purchase
     on another card is declined at step 1. ``revoked_at`` is when the customer revoked
-    it, named in the step-1 evidence. ``uncertainty_policy`` is
+    it (or, ``superseded``, when an operator's judging run replaced it), named in the
+    step-1 evidence. ``uncertainty_policy`` is
     C11. The convenience fields restate rules already in ``rules``: ``None`` or
     ``False`` means the customer did not state that rule, never "anything goes"
     (C3 ``allowed_item_categories``, C4 ``blocked_item_categories``, C5

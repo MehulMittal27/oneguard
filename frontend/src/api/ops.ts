@@ -38,25 +38,30 @@ export interface Health {
 }
 
 /**
- * A refusal the backend explained (`{ error: { code, message } }`, contract
- * §3.8). The console shows `message` verbatim: the operator needs the server's
- * own words ("A run is already open…"), not a paraphrase.
+ * A refusal the backend explained (`{ error: { code, message, detail? } }`,
+ * contract §3.8). The console shows `message` verbatim: the operator needs the
+ * server's own words ("A run is already open…"), not a paraphrase. `detail`
+ * as sent (a platform refusal names the platform's status, code and message).
  */
 export class ApiRefusal extends Error {
   readonly status: number
   readonly code: string | null
+  readonly detail: unknown
 
-  constructor(status: number, code: string | null, message: string) {
+  constructor(status: number, code: string | null, message: string, detail: unknown = null) {
     super(message)
     this.status = status
     this.code = code
+    this.detail = detail
   }
 }
 
 async function refusal(response: Response, fallback: string): Promise<ApiRefusal> {
   try {
-    const body = (await response.json()) as { error?: { code?: string; message?: string } }
-    if (body.error?.message) return new ApiRefusal(response.status, body.error.code ?? null, body.error.message)
+    const body = (await response.json()) as { error?: { code?: string; message?: string; detail?: unknown } }
+    if (body.error?.message) {
+      return new ApiRefusal(response.status, body.error.code ?? null, body.error.message, body.error.detail ?? null)
+    }
   } catch {
     // Not JSON (a proxy's HTML error page): fall through to our own words.
   }
@@ -119,9 +124,11 @@ export async function restartReplay(scenarioId: string, cardId: string, speedMs:
 }
 
 /**
- * D3: a judging run against the payment platform. Never forced: a 409
- * (`run_active`, `runs_disabled`) comes back as an `ApiRefusal` for the console
- * to show as is.
+ * D3: a judging run against the payment platform, under the scenario's own
+ * instruction (`policy: 'scenario'`): the platform runs a scenario only under
+ * its exact cardholder instruction, so the card's current policy is replaced.
+ * Never forced: a 409 (`run_active`, `runs_disabled`) or a platform refusal
+ * comes back as an `ApiRefusal` for the console to show as is.
  */
 export async function startJudgingRun(scenarioId: string, cardId: string): Promise<LiveRun> {
   if (import.meta.env.VITE_USE_MOCKS === 'true') {
@@ -131,7 +138,7 @@ export async function startJudgingRun(scenarioId: string, cardId: string): Promi
   const response = await operatorFetch(`${API_BASE_URL}/dev/runs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ scenario_id: scenarioId, card_id: cardId }),
+    body: JSON.stringify({ scenario_id: scenarioId, card_id: cardId, policy: 'scenario' }),
   })
   if (!response.ok) throw await refusal(response, 'The judging run did not start')
   return (await response.json()) as LiveRun

@@ -152,7 +152,7 @@ def policy_of(
 ) -> Policy:
     return Policy(
         mandate_id=mandate_id,
-        status="active" if status == "active" else "revoked",
+        status="active" if status == "active" else "superseded" if status == "superseded" else "revoked",
         instruction=instruction,
         rules=rules,
         uncertainty_policy=uncertainty,

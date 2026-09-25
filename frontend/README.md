@@ -103,7 +103,8 @@ phone UI (`src/ops/`, loaded lazily by `src/Root.tsx`): for the projector. It fo
 run (D7) whoever started it, lists its decisions (C6 with `?operator=1`) newest delivered first with expandable
 evidence and receipts, starts replays (D2: a served scenario's replay is "from record", its latest judging run's
 stored events; "Not run yet" before one) and judging runs (D3, typed confirmation, only for a scenario the platform
-serves now (D8), warning when one is already on record), says whom to sign in as for the selected scenario and, on
+serves now (D8), warning when one is already on record; under the scenario's own instruction, which replaces the
+card's policy, and a platform refusal shown in the platform's own words), says whom to sign in as for the selected scenario and, on
 its own line, which run is on screen, shows
 `/healthz` as chips and embeds this app as the run's customer (`/?customer=<id>&embed=1`). It never
 answers a step-up or touches a device. Contract: `../docs/api-contract.md` §6 item 19.

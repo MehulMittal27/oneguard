@@ -174,6 +174,11 @@ def _no_active_policy_detail(policy: Policy, card_id: str) -> str | None:
     if policy.status == "revoked":
         when = policy.revoked_at.astimezone(ZURICH).strftime("%d %b %Y, %H:%M") if policy.revoked_at else None
         return f"Policy {policy.mandate_id} was revoked by the customer" + (f" at {when} Swiss time." if when else ".")
+    if policy.status == "superseded":
+        when = policy.revoked_at.astimezone(ZURICH).strftime("%d %b %Y, %H:%M") if policy.revoked_at else None
+        return f"Policy {policy.mandate_id} was replaced for an operator's judging run" + (
+            f" at {when} Swiss time." if when else "."
+        )
     if policy.status != "active":
         return f"Policy {policy.mandate_id} is {policy.status}."
     if policy.card_id is not None and policy.card_id != card_id:

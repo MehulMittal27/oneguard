@@ -23,6 +23,7 @@ import {
   liveRunIds,
   passportSummary,
   phoneCustomer,
+  platformRefusal,
   readVerification,
   replayGuard,
   runDecisions,
@@ -286,7 +287,7 @@ export default function OpsConsole() {
   // Starting runs ------------------------------------------------------------------------
   const [busy, setBusy] = useState(false)
   const [judgingOpen, setJudgingOpen] = useState(false)
-  const [judgingRefusal, setJudgingRefusal] = useState<string | null>(null)
+  const [judgingRefusal, setJudgingRefusal] = useState<{ text: string; platform: string | null } | null>(null)
 
   async function replay(speedMs: number) {
     if (!selected?.card_id || replayable.blocked) return
@@ -312,7 +313,10 @@ export default function OpsConsole() {
       setJudgingOpen(false)
       setRunRead((n) => n + 1)
     } catch (error) {
-      setJudgingRefusal(refusalText(error))
+      setJudgingRefusal({
+        text: refusalText(error),
+        platform: error instanceof ApiRefusal ? platformRefusal(error.detail) : null,
+      })
     } finally {
       setBusy(false)
     }
@@ -453,7 +457,8 @@ export default function OpsConsole() {
         <JudgingRunDialog
           scenario={selected}
           busy={busy || judgingBlocked !== null}
-          refusal={judgingRefusal ?? judgingBlocked}
+          refusal={judgingRefusal?.text ?? judgingBlocked}
+          platformRefusal={judgingRefusal?.platform ?? null}
           warning={judging.warning}
           onStart={judgingRun}
           onClose={closeJudging}

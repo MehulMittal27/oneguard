@@ -24,6 +24,8 @@ import {
   phoneCustomer,
   phoneEmbedSrc,
   platformMandateNote,
+  platformRefusal,
+  JUDGING_POLICY_NOTE,
   readVerification,
   replayGuard,
   runDecisions,
@@ -119,6 +121,53 @@ test('the run header says when D3 registered the policy at the platform again', 
     platformMandateNote({ status_before: null, reregistered: true, viseca_mandate_id: 'TMnew' })?.detail,
     'The previous mandate was not active at the platform; the same policy now runs as TMnew.',
   )
+})
+
+test("a judging run under the scenario's own instruction says so in the run header", () => {
+  const note = platformMandateNote({
+    status_before: null,
+    reregistered: false,
+    viseca_mandate_id: 'TMnew',
+    previous_viseca_mandate_id: 'TMold',
+    registered_for_run: true,
+    replaced_mandate_id: 'md_typed',
+  })
+  assert.deepEqual(note, {
+    label: "policy: the scenario's instruction, registered for this run",
+    detail: "Registered at the platform as TMnew, replacing the card's policy md_typed. An operator run: the customer did not confirm it.",
+  })
+  assert.equal(
+    platformMandateNote({ status_before: null, reregistered: false, viseca_mandate_id: 'TMnew', registered_for_run: true })
+      ?.detail,
+    'Registered at the platform as TMnew. An operator run: the customer did not confirm it.',
+  )
+})
+
+test("the judging-run dialog says the card's policy will be replaced, and D3 asks for the scenario's instruction", () => {
+  assert.equal(JUDGING_POLICY_NOTE, "This run uses the scenario's own instruction; the card's current policy will be replaced.")
+  const dialog = readFileSync(new URL('../src/ops/JudgingRunDialog.tsx', import.meta.url), 'utf8')
+  assert.match(dialog, /\{JUDGING_POLICY_NOTE\}/)
+  assert.match(dialog, /\{platformRefusal && <p[^>]*>\{platformRefusal\}<\/p>\}/)
+  const ops = readFileSync(new URL('../src/api/ops.ts', import.meta.url), 'utf8')
+  assert.match(ops, /JSON\.stringify\(\{ scenario_id: scenarioId, card_id: cardId, policy: 'scenario' \}\)/)
+})
+
+test("a platform refusal is shown in the platform's own words", () => {
+  // D3's 503 when the platform refused the run (docs/api-contract.md §3.8)
+  const detail = {
+    platform_status: 409,
+    platform_code: 'instruction_mismatch',
+    platform_message: 'The mandate instruction must exactly match the selected cardholder instruction',
+  }
+  assert.equal(
+    platformRefusal(detail),
+    'Platform 409 instruction_mismatch: The mandate instruction must exactly match the selected cardholder instruction',
+  )
+  // no answer from the platform (a network failure: no status, no message of its own)
+  assert.equal(platformRefusal({ platform_status: null, platform_code: 'upstream_unavailable' }), null)
+  assert.equal(platformRefusal({ run_id: 'run_1', scenario_id: 'S1' }), null)
+  assert.equal(platformRefusal(null), null)
+  assert.equal(platformRefusal('text'), null)
 })
 
 test('the run header says which policy a replay decides by', () => {

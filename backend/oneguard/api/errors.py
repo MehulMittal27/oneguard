@@ -54,6 +54,16 @@ def upstream_unavailable(message: str, detail: dict[str, Any] | None = None) -> 
     return ApiError(503, "upstream_unavailable", message, detail)
 
 
+def platform_detail(exc: Any) -> dict[str, Any]:
+    """A refused platform call (``VisecaError``) as a 503's ``detail``: the platform's HTTP
+    status and code, and its own message verbatim when it answered (no status: it did not,
+    and the message is ours)."""
+    detail: dict[str, Any] = {"platform_status": exc.status, "platform_code": exc.code}
+    if exc.status is not None:
+        detail["platform_message"] = exc.message
+    return detail
+
+
 def error_response(
     status: int,
     code: ErrorCode,

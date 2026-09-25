@@ -38,8 +38,9 @@ export interface ConsoleRun {
   // platform's run id) and when that run started. Null for a pack replay or a live run.
   fromRecord: { runId: string; startedAt: string | null } | null
   // Live runs only: D3 registered the policy at the platform again before the run
-  // (its mandate there was superseded or missing), as the run header words it,
-  // with the detail for its tooltip. Null when D3 did not.
+  // (its mandate there was superseded or missing), or registered the scenario's
+  // own instruction for the run, as the run header words it, with the detail for
+  // its tooltip. Null when D3 did neither.
   platformMandate: { label: string; detail: string } | null
 }
 
@@ -93,14 +94,26 @@ export function consoleRun(current: CurrentRun | null): ConsoleRun | null {
 }
 
 /**
- * "platform mandate re-registered" when D3 found the policy's mandate at the
- * platform superseded (or missing, revoked there) and registered the same policy
- * again; the detail names both platform mandates. Null otherwise: the local
- * policy is what decides, so an active platform mandate needs no word.
+ * "policy: the scenario's instruction, registered for this run" when D3 made
+ * the scenario's own instruction the card's policy (the console's judging run;
+ * the detail names the platform mandate and the policy it replaced). "platform
+ * mandate re-registered" when D3 found the policy's mandate at the platform
+ * superseded (or missing, revoked there) and registered the same policy again;
+ * the detail names both platform mandates. Null otherwise: the local policy is
+ * what decides, so an active platform mandate needs no word.
  */
 export function platformMandateNote(
   platform: PlatformMandate | undefined,
 ): { label: string; detail: string } | null {
+  if (platform?.registered_for_run) {
+    const replaced = platform.replaced_mandate_id
+      ? `, replacing the card's policy ${platform.replaced_mandate_id}`
+      : ''
+    return {
+      label: "policy: the scenario's instruction, registered for this run",
+      detail: `Registered at the platform as ${platform.viseca_mandate_id}${replaced}. An operator run: the customer did not confirm it.`,
+    }
+  }
   if (!platform?.reregistered) return null
   const before = platform.previous_viseca_mandate_id ?? 'The previous mandate'
   const status = platform.status_before ?? 'not active'
@@ -108,6 +121,25 @@ export function platformMandateNote(
     label: 'platform mandate re-registered',
     detail: `${before} was ${status} at the platform; the same policy now runs as ${platform.viseca_mandate_id}.`,
   }
+}
+
+/** What the judging-run dialog says about the policy the run uses (D3 `policy: 'scenario'`). */
+export const JUDGING_POLICY_NOTE = "This run uses the scenario's own instruction; the card's current policy will be replaced."
+
+/**
+ * The platform's own answer inside a refusal's `detail` (a 503 whose
+ * `platform_message` the platform sent, contract §3.8), for the console to show
+ * verbatim under the backend's message: "Platform 409 instruction_mismatch: The
+ * mandate instruction must exactly match …". Null when the platform said nothing.
+ */
+export function platformRefusal(detail: unknown): string | null {
+  if (!detail || typeof detail !== 'object') return null
+  const { platform_status: status, platform_code: code, platform_message: message } = detail as Record<string, unknown>
+  if (typeof message !== 'string' || !message) return null
+  const said = [typeof status === 'number' ? String(status) : null, typeof code === 'string' ? code : null]
+    .filter(Boolean)
+    .join(' ')
+  return `Platform${said ? ` ${said}` : ''}: ${message}`
 }
 
 /** The run header's words for where a replay's policy came from (D2). */

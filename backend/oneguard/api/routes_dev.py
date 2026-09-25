@@ -34,10 +34,17 @@ from sqlalchemy.orm import Session
 
 from oneguard.api import models as api
 from oneguard.api import policies, queries
-from oneguard.api.errors import ApiError, not_found
+from oneguard.api.errors import (
+    ApiError,
+    not_found,
+    platform_detail,
+    upstream_unavailable,
+)
 from oneguard.api.offline import RecordRun, live_ids, record_fields
 from oneguard.api.operator import require_operator
 from oneguard.api.routes_customer import (
+    confirm_stored_draft,
+    new_draft,
     register_at_platform,
     reissue_passport,
     reply,
@@ -280,26 +287,42 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
     card, another judging run) supersedes ours there while it stays active here. Then the
     same policy is registered again at the platform and the run starts under the new
     platform mandate; the reply's ``platform_mandate`` says what was found and done.
+
+    ``policy: "scenario"`` (the operator console) runs the scenario's own instruction
+    instead: the platform refuses a run whose mandate's instruction is not the scenario's
+    exactly (409 ``instruction_mismatch``), so D3 drafts the served cardholder instruction
+    verbatim as C1 does, confirms every check it proposes as C2 does (an operator run: no
+    device signature, docs/decisions.md), and that policy replaces the card's active one,
+    which is ``superseded`` with a note naming the run (``_scenario_policy``). A platform
+    refusal of the run answers 503 with the platform's status, code and message.
     """
     if not runs_allowed():
         raise ApiError(409, "runs_disabled", RUNS_DISABLED_MESSAGE)
     s = services(request)
     if not body.force:
         await _refuse_while_running(s, body.scenario_id)
-    await _live_scenario(s, body.scenario_id, body.card_id)
-    row = await s.db(queries.latest_mandate, s.db_engine, body.card_id)
-    if row is None or row.status != "active" or not row.viseca_mandate_id:
-        raise ApiError(409, "validation", "The card needs an active policy confirmed at Viseca first.")
+    customer_id = await _live_scenario(s, body.scenario_id, body.card_id)
+    scenario_policy = body.policy == "scenario"
+    row = None
+    if not scenario_policy:
+        row = await s.db(queries.latest_mandate, s.db_engine, body.card_id)
+        if row is None or row.status != "active" or not row.viseca_mandate_id:
+            raise ApiError(409, "validation", "The card needs an active policy confirmed at Viseca first.")
     if s.worker is None or s.client is None:
         raise ApiError(503, "upstream_unavailable", "The payment platform is not connected.")
     await s.worker.refresh_bootstrap("run start")
-    row, platform = await _platform_mandate(s, row)
+    if row is None:
+        row, platform = await _scenario_policy(s, body.scenario_id, body.card_id, customer_id)
+    else:
+        row, platform = await _platform_mandate(s, row)
     assert row.viseca_mandate_id is not None
     s.worker.expect_run(row.viseca_mandate_id, body.scenario_id)
     try:
-        started = await s.viseca(s.client.create_run(body.scenario_id, row.viseca_mandate_id), "new run")
-    except BaseException:
+        started = await s.platform(s.client.create_run(body.scenario_id, row.viseca_mandate_id))
+    except BaseException as exc:
         s.worker.forget_run(row.viseca_mandate_id, body.scenario_id)
+        if isinstance(exc, VisecaError):
+            raise _run_refused(exc, row if scenario_policy else None) from None
         raise
     run_id = str(started["run_id"])
     total = first_value(started, "generated_event_count", "total", "total_events", "event_count")
@@ -313,6 +336,7 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
     )
     profiles = [p for p in await s.worker.remember_profiles(started, "run") if p.scenario_id == body.scenario_id]
     card_id = profiles[0].card_id if profiles else body.card_id
+    s.worker.track_run(run_id, card_id=card_id)  # D4 and D7 name the card while the run starts
     mandate_id = row.mandate_id
     if card_id != body.card_id and profiles and profiles[0].customer_id:
         mandate_id = await _move_policy(s, row.mandate_id, card_id, profiles[0].customer_id)
@@ -320,6 +344,66 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
     assert live is not None
     return reply(
         await _with_customer(s, live.model_copy(update={"card_id": live.card_id or card_id, "mandate_id": mandate_id}))
+    )
+
+
+def _run_refused(exc: VisecaError, replaced_by: Mandate | None) -> ApiError:
+    """D3: the platform did not start the run. 503 ``upstream_unavailable`` with the
+    platform's ``platform_status``, ``platform_code`` and, when it answered,
+    ``platform_message`` verbatim (the console shows it as is). ``replaced_by``: the
+    scenario's policy D3 already made the card's active one, which stays."""
+    log.warning("Viseca new run failed: %s", exc)
+    message = "The payment platform did not accept the new run"
+    if replaced_by is None:
+        message += "; nothing was changed."
+    else:
+        message += (
+            f". The card's policy was already replaced by the scenario's instruction "
+            f"({replaced_by.mandate_id}) and stays so."
+        )
+    return upstream_unavailable(message, platform_detail(exc))
+
+
+async def _scenario_policy(
+    s: Services, scenario_id: str, card_id: str, customer_id: str
+) -> tuple[Mandate, api.PlatformMandate]:
+    """D3 ``policy: "scenario"``: the served catalogue's cardholder instruction, verbatim,
+    drafted (C1's ``new_draft``) and confirmed with every check it proposes, its uncertainty
+    setting and open questions (C2's ``confirm_stored_draft``, as ``make demo-live``
+    confirms them), registered at the platform, stored as the card's active policy. The
+    card's earlier policy is ``superseded`` with a note naming this run; both passports are
+    re-issued (the new one's first version says ``operator_run``). A refusal at the
+    platform changes nothing here (503, as C2)."""
+    catalogued = await s.db(_catalogue_row, s.db_engine, scenario_id)
+    if catalogued is None:
+        raise not_found(f"No scenario {scenario_id}.")
+    draft = await new_draft(s, card_id, customer_id, instruction=catalogued.cardholder_instruction)
+    async with s.policy_lock:
+        stored = await s.db(queries.draft, s.db_engine, draft.draft_id)
+        assert stored is not None
+        previous = await s.db(queries.latest_mandate, s.db_engine, card_id)
+        if previous is not None and previous.status != "active":
+            previous = None
+        mandate = await confirm_stored_draft(
+            s,
+            stored,
+            [c.id for c in draft.checks],
+            draft.uncertainty_policy,
+            operator_run=f"the operator's judging run of {scenario_id}",
+        )
+    assert mandate.viseca_mandate_id is not None
+    log.warning(
+        "judging run of %s: card %s now runs the scenario's instruction as %s (%s at the platform), replacing %s",
+        scenario_id, card_id, mandate.mandate_id, mandate.viseca_mandate_id,
+        previous.mandate_id if previous else "no policy",
+    )  # fmt: skip
+    return mandate, api.PlatformMandate(
+        status_before=None,
+        reregistered=False,
+        viseca_mandate_id=mandate.viseca_mandate_id,
+        previous_viseca_mandate_id=previous.viseca_mandate_id if previous else None,
+        registered_for_run=True,
+        replaced_mandate_id=previous.mandate_id if previous else None,
     )
 
 

@@ -102,7 +102,7 @@ def test_the_served_scenarios_come_from_bootstrap_else_reference_data() -> None:
     assert served_scenario_ids(None, None) is None
 
 
-def two_profiles() -> FakeViseca:
+def two_profiles(**overrides: Any) -> FakeViseca:
     """A sandbox serving SCEN9001 (bootstrap: CU9001, CA9001) and SCEN9002 (runs on CU9002's
     CA9002), both replaying SCEN0000's purchase, and none of the local pack's scenarios."""
     config = judging_pack()
@@ -122,7 +122,7 @@ def two_profiles() -> FakeViseca:
     config["served_extra"] = extra
     config["served_scenarios"]["SCEN9002"] = "SCEN0000"
     config["fixture_profiles"]["SCEN9002"] = {"profile_id": "PROFILE_TEST9002", "customer_id": "CU9002", "card_id": "CA9002"}
-    return FakeViseca(fast(serve_pack=False, human_window_s=0.5, **config))
+    return FakeViseca(fast(serve_pack=False, human_window_s=0.5, **config, **overrides))
 
 
 async def customers(run: Running) -> dict[str, dict[str, Any]]:
@@ -282,7 +282,7 @@ def test_demo_live_starts_through_the_server_and_prints_whom_to_sign_in_as(
     no_local_worker: list[str],
 ) -> None:
     async def scenario() -> None:
-        fake = two_profiles()
+        fake = two_profiles(check_instruction=True)  # demo-live confirms the scenario's own words
         lines: list[str] = []
         async with running(db_url, fake=fake, **REAL_ENGINE) as run:
             polls = fake.polls

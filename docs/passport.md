@@ -141,8 +141,17 @@ Oliver Graf's card after enrolling the stage laptop (version 2; version 1 was th
   `devices` (a device enrolled, approved or removed), `controller` (control handed to another
   device, or named for the first time on a passport from before controllers),
   `confirmation` (a step-up approved), `platform` (the policy's mandate at Viseca changed:
-  D3 registered it again, or named for the first time),
-  `revoked` (C5, or a new policy on the card), `updated` (anything else). A version is
+  D3 registered it again, or named for the first time), `operator_run` (the first version of
+  a policy an operator's judging run registered, below),
+  `revoked` (C5, a new policy on the card, or one an operator's judging run superseded),
+  `updated` (anything else).
+- **Operator run exception.** The console's judging run (D3 `policy: 'scenario'`,
+  api-contract.md §1.2) makes the scenario's own instruction the card's policy without the
+  customer's device-signed confirmation (api-contract.md §3.10): an operator starts it, as `make demo-live`
+  does from a terminal enrolled as the card's device. The replaced policy's passport gets a
+  final version (reason `revoked`; the policy itself is `superseded`, not revoked by the
+  customer), and the new policy's passport starts at version 1 with reason `operator_run`, so
+  anyone reading the versions sees that the customer did not confirm it (docs/decisions.md). A version is
   issued only when the content changed; the older one gets `superseded_at`. A revoked
   passport never changes again.
 

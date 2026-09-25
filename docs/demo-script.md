@@ -486,6 +486,10 @@ On the GitHub tab:
   a run is live (`/healthz` `worker.state` must be `polling` on Fly).
 - Other judging scenarios (`docs/judging-pack.md`) are recorded the same way, each on its
   own card, one after another. On stage only SCEN0104 is shown.
+- The console's **Judging run (live)** records one too: it registers the scenario's own
+  instruction as the card's policy for the run ("This run uses the scenario's own instruction;
+  the card's current policy will be replaced."), since the platform runs a scenario only under
+  its exact words (409 `instruction_mismatch` otherwise, shown in the platform's words).
 
 ## After the show
 
