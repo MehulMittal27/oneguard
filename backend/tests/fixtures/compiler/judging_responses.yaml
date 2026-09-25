@@ -17,6 +17,15 @@
 # runs each), except where they vary under the old prompt too (SCEN0101's requested_item) or add
 # nothing that decides (one SCEN0113 run in five adds "not Sat, Sun" beside "Mon-Fri"), so they
 # are unchanged.
+# SCEN0136 re-recorded on 2026-09-25 (gpt-4.1, same settings) after the prompt learned the last
+# price at each shop (p2/last-price-per-shop): "If a price changes, ask me" is now
+# authorization.billing_amount_chf "=" value_from last_price_at_shop, on_fail ask, no longer a
+# restriction no data can check. The other nine compile the same under the new prompt (two live runs
+# each; SCEN0124 seven): two SCEN0124 runs in seven also wrote "no insurance" as unverifiable, which
+# the LLM path now reads as the excluded travel type it already had, so they are unchanged.
+# After both prompts merged (2026-09-25, gpt-4.1, two live runs each; SCEN0101 fourteen) all ten
+# compile the same as recorded. SCEN0101 sometimes reads "for CHF 20 or less" as a per-item limit
+# (1 run in 4 on the alcohol prompt alone); the LLM path now follows the parser there (per order).
 - scenario: SCEN0101
   response:
     uncertainty_policy: ask
@@ -645,17 +654,17 @@
       words: no annual prepayments
       source: exact
       on_fail: decline
-    - field: unverifiable
+    - field: authorization.billing_amount_chf
       operator: '='
       value_number: null
-      value_text: the price has not changed since last time
+      value_text: null
       value_list: null
-      value_from: literal
-      currency: null
-      scope: null
+      value_from: last_price_at_shop
+      currency: CHF
+      scope: purchase
       period_days: null
       words: If a price changes, ask me
-      source: exact
+      source: inferred
       on_fail: ask
     open_questions:
     - 'No amount stated: what is the most one purchase may cost?'

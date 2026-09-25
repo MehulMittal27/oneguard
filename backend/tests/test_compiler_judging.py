@@ -120,7 +120,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
         (KNOWN, "=", "true", None, None, None, "decline"),               # "current subscriptions", "no new services"
         ("unverifiable", "=", "no premium tiers", None, None, None, "decline"),
         ("unverifiable", "=", "no annual prepayments", None, None, None, "decline"),
-        ("unverifiable", "=", "the price has not changed since last time", None, None, None, "ask"),
+        (BILL, "=", "last_price_at_shop", "CHF", "purchase", None, "ask"),  # "If a price changes, ask me"
     ]},
 }
 
@@ -196,7 +196,7 @@ def test_the_recorded_response_ships_llm(entry, history):
                                        "uncertainty_policy": draft.uncertainty_policy})
     assert coverage(shipped) >= coverage(floor)
     asking = sorted(r.field for r in draft.rules if r.on_fail == "ask")
-    assert asking == (["unverifiable"] if scenario == "SCEN0136" else [])
+    assert asking == ([BILL] if scenario == "SCEN0136" else [])
     assert bool(draft.open_questions) is (scenario in QUESTION_WHY), draft.open_questions
 
 
@@ -328,6 +328,49 @@ def test_a_models_unverifiable_no_alcohol_is_the_alcohol_rule(history):
         _raw("unverifiable", "=", "No alcohol", value_text="no alcohol"),
     )), history, "", TODAY)
     assert [(r.field, r.operator, r.value, r.text) for r in read.rules] == [(ALCOHOL, "=", "false", "No alcohol")]
+
+
+def test_a_models_unverifiable_price_clause_is_the_last_price_at_each_shop(history):
+    """A model that still writes "If a price changes, ask me" as a restriction no data can check
+    (the reading recorded before the field existed) ships the per-shop price rule."""
+    instruction = SERVED["SCEN0136"]
+    read = read_with_llm(instruction, Scripted(_response(
+        _raw("unverifiable", "=", "If a price changes, ask me",
+             value_text="the price has not changed since last time", on_fail="ask"),
+    )), history, "", TODAY)
+    assert [(r.id, r.field, r.operator, r.value, r.on_fail) for r in read.rules] == [
+        ("C1-same", BILL, "=", "last_price_at_shop", "ask")]
+
+
+def test_a_models_unverifiable_item_type_is_the_excluded_type(history):
+    """"No flights, no insurance": a model that also writes "no insurance" as a restriction no
+    data can check ships the travel type the parser reads, never a question on every booking."""
+    instruction = SERVED["SCEN0124"]
+    read = read_with_llm(instruction, Scripted(_response(
+        _raw(CAT, "not_in", "No flights, no insurance", value_list=["travel"]),
+        _raw("unverifiable", "=", "no insurance", value_text="no insurance"),
+    )), history, "", TODAY)
+    assert [(r.field, r.operator, r.value) for r in read.rules] == [(CAT, "not_in", ["travel"])]
+
+
+def test_a_per_item_amount_is_per_item_only_where_the_parser_reads_it_so(history):
+    """"One ordinary grocery item for CHF 20 or less": a model that reads the amount as a
+    per-item limit ships the parser's per-order cap (tighter, and C2 needs one), not a
+    rejected reading. "CHF 200 per night" stays per item."""
+    instruction = SERVED["SCEN0101"]
+    per_item = _raw("items[].unit_price_chf", "<=", "CHF 20 or less", value_number=20, currency="CHF",
+                    scope="purchase")
+    draft = compile_instruction(instruction, history, "", Scripted(_response(
+        per_item, _raw(CAT, "in", "grocery item", value_list=["groceries"]),
+        _raw(KNOWN, "=", "shop I use regularly", value_text="true"),
+    ) | {"requested_item": "ordinary grocery item"}), today=TODAY)
+    assert draft.compiler == "llm"
+    assert [(r.field, r.operator, r.value, r.scope) for r in draft.rules if r.field.endswith("_chf")] == [
+        (BILL, "<=", 20, "purchase")]
+    nights = _raw("items[].unit_price_chf", "<=", "at most CHF 200 per night", value_number=200, currency="CHF",
+                  scope="purchase")
+    read = read_with_llm(SERVED["SCEN0124"], Scripted(_response(nights)), history, "", TODAY)
+    assert [r.field for r in read.rules] == ["items[].unit_price_chf"]
 
 
 COUNT_PHRASES = [

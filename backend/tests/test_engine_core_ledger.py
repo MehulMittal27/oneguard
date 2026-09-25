@@ -53,9 +53,11 @@ class FakeHistory:
         devices: frozenset[str] = frozenset(),
         countries: frozenset[str] = frozenset(),
         max_approved: float | None = None,
+        last_prices: Mapping[str, float] | None = None,
     ) -> None:
         self._customer, self._card = dict(customer or {}), dict(card or {})
         self._devices, self._countries, self._max = devices, countries, max_approved
+        self._last = dict(last_prices or {})
 
     def known_merchants(self, customer_id: str) -> Mapping[str, int]:
         return self._customer if customer_id == CUST else {}
@@ -71,6 +73,9 @@ class FakeHistory:
 
     def max_approved(self, customer_id: str) -> float | None:
         return self._max
+
+    def last_price(self, customer_id: str, merchant_id: str) -> float | None:
+        return self._last.get(merchant_id) if customer_id == CUST else None
 
     def merchant_names(self, merchant_ids) -> dict[str, str]:
         return {}  # no catalogue: A7's names are tested in test_ledger_view_contract.py
@@ -593,7 +598,8 @@ def _comparable(v) -> dict:
 @pytest.mark.parametrize("seed", range(40))
 def test_same_view_as_reference(maker, seed):
     rnd = random.Random(seed)
-    hist = FakeHistory(customer={"M1": 2, "M9": 1}, card={"M1": 1}, max_approved=rnd.choice([None, 55.0]))
+    hist = FakeHistory(customer={"M1": 2, "M9": 1}, card={"M1": 1}, max_approved=rnd.choice([None, 55.0]),
+                       last_prices={"M1": 19.9, "M9": 42.0})
     ref = InMemoryLedger(history=hist)
     with maker() as s:
         led = StoreLedger(s, hist)

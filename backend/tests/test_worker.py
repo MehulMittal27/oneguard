@@ -628,10 +628,12 @@ def test_a_stale_pending_step_up_envelope_never_sends_a_second_resolve(
     db: Engine, history: StoreHistoryIndex
 ) -> None:
     """The CI race: a ``pending_step_up`` envelope served just before the expiry arrives
-    after the ledger closed the step-up; nothing may be resolved again."""
+    after the ledger closed the step-up; nothing may be resolved again. The window is long
+    enough (1.5 s) for the worker to poll while each step-up waits even on a loaded runner:
+    at 0.5 s a slow CI run could close every window before one poll, and the race never ran."""
 
     async def scenario() -> None:
-        config = fast(human_window_s=0.5, pending_serve_delay_s=0.2)
+        config = fast(human_window_s=1.5, pending_serve_delay_s=0.2)
         async with harness(db, config, history=history) as (fake, client, worker):
             await worker.start()
             _, run_id = await start_run(client, worker, "SCEN0001")
@@ -640,7 +642,7 @@ def test_a_stale_pending_step_up_envelope_never_sends_a_second_resolve(
             await asyncio.sleep(0.5)  # let the last stale envelopes arrive
             assert sum(a.step_up_serves for a in auths) > 0
             for auth in auths:
-                assert timeout_resolution(auth)["customer_message"] == timeout_message(0.5)
+                assert timeout_resolution(auth)["customer_message"] == timeout_message(1.5)
             assert worker.status().last_error is None
 
     asyncio.run(scenario())

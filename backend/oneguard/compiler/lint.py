@@ -26,7 +26,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from oneguard.compiler.draft import COUNT_FIELD, MONEY_FIELDS, ParsedDraft, to_chf
+from oneguard.compiler.draft import (
+    COUNT_FIELD,
+    MONEY_FIELDS,
+    ParsedDraft,
+    is_amount,
+    to_chf,
+)
 from oneguard.compiler.parser import (
     _AMOUNT,
     _EXACT_BEFORE,
@@ -109,8 +115,11 @@ def _numbers_in(text: str) -> set[Decimal]:
 
 
 def _has_amount_cap(rules: list[Rule]) -> bool:
+    """A per-order limit in CHF. The last price at each shop (``LAST_PRICE_AT_SHOP``) is not
+    one: a first payment at a new shop has no price to hold it to."""
     return any(
         r.field == "authorization.billing_amount_chf" and r.operator in ("<", "<=", "=") and r.scope != "period"
+        and is_amount(r)
         for r in rules
     )
 
@@ -119,7 +128,7 @@ def _check_boundaries(draft: ParsedDraft) -> list[LintIssue]:
     issues: list[LintIssue] = []
     stated = _stated_amounts(draft.instruction)
     for rule in draft.rules:
-        if rule.field not in MONEY_FIELDS or rule.id in draft.resolved:
+        if not is_amount(rule) or rule.id in draft.resolved:
             continue
         value = Decimal(str(rule.value))
         ops = {op for v, op in stated if v == value}
@@ -162,7 +171,7 @@ def _check_numbers(draft: ParsedDraft) -> list[LintIssue]:
 
 
 def _check_amounts_used(draft: ParsedDraft) -> list[LintIssue]:
-    used = {Decimal(str(r.value)) for r in draft.rules if r.field in MONEY_FIELDS}
+    used = {Decimal(str(r.value)) for r in draft.rules if is_amount(r)}
     asked = " ".join(draft.open_questions)
     issues = []
     for value, _ in _stated_amounts(draft.instruction):
