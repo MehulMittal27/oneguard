@@ -243,6 +243,18 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
         "customer_name": "Omar Chen",
         "ledger_run_id": "live-run_1",
         "started_at": "2026-09-24T10:00:00Z",
+        "platform_mandate": {
+            "status_before": "superseded",
+            "reregistered": True,
+            "viseca_mandate_id": "TM5b8c2a41f09e6d73",
+            "previous_viseca_mandate_id": "TM848a490987be8f79",
+        },
+    },
+    api.PlatformMandate: {
+        "status_before": "superseded",
+        "reregistered": True,
+        "viseca_mandate_id": "TM5b8c2a41f09e6d73",
+        "previous_viseca_mandate_id": "TM848a490987be8f79",
     },
     api.ScenarioProfile: {
         "customer_id": "CU1217",

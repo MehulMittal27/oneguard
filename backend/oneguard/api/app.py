@@ -14,7 +14,8 @@ The lifespan, in order (docs/architecture.md Runtime, docs/database.md §5):
    it reads bootstrap and reference data, syncs the served reference tables into the
    store, then long-polls. Once started, the routes use its history index (reloaded if
    the sync changed anything), and C12 / D3 / D8 read the scenario bindings it stores
-   (``scenario_profiles``) and the scenarios it serves. ``/healthz`` shows it;
+   (``scenario_profiles``) and the scenarios it serves. ``/healthz`` shows it. Every
+   refusal the client sees is recorded in ``worker_events`` (``store.worker_events``);
 5. the passport book opened (the signing key created on an empty store) and its sweep
    started in the background: every ``passport_sweep_s`` it signs the receipts of new
    decisions and re-signs answered step-ups; every ``PASSPORT_SYNC_EVERY`` sweeps (and
@@ -29,7 +30,8 @@ The lifespan, in order (docs/architecture.md Runtime, docs/database.md §5):
 host exposes it (Fly: region, memory, CPUs), whether a model
 provider is configured, the signals backend deciding now (``keywords`` while the model
 loads), the configured one and whether its model is loading or loaded, the database
-engine and a one-row round trip. It names no secret and no URL.
+engine and a one-row round trip, and the newest platform refusal on record (``last_refusal``:
+when, which call, status and code; null when none). It names no secret and no URL.
 """
 
 from __future__ import annotations
@@ -82,6 +84,7 @@ from oneguard.llm.provider import (
 )
 from oneguard.passport.book import PassportBook
 from oneguard.store import seed as seed_module
+from oneguard.store import worker_events
 from oneguard.store.db import get_engine, init_db, make_engine, session
 from oneguard.store.history import StoreHistoryIndex
 from oneguard.viseca.client import API_KEY_ENV, VisecaClient, call_sink, runs_allowed
@@ -293,6 +296,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     s.client = (config.viseca_client or _default_client)(db)
     start: asyncio.Task[None] | None = None
     if s.client is not None:
+        if s.client.refusal_sink is None:
+            s.client.refusal_sink = worker_events.refusal_sink(db)
         models = s.live_models()
         options = {
             "implementations": config.implementations,
@@ -380,6 +385,7 @@ async def healthz(request: Request) -> JSONResponse:
         },
         "model_loaded": s.model_loaded,
         "database": {"engine": _database_engine(s.db_engine), "ok": db_ok, "round_trip_ms": round_trip},
+        "last_refusal": await _last_refusal(s) if db_ok else None,
         "engine": {
             "stubbed": sorted(s.stubbed if s.stubbed is not None else (frozenset() if s.implementations else stubs.STUBBED))
         },
@@ -387,6 +393,21 @@ async def healthz(request: Request) -> JSONResponse:
     if (machine := machine_info()) is not None:
         body["machine"] = machine
     return JSONResponse(body, status_code=200 if db_ok else 503)
+
+
+async def _last_refusal(s: Services) -> dict[str, Any] | None:
+    """The newest platform refusal in ``worker_events``: when, which call, status, code."""
+    try:
+        rows = await asyncio.wait_for(
+            asyncio.to_thread(worker_events.latest, s.db_engine, "platform_refusal"), HEALTH_DB_TIMEOUT_S
+        )
+    except (TimeoutError, OSError, SQLAlchemyError) as exc:
+        log.warning("last refusal unread: %s", type(exc).__name__)
+        return None
+    if not rows:
+        return None
+    row = rows[0]
+    return {"at": _utc_z(row.at), "action": row.action, "status": row.status, "code": row.code}
 
 
 def machine_info() -> dict[str, Any] | None:

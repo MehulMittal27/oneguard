@@ -313,6 +313,9 @@ class Run(Base):
     worker_last_poll_at: Mapped[datetime | None]
     last_error: Mapped[str | None] = mapped_column(Text)
     record_run_id: Mapped[str | None]
+    platform_mandate: Mapped[dict[str, Any] | None] = mapped_column(Json)
+    """Live runs D3 started: the platform status of the policy's mandate D3 read before
+    starting (``api.PlatformMandate``); null for replays and for runs D3 did not start."""
 
 
 class EventRaw(Base):
@@ -452,6 +455,28 @@ class VisecaCall(Base):
     request_summary: Mapped[str | None] = mapped_column(Text)
     response_summary: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class WorkerEvent(Base):
+    """What must outlive the log buffer (docs/database.md §2): every platform refusal (a
+    Viseca call answered with an error, or not answered), and the platform's word on our
+    mandate: our mandate reported other than active during a run (``mandate_inactive``,
+    ``code`` the platform's status) and D3 registering it again (``mandate_reregistered``,
+    ``mandate_id`` the new platform id, ``message`` naming the old). The last
+    ``store.worker_events.KEEP`` of each kind are kept. Never the key or a header."""
+
+    __tablename__ = "worker_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    at: Mapped[datetime] = mapped_column(index=True)
+    kind: Mapped[str] = mapped_column(index=True)
+    action: Mapped[str | None]
+    status: Mapped[int | None] = mapped_column(Integer)
+    code: Mapped[str | None]
+    message: Mapped[str | None] = mapped_column(Text)
+    mandate_id: Mapped[str | None]
+    run_id: Mapped[str | None]
+    authorization_id: Mapped[str | None]
 
 
 # Passport (docs/passport.md) ---------------------------------------------------------------

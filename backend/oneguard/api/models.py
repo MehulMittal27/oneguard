@@ -384,13 +384,31 @@ class ReplayStatus(ApiModel):
     record_started_at: Timestamp | None = None
 
 
+class PlatformMandate(ApiModel):
+    """D3's check of the policy's mandate at the platform before it started the run.
+
+    ``status_before``: what ``GET /v1/mandates/{id}`` said (``active``, ``superseded``,
+    ``revoked``, ...; ``missing`` for a 404; null when the platform did not answer and the
+    run was started anyway). ``reregistered``: the same policy was created and confirmed
+    at the platform again, under ``viseca_mandate_id`` (``previous_viseca_mandate_id`` the
+    one it replaced); the local policy kept its id and stayed active."""
+
+    status_before: str | None
+    reregistered: bool
+    viseca_mandate_id: str
+    previous_viseca_mandate_id: str | None = None
+
+    _omit_if_none = frozenset({"previous_viseca_mandate_id"})
+
+
 class LiveRun(ApiModel):
     """D3, D4, D7. ``customer_id`` / ``customer_name``: who holds ``card_id`` (the card the
     platform's fixture profile runs the scenario on), once known. ``ledger_run_id``: the
     ``run_id`` this run's C6 decisions carry (``run_id`` is the platform's); ``started_at``:
-    when it started, real clock."""
+    when it started, real clock. ``platform_mandate``: D3's check of the policy's mandate at
+    the platform (``PlatformMandate``), for a run D3 started."""
 
-    _omit_if_none = frozenset({"customer_id", "customer_name", "ledger_run_id", "started_at"})
+    _omit_if_none = frozenset({"customer_id", "customer_name", "ledger_run_id", "started_at", "platform_mandate"})
 
     run_id: str
     scenario_id: str
@@ -407,6 +425,7 @@ class LiveRun(ApiModel):
     customer_name: str | None = None
     ledger_run_id: str | None = None
     started_at: Timestamp | None = None
+    platform_mandate: PlatformMandate | None = None
 
 
 class ScenarioProfile(ApiModel):

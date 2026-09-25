@@ -180,7 +180,9 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
   cursor, human window, pending step-ups, fx rates match and mismatch lines, last error), `events_cursor`,
   `provider` (name, configured), `signals` (`backend`: the detector answering now, `keywords`
   until the model has loaded; `configured`; `enabled`; `model_loading`; `model_loaded`), `database`
-  (engine name `sqlite`/`postgresql`, `SELECT 1` round trip in ms), `engine.stubbed`, and
+  (engine name `sqlite`/`postgresql`, `SELECT 1` round trip in ms), `engine.stubbed`,
+  `last_refusal` (the newest platform refusal kept in `worker_events`: `at`, `action`,
+  `status`, `code`; null when none, docs/database.md §2), and
   `machine` only when the host names it (Fly: `region`, `memory_mb`, `cpus`, `machine_id`;
   absent elsewhere).
   503 only when the database does not answer.

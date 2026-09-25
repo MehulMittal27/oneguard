@@ -16,6 +16,11 @@ A non-2xx response raises ``VisecaError`` with the HTTP status and the ``code`` 
 platform's JSON error envelope ``{"error": {"code", "message", "details"?}}`` (the live
 sandbox sends ``details``, a list of validation problems; ``detail`` is read as well). A
 network failure or timeout raises it with ``status=None`` and code ``upstream_unavailable``.
+Every ``VisecaError`` raised here is also handed, as a ``Refusal``, to the client's
+``refusal_sink`` when it has one: the app records each in ``worker_events``
+(``store.worker_events``), so a refusal outlives the log buffer. A refusal names the
+call (``action``) and the mandate, run and authorization it was about; its message is
+scrubbed of the key like everything else.
 
 Response shapes seen on the live sandbox (24 Sep 2026) are pinned in each method's
 docstring; the worker reads them (``oneguard.viseca.worker``).
@@ -72,6 +77,8 @@ class VisecaError(Exception):
         self.code = code
         self.message = message
         self.detail = detail
+        self.body: str | None = None
+        """The response body as served (scrubbed of the key), when the platform answered."""
 
 
 class VisecaNotConfigured(RuntimeError):
@@ -93,6 +100,24 @@ class CallRecord:
 
 
 CallSink = Callable[[CallRecord], None]
+
+
+@dataclass(frozen=True)
+class Refusal:
+    """A Viseca call that raised ``VisecaError``: what the platform said (the status and
+    code, its message, else the response body) and which call it was, never the key."""
+
+    at: datetime
+    action: str
+    status: int | None
+    code: str
+    message: str
+    mandate_id: str | None = None
+    run_id: str | None = None
+    authorization_id: str | None = None
+
+
+RefusalSink = Callable[[Refusal], None]
 
 
 def store_sink(engine: Engine | None = None) -> CallSink:
@@ -155,6 +180,8 @@ class VisecaClient:
         self.base_url = base.rstrip("/")
         self._timeout_s = timeout_s
         self._sink = sink
+        self.refusal_sink: RefusalSink | None = None
+        """Called off the event loop with every ``Refusal`` (the app: ``worker_events``)."""
         self._pending_logs: set[asyncio.Future[None]] = set()
         self._http = httpx.AsyncClient(
             base_url=self.base_url, transport=transport, timeout=timeout_s
@@ -202,6 +229,25 @@ class VisecaClient:
         text = value if isinstance(value, str) else json.dumps(value, separators=(",", ":"), default=str)
         return cap(self._scrub(text))
 
+    def _off_loop(self, write: Callable[[], None]) -> None:
+        """Run ``write`` in a thread; ``drain`` waits for it."""
+        future = asyncio.get_running_loop().run_in_executor(None, write)
+        self._pending_logs.add(future)
+        future.add_done_callback(self._pending_logs.discard)
+
+    def _refused(self, refusal: Refusal) -> None:
+        if self.refusal_sink is None:
+            return
+        sink = self.refusal_sink
+
+        def write() -> None:
+            try:
+                sink(refusal)
+            except Exception:  # recording a refusal must never break a call
+                log.exception("could not record a Viseca refusal")
+
+        self._off_loop(write)
+
     def _emit(self, record: CallRecord) -> None:
         log.debug(
             "viseca %s %s -> %s in %.0f ms%s",
@@ -221,9 +267,7 @@ class VisecaClient:
             except Exception:  # the call log must never break a call
                 log.exception("could not record a Viseca call summary")
 
-        future = asyncio.get_running_loop().run_in_executor(None, write)
-        self._pending_logs.add(future)
-        future.add_done_callback(self._pending_logs.discard)
+        self._off_loop(write)
 
     async def _request(
         self,
@@ -235,6 +279,40 @@ class VisecaClient:
         authenticated: bool = True,
         timeout_s: float | None = None,
         response: Literal["json", "text"] = "json",
+        action: str | None = None,
+        mandate_id: str | None = None,
+        run_id: str | None = None,
+        authorization_id: str | None = None,
+    ) -> Any:
+        """One call. ``action`` (default ``METHOD path``) and the ids name it in a ``Refusal``."""
+        try:
+            return await self._call(method, path, params=params, body=body, authenticated=authenticated,
+                                    timeout_s=timeout_s, response=response)  # fmt: skip
+        except VisecaError as exc:
+            self._refused(
+                Refusal(
+                    at=datetime.now(UTC),
+                    action=action or f"{method} {path}",
+                    status=exc.status,
+                    code=exc.code,
+                    message=exc.body or exc.message,
+                    mandate_id=mandate_id,
+                    run_id=run_id,
+                    authorization_id=authorization_id,
+                )
+            )
+            raise
+
+    async def _call(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None,
+        body: Any,
+        authenticated: bool,
+        timeout_s: float | None,
+        response: Literal["json", "text"],
     ) -> Any:
         headers = {"Accept": "application/json" if response == "json" else "text/csv, */*"}
         if authenticated:
@@ -264,6 +342,7 @@ class VisecaClient:
             if status >= 400:
                 summary = self._summary(reply.text)
                 err = self._error(reply)
+                err.body = cap(self._scrub(reply.text))
                 error = f"{err.code}: {err.message}"[:500]
                 raise err
             if status == 204 or not reply.content:
@@ -312,7 +391,7 @@ class VisecaClient:
 
     async def healthz(self) -> dict[str, Any]:
         """``GET /healthz``: availability and version; no key needed."""
-        return await self._request("GET", "/healthz", authenticated=False)
+        return await self._request("GET", "/healthz", authenticated=False, action="healthz")
 
     async def bootstrap(self) -> dict[str, Any]:
         """``GET /v1/bootstrap``: versions, profile, scenarios, limits, features.
@@ -320,7 +399,7 @@ class VisecaClient:
         Timeouts are ``limits.decision_timeout_seconds``, ``limits.step_up_timeout_seconds``
         and ``limits.long_poll_max_seconds``; ``features.reset`` says whether team reset works.
         """
-        return await self._request("GET", "/v1/bootstrap")
+        return await self._request("GET", "/v1/bootstrap", action="bootstrap")
 
     async def reference_data(self) -> dict[str, Any]:
         """``GET /v1/reference-data``: ``tables`` (catalogues, fx rates), ``history``.
@@ -328,12 +407,16 @@ class VisecaClient:
         ``history`` is ``{"path", "rows", "format"}``: no hash, so checking the served file
         against the pack means downloading it.
         """
-        return await self._request("GET", "/v1/reference-data")
+        return await self._request("GET", "/v1/reference-data", action="reference_data")
 
     async def authorization_history_csv(self) -> str:
         """``GET /v1/reference-data/authorization-history.csv``: the history file."""
         return await self._request(
-            "GET", "/v1/reference-data/authorization-history.csv", response="text", timeout_s=60.0
+            "GET",
+            "/v1/reference-data/authorization-history.csv",
+            response="text",
+            timeout_s=60.0,
+            action="authorization_history_csv",
         )
 
     async def create_mandate(
@@ -356,23 +439,28 @@ class VisecaClient:
                 "guidance": guidance or [],
                 "open_questions": open_questions or [],
             },
+            action="create_mandate",
         )
 
     async def confirm_mandate(self, draft_id: str) -> dict[str, Any]:
         """``POST /v1/mandates/{draft_id}/confirm``: activate; returns ``mandate_id``."""
-        return await self._request("POST", f"/v1/mandates/{draft_id}/confirm", body={"confirmed": True})
+        return await self._request(
+            "POST", f"/v1/mandates/{draft_id}/confirm", body={"confirmed": True}, action="confirm_mandate"
+        )
 
     async def get_mandate(self, mandate_id: str) -> dict[str, Any]:
         """``GET /v1/mandates/{mandate_id}``."""
-        return await self._request("GET", f"/v1/mandates/{mandate_id}")
+        return await self._request("GET", f"/v1/mandates/{mandate_id}", action="get_mandate", mandate_id=mandate_id)
 
     async def patch_mandate(self, mandate_id: str, **fields: Any) -> dict[str, Any]:
         """``PATCH /v1/mandates/{mandate_id}``: tighten only; omitted fields unchanged."""
-        return await self._request("PATCH", f"/v1/mandates/{mandate_id}", body=fields)
+        return await self._request(
+            "PATCH", f"/v1/mandates/{mandate_id}", body=fields, action="patch_mandate", mandate_id=mandate_id
+        )
 
     async def delete_mandate(self, mandate_id: str) -> dict[str, Any] | None:
         """``DELETE /v1/mandates/{mandate_id}``: revoke."""
-        return await self._request("DELETE", f"/v1/mandates/{mandate_id}")
+        return await self._request("DELETE", f"/v1/mandates/{mandate_id}", action="delete_mandate", mandate_id=mandate_id)
 
     async def create_run(self, scenario_id: str, mandate_id: str) -> dict[str, Any]:
         """``POST /v1/scenario-runs``: start a run bound to an active mandate.
@@ -380,7 +468,11 @@ class VisecaClient:
         Returns the same shape as ``get_run``.
         """
         return await self._request(
-            "POST", "/v1/scenario-runs", body={"scenario_id": scenario_id, "mandate_id": mandate_id}
+            "POST",
+            "/v1/scenario-runs",
+            body={"scenario_id": scenario_id, "mandate_id": mandate_id},
+            action="create_run",
+            mandate_id=mandate_id,
         )
 
     async def get_run(self, run_id: str) -> dict[str, Any]:
@@ -388,7 +480,7 @@ class VisecaClient:
         counters ``generated_event_count``, ``delivered_event_count``,
         ``finalized_event_count``, ``processed_event_count``, ``pending_event_count``,
         ``queued_event_count``, ``platform_rejected_count``."""
-        return await self._request("GET", f"/v1/scenario-runs/{run_id}")
+        return await self._request("GET", f"/v1/scenario-runs/{run_id}", action="get_run", run_id=run_id)
 
     async def next_decision_request(self, wait: float = 25) -> dict[str, Any] | None:
         """``GET /v1/decision-requests/next?wait=``: the envelope, or None on 204.
@@ -404,6 +496,7 @@ class VisecaClient:
             "/v1/decision-requests/next",
             params={"wait": wait_param},
             timeout_s=float(wait) + LONG_POLL_GRACE_S,
+            action="next_decision_request",
         )
 
     async def post_decision(
@@ -431,7 +524,13 @@ class VisecaClient:
             "engine_version": engine_version,
         }
         body.update({k: v for k, v in optional.items() if v is not None})
-        return await self._request("POST", f"/v1/authorizations/{authorization_id}/decision", body=body)
+        return await self._request(
+            "POST",
+            f"/v1/authorizations/{authorization_id}/decision",
+            body=body,
+            action="post_decision",
+            authorization_id=authorization_id,
+        )
 
     async def resolve(
         self,
@@ -449,6 +548,8 @@ class VisecaClient:
             "POST",
             f"/v1/authorizations/{authorization_id}/resolve",
             body={"decision": decision, "customer_message": customer_message, "evidence": evidence or []},
+            action="resolve",
+            authorization_id=authorization_id,
         )
 
     async def list_authorizations(self, **params: Any) -> list[dict[str, Any]]:
@@ -460,7 +561,9 @@ class VisecaClient:
         ``run_id``, ``status``, ``decision``, ``decision_source``, ``reason_codes``,
         ``occurred_at``, ``finalized_at`` and the full ``authorization``.
         """
-        return await self._request("GET", "/v1/authorizations", params=params or None)
+        return await self._request(
+            "GET", "/v1/authorizations", params=params or None, action="list_authorizations", run_id=params.get("run_id")
+        )
 
     async def events(self, since: int | str = 0) -> dict[str, Any]:
         """``GET /v1/events?since=``: ``{"since", "next_cursor", "events": [...]}``.
@@ -470,7 +573,7 @@ class VisecaClient:
         ``authorization_id`` (null for scenario events), ``status``, ``occurred_at`` and
         ``data``. The cursor is team-wide and survives runs.
         """
-        return await self._request("GET", "/v1/events", params={"since": since})
+        return await self._request("GET", "/v1/events", params={"since": since}, action="events")
 
     async def reset_team(self) -> dict[str, Any] | None:
         """``POST /v1/team/reset``: clear development state.
@@ -479,4 +582,4 @@ class VisecaClient:
         403 ``reset_disabled`` during judging; ``bootstrap()["features"]["reset"]`` says
         which.
         """
-        return await self._request("POST", "/v1/team/reset", body={"confirmed": True})
+        return await self._request("POST", "/v1/team/reset", body={"confirmed": True}, action="reset_team")

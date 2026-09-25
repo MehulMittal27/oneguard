@@ -21,6 +21,7 @@ import {
   outcomeBadge,
   hasReceipt,
   passportSummary,
+  platformMandateNote,
   readVerification,
   replayGuard,
   runDecisions,
@@ -79,6 +80,43 @@ test('a live run and a replay read as one shape, keyed by the run their decision
   )
   assert.equal(live?.policy, null)
   assert.equal(consoleRun(null), null)
+})
+
+test('the run header says when D3 registered the policy at the platform again', () => {
+  const live = (platform_mandate?: LiveRun['platform_mandate']) =>
+    consoleRun({
+      kind: 'live',
+      run: {
+        run_id: 'RUN1', scenario_id: 'S1', card_id: 'CA1', mandate_id: 'md_1', state: 'running',
+        delivered: 0, decided: 0, pending_human: 0, total: 3, worker_ok: true, last_error: null, platform_mandate,
+      },
+    })?.platformMandate
+  assert.deepEqual(
+    live({ status_before: 'superseded', reregistered: true, viseca_mandate_id: 'TMnew', previous_viseca_mandate_id: 'TMold' }),
+    {
+      label: 'platform mandate re-registered',
+      detail: 'TMold was superseded at the platform; the same policy now runs as TMnew.',
+    },
+  )
+  assert.equal(live({ status_before: 'active', reregistered: false, viseca_mandate_id: 'TMold' }), null)
+  assert.equal(live(undefined), null)
+  // the run panel shows the same run, evidence and all, in progress or finished
+  const rereg = { status_before: 'superseded', reregistered: true, viseca_mandate_id: 'TMnew', previous_viseca_mandate_id: 'TMold' }
+  const running = consoleRun({
+    kind: 'live',
+    run: {
+      run_id: 'RUN1', scenario_id: 'S1', card_id: 'CA1', mandate_id: 'md_1', state: 'running',
+      delivered: 0, decided: 0, pending_human: 0, total: 3, worker_ok: true, last_error: null, platform_mandate: rereg,
+    },
+  })
+  assert.ok(running)
+  assert.equal(runPanel(running, 0, null)?.run.platformMandate?.label, 'platform mandate re-registered')
+  const finished = { ...running, state: 'done' as const, pendingHuman: 0 }
+  assert.equal(runPanel(finished, 0, 'S1')?.run.platformMandate?.label, 'platform mandate re-registered')
+  assert.equal(
+    platformMandateNote({ status_before: null, reregistered: true, viseca_mandate_id: 'TMnew' })?.detail,
+    'The previous mandate was not active at the platform; the same policy now runs as TMnew.',
+  )
 })
 
 test('the run header says which policy a replay decides by', () => {

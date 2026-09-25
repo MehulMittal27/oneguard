@@ -20,7 +20,8 @@ demo-live:
    docs/passport.md), then C1 compile the instruction on that card, C2 confirm what it
    proposes, signed by that device;
 5. D3 start the run (409 ``run_active`` → exit 1), then, before the first decision, print
-   ``Sign in as <name> (<customer id>, card <card id>)`` from the run's fixture profile;
+   ``Sign in as <name> (<customer id>, card <card id>)`` from the run's fixture profile
+   (and ``Platform mandate re-registered: ...`` when D3 had to register the policy again);
 6. follow D4 and the customer's decisions (C6) read-only, one line per decision and per
    step-up outcome, until the run is done.
 
@@ -286,6 +287,12 @@ async def run_via_api(
         return 1
 
     run_id, customer_id = live["run_id"], live.get("customer_id")
+    platform = live.get("platform_mandate") or {}
+    if platform.get("reregistered"):
+        out(
+            f"Platform mandate re-registered: {platform.get('previous_viseca_mandate_id') or 'the mandate'} was "
+            f"{platform.get('status_before')}, the policy now runs as {platform.get('viseca_mandate_id')}"
+        )
     if customer_id:
         out(f"Sign in as {live.get('customer_name') or customer_id} ({customer_id}, card {live['card_id']})")
     else:
