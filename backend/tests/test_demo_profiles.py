@@ -184,6 +184,12 @@ def test_each_served_scenario_binds_its_own_customer_and_only_served_ones_are_li
             assert moved["status"] == "active" and moved["mandate_id"] == live["mandate_id"]
             left = (await run.get("/api/cards/CA9001/policy")).json()["mandate"]
             assert left["status"] == "revoked" and left["instruction"] == moved["instruction"]
+            # the moved policy's passport follows the reply (D3 does not wait for signing)
+            async def moved_passport() -> bool:
+                r = await run.get("/api/cards/CA9002/passport")
+                return r.status_code == 200 and r.json()["document"]["mandate_id"] == moved["mandate_id"]
+
+            await until(moved_passport, timeout=10)
 
             found = await customers(run)
             assert (found["CU9002"]["scenario_ids"], found["CU9002"]["live"], found["CU9002"]["card_id"]) == (

@@ -90,6 +90,21 @@ class Services:
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     policy_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     """Serialises C2, C4, C5 so one draft is never confirmed twice."""
+    background: set[asyncio.Task[Any]] = field(default_factory=set)
+    """Follow-up work a reply need not wait for (``spawn``), cancelled when the app stops."""
+
+    def spawn(self, work: Awaitable[Any], name: str) -> None:
+        """Run ``work`` after the reply; a failure is logged, never raised to the caller."""
+
+        async def guarded() -> None:
+            try:
+                await work
+            except Exception:
+                log.exception("background %s failed", name)
+
+        task = asyncio.create_task(guarded(), name=name)
+        self.background.add(task)
+        task.add_done_callback(self.background.discard)
 
     @property
     def functions(self) -> Mapping[str, Callable[..., Any]]:

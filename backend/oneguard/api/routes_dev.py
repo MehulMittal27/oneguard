@@ -302,9 +302,15 @@ async def _move_policy(s: Services, mandate_id: str, card_id: str, customer_id: 
             if old.viseca_mandate_id and old.viseca_mandate_id != moved.viseca_mandate_id:
                 await revoke_at_platform(s, old, strict=False)
         s.bind_mandate(moved, moved=True)
-        for card in dict.fromkeys([card_id, *source_card]):
-            await reissue_passport(s, card)
+    # The passports follow after the reply: D3 answers as fast as before, and the run
+    # it started is not held up by signing (the sweep catches up if this fails).
+    s.spawn(_reissue_passports(s, [card_id, *source_card]), "passport-reissue")
     return moved.mandate_id
+
+
+async def _reissue_passports(s: Services, cards: list[str]) -> None:
+    for card in dict.fromkeys(cards):
+        await reissue_passport(s, card)
 
 
 async def _with_customer(s: Services, live: api.LiveRun) -> api.LiveRun:
