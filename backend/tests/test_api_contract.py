@@ -760,6 +760,8 @@ def test_resolve_rules(db_url: str) -> None:
             assert (row["decision"], row["uncertain_outcome"], row["status"], row["resolved_by"]) == (
                 "uncertain", "approved", "final", "customer",
             )  # fmt: skip
+            assert row["message"] == f"Approved by you CHF {step_up['billing_amount_chf']:.2f}: {step_up['message']}"
+            assert row["counterfactual"] == step_up["counterfactual"]
 
     asyncio.run(scenario())
 

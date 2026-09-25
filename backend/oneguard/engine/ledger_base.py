@@ -11,10 +11,12 @@ step-up is declined and releases its reservation.
 
 from __future__ import annotations
 
+import re
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
@@ -105,15 +107,30 @@ def period_counts(in_window: Iterable[Any]) -> dict[str, Any]:
     }
 
 
+ANSWERED_LEADS = {"approve": "Approved by you", "decline": "Declined by you"}
+_ASKED = re.compile(r"^Waiting for you CHF [\d,'’.]+: ")
+"""The lead of a step-up's template message (``explain.LEADS``, ``explain._message``)."""
+
+
+def answered_message(message: str, decision: Literal["approve", "decline"], billing_amount_chf: float) -> str:
+    """A step-up's message once the customer answered (C8): "Approved by you CHF {amount}:
+    {clause}" / "Declined by you …", with the clause it was asked with kept verbatim. A
+    message without the "Waiting for you CHF …:" lead (a tier-3 rewrite) is the clause."""
+    asked = _ASKED.match(message)
+    clause = message[asked.end():] if asked else message
+    return f"{ANSWERED_LEADS[decision]} CHF {Decimal(str(billing_amount_chf)):.2f}: {clause}"
+
+
 def check_resolution(
     decision: Literal["approve", "decline"], resolved_by: Literal["customer", "timeout"], message: str | None
 ) -> None:
-    """A timeout only ever declines and always re-renders the message (rules.md Q2);
-    a customer's answer keeps the message it was asked with."""
+    """A timeout only ever declines and takes its message (rules.md Q2); a customer's
+    answer takes none, the ledger re-renders the one it was asked with
+    (``answered_message``)."""
     if resolved_by == "timeout" and decision != "decline":
         raise ValueError("a timeout only ever declines (rules.md Q2)")
     if (resolved_by == "timeout") != (message is not None):
-        raise ValueError("a timeout, and only a timeout, replaces the message (rules.md Q2)")
+        raise ValueError("a timeout, and only a timeout, passes the message (rules.md Q2)")
 
 
 def confirmation_key(rule_id: str, merchant_id: str, item_id: str) -> str:
@@ -217,7 +234,8 @@ class Ledger(ABC):
         ``resolved_by="timeout"`` records ``uncertain_outcome="expired"`` (Q2) and needs
         ``message`` (``explain.expired_message``): it replaces the stored "Waiting for you"
         message and the counterfactual is dropped; ``explanation_source`` is unchanged. A
-        customer's answer keeps the message and takes none. ``at`` is the real clock.
+        customer's answer takes no message: the stored one is re-rendered by
+        ``answered_message`` and the counterfactual kept. ``at`` is the real clock.
         Raises KeyError if unknown, ValueError if not pending or ``message`` does not fit.
         """
 
@@ -388,10 +406,13 @@ class InMemoryLedger(Ledger):
             check_resolution(decision, resolved_by, message)
             approved = decision == "approve"
             outcome = "expired" if resolved_by == "timeout" else ("approved" if approved else "declined")
-            expired = {"message": message, "counterfactual": None} if message is not None else {}
+            if message is not None:
+                rendered = {"message": message, "counterfactual": None}
+            else:
+                rendered = {"message": answered_message(entry.message, decision, entry.billing_amount_chf)}
             resolved = entry.model_copy(
                 update={
-                    **expired,
+                    **rendered,
                     "final": True,
                     "uncertain_outcome": outcome,
                     "reserved_chf": 0.0,

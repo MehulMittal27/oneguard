@@ -380,7 +380,11 @@ fields, never in place of them. Both default to unknown, and unknown is never a 
   recorded and nothing is posted. Still pending → `/resolve` `decline`, message "No answer
   within 120 s; nothing was approved", `resolved_by: timeout` (rules.md Q2); on a 409 the
   state is read again and recorded. Never a second `/resolve` for the same id. Not spent. A
-  customer answer through C8 sets `resolved_by: 'customer'`.
+  customer answer through C8 sets `resolved_by: 'customer'` and re-renders the stored and
+  served message as "Approved by you CHF {amount}: {clause}" / "Declined by you CHF
+  {amount}: {clause}", the clause the customer was asked with kept verbatim (a tier-3
+  rewrite is kept whole as the clause); the counterfactual is unchanged
+  (`engine/ledger_base.py` `answered_message`).
 - A step-up renders the **complete** purchase (all lines, delivery fee, currency, recurring
   flag, flagged text).
 
