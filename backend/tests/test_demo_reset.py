@@ -38,8 +38,12 @@ def row(table: Table, **values: Any) -> dict[str, Any]:
         if c.nullable or (c.primary_key and c.autoincrement is True):
             continue
         try:
-            out[c.name] = FILL[c.type.python_type]
-        except NotImplementedError:  # the store's own types: UTC datetimes, JSON
+            kind = c.type.python_type
+        except NotImplementedError:  # the store's own types (UTC datetimes); JSON in some SQLAlchemy versions
+            kind = None
+        if kind in FILL:
+            out[c.name] = FILL[kind]
+        else:  # the store's UTC datetimes and JSON columns (``object`` in some SQLAlchemy versions)
             out[c.name] = NOW if "DateTime" in type(c.type).__name__ else {}
     return out | values
 
