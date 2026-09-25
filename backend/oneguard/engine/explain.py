@@ -34,6 +34,7 @@ from oneguard.engine.policy import (
     KNOWN_SHOP_FIELDS,
     NO_HISTORY,
     RESERVATION_ONLY,
+    is_last_price_rule,
     matches_requested_item,
 )
 from oneguard.engine.protections import (
@@ -518,6 +519,9 @@ def _typed_bound(rule: Rule, facts: Facts, view: LedgerView) -> CounterfactualBo
         return _remove(_category_lines(facts, [str(v) for v in values], allowed=rule.operator == "in"))
     if rule.scope == "period":
         return _period_bound(rule, view)
+    if is_last_price_rule(rule):  # "same price as last time": the ledger's price at this shop
+        last = view.last_price_chf_by_merchant.get(facts.merchant_id)
+        return _field_bound(AMOUNT_FIELD, rule.operator, Decimal(str(last))) if last is not None else None
     if not rule.field or rule.field == "unverifiable":
         return None
     return _field_bound(rule.field, rule.operator, _rule_value(rule))

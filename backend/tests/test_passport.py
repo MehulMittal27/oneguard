@@ -251,3 +251,27 @@ def test_canonical_matches_the_browser_byte_for_byte() -> None:
         b'{"body":{"add_checks":[{"id":"C2","text":"Total at or below CHF 300 across any 7 days"}]},'
         b'"method":"POST","nonce":"abc","path":"/api/cards/CA0039/policy/tighten","ts":1790000000}'
     )
+
+
+def test_a_same_price_rule_is_bounded_by_the_last_price_at_that_shop() -> None:
+    from oneguard.engine.policy import LAST_PRICE_AT_SHOP
+    from oneguard.engine.types import LedgerView
+
+    rule = Rule(id="C1", field="authorization.billing_amount_chf", operator="=", value=LAST_PRICE_AT_SHOP,
+                currency="CHF", scope="purchase", text="Same price as last time", source="exact")  # fmt: skip
+    policy = Policy(mandate_id="m", status="active", instruction="", rules=[rule], uncertainty_policy="ask")
+
+    class Shop:
+        merchant_id = "ME0001"
+
+    def view(last: dict[str, float]) -> LedgerView:
+        return LedgerView(period_spent_chf=0, period_reserved_chf=0, period_window_start=NOW, priors=[],
+                          known_merchant_ids=set(), known_merchant_ids_on_card=set(), known_device_ids=set(),
+                          known_countries=set(), max_approved_chf=None, flagged_merchant_ids=set(), frozen=False,
+                          last_price_chf_by_merchant=last)  # fmt: skip
+
+    result = RuleResult(rule_id="C1", outcome="fail", detail="x", counterfactual="Would approve at CHF 42.50", source="history")
+    assert rule_bound(result, policy, Shop(), view({"ME0001": 42.5})) == {  # type: ignore[arg-type]
+        "field": "authorization.billing_amount_chf", "operator": "=", "value": 42.5,
+    }  # fmt: skip
+    assert rule_bound(result, policy, Shop(), view({})) is None  # type: ignore[arg-type]
