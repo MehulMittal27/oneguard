@@ -54,10 +54,17 @@ NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
     ("Buy a bag under CHF 50", "bag", True),
     ("Order an umbrella", "umbrella", True),
     ("Buy a pair of trail shoes", "trail shoes", True),
+    ("I need new hiking boots, size 42", "hiking boots", True),
+    ("Buy new hiking boots", "hiking boots", True),
+    ("Replace my worn road-running shoes in size 43", "road-running shoes", True),
+    ("Get me hiking boots, size 42", "hiking boots", True),
     ("Buy two concert tickets, max CHF 90 each", "concert tickets", False),
+    ("Buy two new shirts", "shirts", False),
+    ("Get me three shirts", "shirts", False),
+    ("Replace my 4 tyres", "tyres", False),
+    ("Buy a hat and two new shirts", "shirts", False),
     ("Renew my gym membership, same price as last time", "gym membership", False),
-    ("I need new hiking boots, size 42", "hiking boots", False),
-    ("Replace my worn road-running shoes in size 43", "road-running shoes", False),
+    ("Order hiking boots, size 46", "hiking boots", False),
     ("Buy the running shoes", "running shoes", False),
     ("Buy a hotel room", None, False),
 ])
@@ -79,6 +86,22 @@ def test_both_compiler_paths_mark_the_chosen_lens_as_one_item():
     response = next(e["response"] for e in yaml.safe_load(RECORDED.read_text()) if e["scenario"] == "SCEN0122")
     draft = compile_instruction(LENS, history, "", Recorded(response))
     assert draft.compiler == "llm" and draft.requested_item == "camera lens" and draft.single_item
+
+
+SHOES = ("Replace my worn road-running shoes in size 43. Buy only from a specialist sports retailer, only if "
+         "the order can be returned within 14 days or more, and pay no more than CHF 200. Ask me when uncertain.")
+
+
+def test_both_compiler_paths_mark_the_replaced_shoes_as_one_item():
+    """SCEN0002: "replace my ... shoes" is one pair (its AU0019 and AU0023 then ask, A8)."""
+    history = StoreHistoryIndex(rows=[])
+    assert parse(SHOES, history, "").single_item
+    public = yaml.safe_load((RECORDED.parent / "recorded_responses.yaml").read_text(encoding="utf-8"))
+    response = next(e["response"] for e in public if e["label"] == "public_2")
+    draft = compile_instruction(SHOES, history, "", Recorded(response))
+    assert draft.compiler == "llm" and draft.requested_item == "road-running shoes" and draft.single_item
+    fixture = yaml.safe_load((POLICIES / "SCEN0002.yaml").read_text(encoding="utf-8"))
+    assert fixture["instruction"] == SHOES and fixture["single_item"] is True  # the replay's policy agrees
 
 
 def test_the_flag_is_stored_with_the_policy_and_old_policies_read_as_not_stated():

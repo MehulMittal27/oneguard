@@ -20,6 +20,8 @@
    paths: the live run's Tue 01:15 and Wed 15:35 deliveries now decline.
 8. A per-night price times the stated nights is the per-order cap (inferred, the per-night
    rule kept), on both paths: SCEN0124 compiles with no open question and C2 accepts it.
+9. "I need new hiking boots" is one requested item (single_item), on both paths: SCEN0130's
+   first pair approves and the next steps up with already_fulfilled (A8).
 """
 
 from __future__ import annotations
@@ -93,7 +95,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
         (ALCOHOL, "=", "false", None, None, None, "decline"),  # "No alcohol": wine is "groceries"
         (KNOWN, "=", "true", None, None, None, "decline"),
     ]},
-    "SCEN0122": {"item": "camera lens", "extra": True, "rules": [
+    "SCEN0122": {"item": "camera lens", "extra": True, "single": True, "rules": [
         (BILL, "<=", 900, "CHF", "purchase", None, "decline"),
         (KNOWN, "=", "true", None, None, None, "decline"),
         (CAT, "in", ("photography",), None, None, None, "decline"),  # the catalogue's camera lens
@@ -107,7 +109,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
         ("unverifiable", "=", "for 3 nights from 10 September to 13 September", None, None, None, "decline"),
         (BILL, "<=", 600, "CHF", "purchase", None, "decline"),  # 3 nights at CHF 200: the order cap
     ]},
-    "SCEN0130": {"item": "hiking boots", "extra": True, "rules": [
+    "SCEN0130": {"item": "hiking boots", "extra": True, "single": True, "rules": [  # "I need new hiking boots"
         (BILL, "<=", 180, "CHF", "purchase", None, "decline"),
         ("items[].size_eu", "=", 42, None, None, None, "decline"),
         ("order.return_window_days", ">=", 14, None, None, None, "decline"),
@@ -157,6 +159,7 @@ def test_the_parser_reads_every_restriction(scenario, history):
     assert sorted(map(_key, draft.rules), key=repr) == sorted(expected["rules"], key=repr)
     assert draft.requested_item == expected.get("item")
     assert draft.nothing_extra is expected.get("extra", False)
+    assert draft.single_item is expected.get("single", False)
     assert draft.uncertainty_policy == "ask"
     assert bool(draft.open_questions) is (scenario in QUESTION_WHY), draft.open_questions
 
@@ -197,6 +200,9 @@ def test_the_recorded_response_ships_llm(entry, history):
     scenario, instruction = entry["scenario"], SERVED[entry["scenario"]]
     draft = compile_instruction(instruction, history, "", Scripted(entry["response"]), today=TODAY)
     assert draft.compiler == "llm"
+    # The parser's one-item reading; SCEN0101's model also names "ordinary grocery item" (one),
+    # where the parser reads only the groceries type (the requested_item variance noted in the file).
+    assert draft.single_item is (scenario == "SCEN0101" or EXPECTED[scenario].get("single", False))
     floor = parse(instruction, history, "", TODAY)
     shipped = floor.model_copy(update={"rules": draft.rules, "requested_item": draft.requested_item,
                                        "nothing_extra": draft.nothing_extra,
@@ -508,6 +514,54 @@ def test_scen0113_declines_a_dinner_outside_the_evening(path):
         assert explanation.counterfactual == "Would approve from 17:00."
     evening, _, _ = decide_event(_dinner("IT_EVENING", 2 * 24 * 60 + 7 * 60), ctx)  # Wed 19:00
     assert evening.outcome == "approve", evening
+
+
+def _boots(item: str, minutes: int, amount: float) -> dict:
+    """Hiking boots, size 42, 30-day returns, at the customer's usual sports shop."""
+    from tests.test_c9_no_history import event
+
+    ev = event("ME_SPORT", item, minutes=minutes, amount=amount)
+    ev["authorization"]["merchant"].update(merchant_category="sporting_goods", merchant_mcc="5941")
+    ev["authorization"]["purchase_description"] = "Hiking boots order"
+    ev["authorization"]["items"][0].update(item_category="sporting_goods", item_name="Hiking boots",
+                                           item_details="Hiking boot, size 42; returns accepted within 30 days")
+    return ev
+
+
+@pytest.mark.parametrize("path", ["fallback", "llm"])
+def test_scen0130_asks_before_a_second_pair_of_boots(path):
+    """The live run approved SCEN0130's hiking boots five times: "I need new hiking boots" is
+    one requested item, so the first pair approves and the next one asks (A8), on either path."""
+    from oneguard.engine.ledger_base import InMemoryLedger
+    from oneguard.engine.types import HistoryRow, Policy
+    from oneguard.llm.provider import NullProvider
+    from oneguard.pipeline import PipelineContext, decide_event
+    from tests.test_c9_no_history import CARD, NEW, T0
+
+    shop = StoreHistoryIndex(rows=[HistoryRow(
+        authorization_id="H_SPORT", customer_id=NEW, card_id=CARD, initiator_type="human",
+        timestamp=T0 - timedelta(days=20), transaction_type="purchase", status="approved", amount=60.0,
+        currency="CHF", billing_amount_chf=60.0, merchant_id="ME_SPORT", merchant_name="Sport Shop",
+        merchant_category="sporting_goods", merchant_country="CH", channel="ecommerce", recurring=False,
+        customer_device_id="DVC-NEW", description="",
+    )])  # fmt: skip
+    instruction = SERVED["SCEN0130"]
+    response = next(e["response"] for e in RECORDED if e["scenario"] == "SCEN0130")
+    draft = compile_instruction(instruction, shop, "", NullProvider() if path == "fallback" else Scripted(response),
+                                today=TODAY)
+    assert (draft.compiler, draft.requested_item, draft.single_item) == (path, "hiking boots", True)
+    policy = Policy(mandate_id="TM_NEW", status="active", instruction=instruction,
+                    uncertainty_policy=draft.uncertainty_policy, rules=draft.rules,
+                    requested_item=draft.requested_item, allowed_item_categories=draft.allowed_item_categories,
+                    nothing_extra=draft.nothing_extra, shop_type=draft.shop_type, single_item=draft.single_item)
+    ctx = PipelineContext(policy=policy, ledger=InMemoryLedger(history=shop), history=shop, run_id=f"run-130-{path}",
+                          now=lambda: datetime(2026, 9, 25, 12, 0, tzinfo=UTC))
+    first, _, _ = decide_event(_boots("IT_BOOTS_1", 0, 150.0), ctx)
+    assert first.outcome == "approve", first
+    second, explanation, _ = decide_event(_boots("IT_BOOTS_2", 3 * 60, 140.0), ctx)
+    assert (second.outcome, second.reason_codes, second.deciding_ids) == ("step_up", ["already_fulfilled"], ["A8"])
+    assert explanation.message == ("Waiting for you CHF 140.00: You already bought the hiking boots on 10 Aug "
+                                   "for CHF 150.00; approve another?")
 
 
 def test_the_evening_window_is_inferred_and_no_cap(history):
