@@ -309,8 +309,20 @@ class FakeViseca:
         self.bootstrap_reads = 0
         self.reference_reads = 0
         self.authorization_headers: list[str] = []
+        self.held: list[FakeRun] | None = None
 
     # Queries used by tests ------------------------------------------------------------
+
+    def hold(self) -> None:
+        """New runs start but queue no purchase until ``release``: a test can act while a
+        run is in progress without racing its end, and no decision deadline runs meanwhile."""
+        self.held = []
+
+    def release(self) -> None:
+        """Queue each held run's first purchase, with a deadline from now."""
+        held, self.held = self.held or [], None
+        for run in held:
+            self._queue(run, run.auths[0])
 
     def by_source(self, run_id: str, source_id: str) -> FakeAuth:
         return next(a for a in self.runs[run_id].auths if a.source_id == source_id)
@@ -669,7 +681,10 @@ class FakeViseca:
             )
             fake.runs[run_id] = run
             fake.auths.update({a.live_id: a for a in run.auths})
-            fake._queue(run, run.auths[0])
+            if fake.held is not None:
+                fake.held.append(run)
+            else:
+                fake._queue(run, run.auths[0])
             return JSONResponse(fake._run_view(run))
 
         @app.get("/v1/scenario-runs/{run_id}")
