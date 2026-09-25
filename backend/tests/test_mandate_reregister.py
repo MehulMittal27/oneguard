@@ -176,7 +176,7 @@ def test_a_refused_reregistration_starts_nothing_and_the_refusal_is_kept(db_url:
             assert r.status_code == 503
             error = r.json()["error"]
             assert error["code"] == "upstream_unavailable"
-            assert error["detail"] == {"platform_status": 503, "platform_code": "unavailable"}
+            assert error["detail"] == {"platform_status": 503, "platform_code": "unavailable", "platform_message": "injected"}
             assert not run.fake.runs and list(run.fake.mandates) == [old]
             row = stored_mandate(run, policy["mandate_id"])
             assert (row.status, row.viseca_mandate_id) == ("active", old)
@@ -277,7 +277,7 @@ def test_demo_live_goes_through_d3_and_says_when_it_registered_again(db_url: str
     supersedes it at the platform, and D3 registers it again."""
 
     async def scenario() -> None:
-        fake = FakeViseca(fast())
+        fake = FakeViseca(fast(check_instruction=True))  # the platform wants the scenario's words
         lines: list[str] = []
         async with running(db_url, fake=fake, implementations=None, stubbed=None) as run:
             app = httpx.ASGITransport(app=run.app)

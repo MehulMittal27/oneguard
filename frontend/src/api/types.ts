@@ -358,11 +358,16 @@ export interface LiveRun {
 // The platform's status of the policy's mandate as D3 found it (`missing`: not
 // there; null: unread), and whether D3 registered the same policy again, under
 // `viseca_mandate_id` (`previous_viseca_mandate_id` the one it replaced).
+// `registered_for_run` (D3 `policy: 'scenario'`): D3 registered the scenario's
+// own instruction for this run as the card's policy, replacing
+// `replaced_mandate_id` (absent: the card had none).
 export interface PlatformMandate {
   status_before: string | null
   reregistered: boolean
   viseca_mandate_id: string
   previous_viseca_mandate_id?: string
+  registered_for_run?: boolean
+  replaced_mandate_id?: string
 }
 
 // D8: one scenario of the store's catalogue as the platform sees it: whether it

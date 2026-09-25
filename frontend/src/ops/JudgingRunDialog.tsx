@@ -1,18 +1,23 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import type { ScenarioSummary } from '../api/types'
+import { JUDGING_POLICY_NOTE } from '../lib/opsConsole'
 import { BUTTON_PRIMARY, BUTTON_SECONDARY, TEXT_L, TEXT_M } from './style'
 
 /**
  * D3 behind a typed confirmation: a judging run talks to the payment platform
  * and holds the team's one delivery slot, so the operator types the scenario id
- * before it starts. A finished run of it already on record is repeated here as a
- * warning (it does not stop the start). The backend's refusal (409 `run_active`, `runs_disabled`,
- * …) is shown in its own words, and the dialog stays open.
+ * before it starts. It runs under the scenario's own instruction, which replaces
+ * the card's current policy, and says so. A finished run of it already on record
+ * is repeated here as a warning (it does not stop the start). The backend's
+ * refusal (409 `run_active`, `runs_disabled`, …) is shown in its own words, with
+ * the platform's own answer verbatim under it when the platform refused (409
+ * `instruction_mismatch`, …), and the dialog stays open.
  */
 export function JudgingRunDialog({
   scenario,
   busy,
   refusal,
+  platformRefusal = null,
   warning,
   onStart,
   onClose,
@@ -20,6 +25,8 @@ export function JudgingRunDialog({
   scenario: ScenarioSummary
   busy: boolean
   refusal: string | null
+  // The platform's own words when it refused ("Platform 409 instruction_mismatch: …").
+  platformRefusal?: string | null
   // A finished live run of this scenario already on record, or null.
   warning: string | null
   onStart: () => void
@@ -56,8 +63,11 @@ export function JudgingRunDialog({
         </h2>
         <p className="text-ink-soft">
           This starts {scenario.scenario_id} · {scenario.name} on the Viseca sandbox, on card {scenario.card_id}{' '}
-          ({scenario.customer_name ?? scenario.customer_id}). It needs the card&apos;s active policy, and only one run
-          can be open at a time. Type the scenario id to start it.
+          ({scenario.customer_name ?? scenario.customer_id}). Only one run can be open at a time. Type the scenario id
+          to start it.
+        </p>
+        <p className="rounded-row border border-asked-border bg-asked-tint px-4 py-3 font-semibold text-asked-ink">
+          {JUDGING_POLICY_NOTE}
         </p>
         {warning && (
           <p className="rounded-row border border-asked-border bg-asked-tint px-4 py-3 font-semibold text-asked-ink">
@@ -77,9 +87,10 @@ export function JudgingRunDialog({
           />
         </label>
         {refusal && (
-          <p role="alert" className="rounded-row bg-stopped-tint px-4 py-3 text-stopped">
-            {refusal}
-          </p>
+          <div role="alert" className="flex flex-col gap-2 rounded-row bg-stopped-tint px-4 py-3 text-stopped">
+            <p>{refusal}</p>
+            {platformRefusal && <p className="font-semibold break-words">{platformRefusal}</p>}
+          </div>
         )}
         <div className="flex justify-end gap-3">
           <button

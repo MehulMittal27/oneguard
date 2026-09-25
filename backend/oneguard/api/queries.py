@@ -289,9 +289,18 @@ def latest_mandates_by_card(db: Engine, card_ids: Iterable[str]) -> dict[str, Ma
         return {m.card_id: m for m in rows}
 
 
-def confirm_draft(db: Engine, draft_id: str, mandate: Mandate, viseca_draft_id: str | None, at: datetime) -> list[Mandate]:
-    """Store ``mandate``, mark the draft confirmed, and revoke the card's earlier active
-    mandates (a new policy replaces the old one). Returns the mandates it revoked."""
+def confirm_draft(
+    db: Engine,
+    draft_id: str,
+    mandate: Mandate,
+    viseca_draft_id: str | None,
+    at: datetime,
+    ended: str = "revoked",
+    note: str | None = None,
+) -> list[Mandate]:
+    """Store ``mandate``, mark the draft confirmed, and end the card's earlier active
+    mandates (a new policy replaces the old one): ``revoked``, or ``superseded`` with
+    ``note`` when an operator's run replaced it (D3). Returns the mandates it ended."""
     with session(db) as s:
         replaced = list(
             s.scalars(
@@ -299,8 +308,9 @@ def confirm_draft(db: Engine, draft_id: str, mandate: Mandate, viseca_draft_id: 
             )
         )
         for old in replaced:
-            old.status = "revoked"
+            old.status = ended
             old.revoked_at = at
+            old.note = note
         row = s.get(PolicyDraft, draft_id)
         assert row is not None
         row.confirmed_at = at
@@ -339,6 +349,7 @@ def move_mandate(
             status="active",
             confirmed_at=source.confirmed_at,
             revoked_at=None,
+            note=source.note,
         )
         s.add(moved)
         s.flush()

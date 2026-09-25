@@ -19,7 +19,12 @@ from sqlalchemy import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from oneguard.api import policies, queries
-from oneguard.api.errors import ApiError, not_found, upstream_unavailable
+from oneguard.api.errors import (
+    ApiError,
+    not_found,
+    platform_detail,
+    upstream_unavailable,
+)
 from oneguard.api.offline import OfflineRunner
 from oneguard.api.ratelimit import DRAFTS_PER_MINUTE, SlidingWindowLimiter
 from oneguard.engine import stubs
@@ -196,8 +201,7 @@ class Services:
         except VisecaError as exc:
             log.warning("Viseca %s failed: %s", action, exc)
             raise upstream_unavailable(
-                f"The payment platform did not accept the {action}; nothing was changed.",
-                {"platform_status": exc.status, "platform_code": exc.code},
+                f"The payment platform did not accept the {action}; nothing was changed.", platform_detail(exc)
             ) from None
 
     # Step-ups ----------------------------------------------------------------------------
@@ -239,7 +243,7 @@ class Services:
             log.warning("resolve of %s not accepted by Viseca: %s", live_id, exc)
             raise upstream_unavailable(
                 "The payment platform did not accept the answer; nothing was recorded.",
-                {"platform_status": exc.status, "platform_code": exc.code},
+                platform_detail(exc),
             ) from None
 
     async def close_lapsed(self, decisions: list[queries.StoredDecision]) -> bool:

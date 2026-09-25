@@ -271,7 +271,10 @@ class PolicyDraft(Base):
 
 
 class Mandate(Base):
-    """C2, C4, C5. Revoked mandates are kept, never deleted."""
+    """C2, C4, C5. Revoked mandates are kept, never deleted. ``status``: ``active``,
+    ``revoked`` (by the customer, or a new policy on the card), or ``superseded`` (an
+    operator's judging run replaced it with the scenario's instruction, D3). ``note``: why a
+    policy began or ended other than by the customer's own action (null otherwise)."""
 
     __tablename__ = "mandates"
     __table_args__ = (Index("ix_mandates_card_status", "card_id", "status"),)
@@ -289,6 +292,7 @@ class Mandate(Base):
     confirmed_at: Mapped[datetime]
     revoked_at: Mapped[datetime | None]
     passport_id: Mapped[str | None]
+    note: Mapped[str | None] = mapped_column(Text)
 
 
 class Run(Base):

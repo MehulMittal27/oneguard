@@ -13,6 +13,7 @@ import logging
 import math
 import secrets
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Request, Response
@@ -22,7 +23,7 @@ from pydantic import BaseModel
 from oneguard.api import models as api
 from oneguard.api import policies, queries
 from oneguard.api.auth import require_device
-from oneguard.api.errors import ApiError, not_found
+from oneguard.api.errors import ApiError, not_found, platform_detail
 from oneguard.api.services import Services
 from oneguard.engine.ledger_base import LedgerEntry
 from oneguard.engine.types import CompiledDraft, HistoryIndex, LedgerView, Policy, Rule
@@ -258,15 +259,28 @@ async def create_draft(card_id: str, body: api.PolicyDraftRequest, request: Requ
             {"limit": s.draft_limiter.limit, "window_s": int(s.draft_limiter.window_s), "retry_after_s": retry_after},
             headers={"Retry-After": str(retry_after)},
         )
-    if body.form is not None:
-        rules, flags = policies.form_rules(body.form)
-        uncertainty = body.form.uncertainty_policy
+    return reply(await new_draft(s, card_id, customer_id, instruction=body.instruction, form=body.form))
+
+
+async def new_draft(
+    s: Services,
+    card_id: str,
+    customer_id: str,
+    *,
+    instruction: str | None = None,
+    form: api.FormInput | None = None,
+) -> api.PolicyDraft:
+    """C1's draft, stored: ``form`` builds its rules directly, else ``instruction`` goes
+    through the compiler. D3 drafts a scenario's instruction the same way."""
+    if form is not None:
+        rules, flags = policies.form_rules(form)
+        uncertainty = form.uncertainty_policy
         instruction = policies.FORM_INSTRUCTION
         open_questions: list[str] = []
         dry_run = policies.form_dry_run(rules, flags, s.history, card_id, customer_id)
         compiler = "form"
     else:
-        instruction = body.instruction or ""
+        instruction = instruction or ""
         if not instruction.strip():
             raise ApiError(422, "validation", "The instruction is empty.")
         compiled = await _compile(s, instruction, card_id, customer_id)
@@ -307,7 +321,7 @@ async def create_draft(card_id: str, body: api.PolicyDraftRequest, request: Requ
         confirmed_at=None,
     )
     await s.db(queries.add, s.db_engine, row)
-    return reply(draft)
+    return draft
 
 
 async def _compile(s: Services, instruction: str, card_id: str, customer_id: str) -> CompiledDraft:
@@ -426,61 +440,103 @@ async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: R
         await require_device(request, s, row.card_id)
         if row.confirmed_at is not None:
             raise ApiError(409, "draft_confirmed", "This draft is already confirmed.")
-        if not row.checks:
-            raise ApiError(
-                409, "lint_failed", f"Not confirmed: {policies.NO_CHECKS_REASON}.", {"missing": ["per_order_limit"]}
-            )
-        draft_rules, flags = policies.load_rules(row.rules, row.checks)
-        by_id = {r.id: r for r in draft_rules}
-        shown = policies.flag_checks(flags)
-        chosen = [c.id for c in body.checks]
-        unknown = [i for i in chosen if i not in by_id and i not in {c.id for c in shown}]
-        if unknown:
-            raise ApiError(422, "validation", "Some checks are not part of this draft.", {"unknown": unknown})
-        accepted = [r for r in draft_rules if r.id in set(chosen)]
-        missing, reasons = s.functions["lint_accepted"](draft_rules, [r.id for r in accepted])
-        # A flag check has no typed rule for lint to see; it is exact, so it may not be dropped either.
-        dropped = [c for c in shown if c.id not in set(chosen)]
-        missing = [*missing, *(c.id for c in dropped)]
-        reasons = [*reasons, *(f'you stated "{c.text}" and it was left out' for c in dropped)]
-        if missing:
-            raise ApiError(409, "lint_failed", "Not confirmed: " + "; ".join(reasons) + ".", {"missing": missing})
-        flags = policies.accepted_flags(flags, draft_rules, accepted)
-        uncertainty = body.uncertainty_policy
-        checks = policies.policy_checks(accepted, flags)
-
-        viseca_draft_id = viseca_mandate_id = None
-        if s.client is not None:
-            viseca_draft_id, viseca_mandate_id = await register_at_platform(
-                s,
-                policies.form_instruction(accepted, uncertainty) if row.compiler == "form" else row.instruction,
-                accepted,
-                uncertainty,
-                list(row.open_questions),
-            )
-
-        now = s.now()
-        mandate = Mandate(
-            mandate_id=f"md_{secrets.token_hex(8)}",
-            viseca_mandate_id=viseca_mandate_id,
-            card_id=row.card_id,
-            customer_id=row.customer_id,
-            instruction=row.instruction,
-            rules=policies.store_rules(accepted, flags),
-            checks=[c.model_dump(mode="json") for c in checks],
-            uncertainty_policy=uncertainty,
-            open_questions=list(row.open_questions),
-            status="active",
-            confirmed_at=now,
-            revoked_at=None,
-        )
-        replaced = await s.db(queries.confirm_draft, s.db_engine, draft_id, mandate, viseca_draft_id, now)
-        for old in replaced:
-            s.bind_mandate(old)
-            await revoke_at_platform(s, old, strict=False)
-        s.bind_mandate(mandate)
-        await reissue_passport(s, row.card_id)
+        mandate = await confirm_stored_draft(s, row, [c.id for c in body.checks], body.uncertainty_policy)
         return reply(await _with_usage(s, mandate))
+
+
+async def confirm_stored_draft(s: Services, row: PolicyDraft, chosen: list[str], uncertainty: str) -> Mandate:
+    """C2 once the draft is known and its signature checked: register the accepted checks
+    at Viseca (``register_draft``), then store them as the card's active policy
+    (``store_confirmed``). The caller holds ``s.policy_lock``."""
+    registered = await register_draft(s, row, chosen, uncertainty)
+    return await store_confirmed(s, row, registered)
+
+
+@dataclass(frozen=True)
+class Registered:
+    """A draft confirmed at Viseca and not yet stored: the policy (an unsaved ``Mandate``
+    row, its id already chosen) and the platform's draft id."""
+
+    mandate: Mandate
+    viseca_draft_id: str | None
+
+
+async def register_draft(
+    s: Services, row: PolicyDraft, chosen: list[str], uncertainty: str, *, note: str | None = None
+) -> Registered:
+    """Lint the accepted checks (``chosen`` ids) and create and confirm the policy at
+    Viseca; nothing is stored here. ``note``: the new policy's ``Mandate.note``."""
+    if not row.checks:
+        raise ApiError(
+            409, "lint_failed", f"Not confirmed: {policies.NO_CHECKS_REASON}.", {"missing": ["per_order_limit"]}
+        )
+    draft_rules, flags = policies.load_rules(row.rules, row.checks)
+    by_id = {r.id: r for r in draft_rules}
+    shown = policies.flag_checks(flags)
+    unknown = [i for i in chosen if i not in by_id and i not in {c.id for c in shown}]
+    if unknown:
+        raise ApiError(422, "validation", "Some checks are not part of this draft.", {"unknown": unknown})
+    accepted = [r for r in draft_rules if r.id in set(chosen)]
+    missing, reasons = s.functions["lint_accepted"](draft_rules, [r.id for r in accepted])
+    # A flag check has no typed rule for lint to see; it is exact, so it may not be dropped either.
+    dropped = [c for c in shown if c.id not in set(chosen)]
+    missing = [*missing, *(c.id for c in dropped)]
+    reasons = [*reasons, *(f'you stated "{c.text}" and it was left out' for c in dropped)]
+    if missing:
+        raise ApiError(409, "lint_failed", "Not confirmed: " + "; ".join(reasons) + ".", {"missing": missing})
+    flags = policies.accepted_flags(flags, draft_rules, accepted)
+    checks = policies.policy_checks(accepted, flags)
+
+    viseca_draft_id = viseca_mandate_id = None
+    if s.client is not None:
+        viseca_draft_id, viseca_mandate_id = await register_at_platform(
+            s,
+            policies.form_instruction(accepted, uncertainty) if row.compiler == "form" else row.instruction,
+            accepted,
+            uncertainty,
+            list(row.open_questions),
+        )
+    mandate = Mandate(
+        mandate_id=f"md_{secrets.token_hex(8)}",
+        viseca_mandate_id=viseca_mandate_id,
+        card_id=row.card_id,
+        customer_id=row.customer_id,
+        instruction=row.instruction,
+        rules=policies.store_rules(accepted, flags),
+        checks=[c.model_dump(mode="json") for c in checks],
+        uncertainty_policy=uncertainty,
+        open_questions=list(row.open_questions),
+        status="active",
+        confirmed_at=s.now(),
+        revoked_at=None,
+        note=note,
+    )
+    return Registered(mandate, viseca_draft_id)
+
+
+async def store_confirmed(
+    s: Services, row: PolicyDraft, registered: Registered, *, operator_run: str | None = None
+) -> Mandate:
+    """Store a registered policy as the card's active one, end the card's earlier one
+    (revoked here and at Viseca), re-issue the passport. The caller holds ``s.policy_lock``.
+
+    ``operator_run`` (D3 ``policy: "scenario"``) names the operator's judging run that
+    registered this policy without the customer's device-signed confirmation: the earlier
+    policy is ``superseded`` (not revoked by the customer) with a note naming the run, and
+    the new policy's passport's first version says ``operator_run``."""
+    mandate = registered.mandate
+    ended = "revoked" if operator_run is None else "superseded"
+    ended_note = None if operator_run is None else f"Replaced by {mandate.mandate_id} for {operator_run}."
+    replaced = await s.db(
+        queries.confirm_draft, s.db_engine, row.draft_id, mandate, registered.viseca_draft_id,
+        mandate.confirmed_at, ended, ended_note,
+    )  # fmt: skip
+    for old in replaced:
+        s.bind_mandate(old)
+        await revoke_at_platform(s, old, strict=False)
+    s.bind_mandate(mandate)
+    await reissue_passport(s, row.card_id, "confirmed" if operator_run is None else "operator_run")
+    return mandate
 
 
 # C3, C4, C5 -----------------------------------------------------------------------------
@@ -591,7 +647,7 @@ async def revoke_at_platform(s: Services, row: Mandate, *, strict: bool) -> None
             "upstream_unavailable",
             "Revoked in OneGuard, so nothing more is approved under it, but the payment platform "
             "did not confirm. Try again.",
-            {"platform_status": exc.status, "platform_code": exc.code},
+            platform_detail(exc),
         ) from None
 
 
