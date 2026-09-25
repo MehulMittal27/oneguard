@@ -54,6 +54,8 @@ from oneguard.viseca.worker import PLATFORM_PENDING, first_value, run_finished
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/dev")
+catalogue_router = APIRouter(prefix="/api")
+"""D9 (``GET /api/scenarios``): operator data outside ``/api/dev``, kept in this module."""
 
 REPLAY_MANDATE = "TM_REPLAY"
 """The platform mandate id replay events carry when the policy has none at Viseca."""
@@ -116,10 +118,20 @@ def _scenario(scenario_id: str, card_id: str) -> tuple[str, str]:
 @router.get("/replay", response_model=api.ReplayStatus)
 async def replay_status(request: Request) -> JSONResponse:
     """D1."""
-    status = services(request).offline.status()
+    s = services(request)
+    status = s.offline.status()
     if status is None:
         raise not_found("No replay has run yet.")
-    return reply(status)
+    return reply(await _replay_named(s, status))
+
+
+async def _replay_named(s: Services, status: api.ReplayStatus) -> api.ReplayStatus:
+    """``status`` with the holder of its card, when the store knows the card."""
+    customer_id = status.customer_id or await s.db(queries.card_customer, s.db_engine, status.card_id)
+    if customer_id is None:
+        return status
+    names = await s.db(queries.customer_names, s.db_engine, [customer_id])
+    return status.model_copy(update={"customer_id": customer_id, "customer_name": names.get(customer_id)})
 
 
 async def _replay_policy(s: Services, scenario_id: str, card_id: str) -> tuple[Policy, str]:
@@ -172,7 +184,7 @@ async def replay_restart(body: api.ReplayRestartRequest, request: Request) -> JS
         signals_enabled=models,
         speed_ms=body.speed_ms,
     )
-    return reply(status)
+    return reply(await _replay_named(s, status))
 
 
 # D3, D4 ---------------------------------------------------------------------------------
@@ -338,8 +350,9 @@ def _stored_live_run(run_id: str, row: Run) -> api.LiveRun:
         total=row.total,
         worker_ok=False,
         last_error=row.last_error,
+        ledger_run_id=row.run_id,
+        started_at=row.started_at,
     )
-
 
 @router.get("/runs/current", response_model=api.LiveRun | api.ReplayStatus)
 async def current_run(request: Request) -> JSONResponse:
@@ -371,20 +384,22 @@ async def current_run(request: Request) -> JSONResponse:
     if replay is not None and replay[0] == run_id:
         status = s.offline.status()
         assert status is not None
-        return reply(status)
+        return reply(await _replay_named(s, status))
     stored = await s.db(queries.run_row, s.db_engine, run_id)
     if stored is None:
         raise not_found(f"No run {run_id}.")
-    return reply(
-        api.ReplayStatus(
-            scenario_id=stored.scenario_id or "",
-            card_id=stored.card_id,
-            delivered=stored.delivered,
-            total=stored.total,
-            running=False,
-            next_at=None,
-        )
+    status = api.ReplayStatus(
+        scenario_id=stored.scenario_id or "",
+        card_id=stored.card_id,
+        delivered=stored.delivered,
+        total=stored.total,
+        running=False,
+        next_at=None,
+        ledger_run_id=stored.run_id,
+        started_at=stored.started_at,
+        decided=stored.decided,
     )
+    return reply(await _replay_named(s, status))
 
 
 @router.get("/runs/{run_id}", response_model=api.LiveRun)
@@ -442,6 +457,38 @@ async def list_scenarios(request: Request) -> JSONResponse:
             )
         )
     return reply(api.ScenariosResponse(scenarios=scenarios))
+
+
+# D9 -------------------------------------------------------------------------------------
+
+
+@catalogue_router.get("/scenarios", response_model=api.ScenarioSummariesResponse)
+async def scenario_summaries(request: Request) -> JSONResponse:
+    """D9: every scenario in the store's catalogue (the pack's and the ones the platform
+    served), with the customer and card it runs on (``Services.bindings``: the platform's
+    ``scenario_profiles``, else the pack's) and its purchase count. Grouped by customer,
+    by name, then by scenario id; scenarios no one has named a card for come last. Reads
+    the store only: no platform call, nothing changed."""
+    s = services(request)
+    catalogue = await s.db(queries.scenario_catalogue, s.db_engine)
+    bound = {b.scenario_id: (customer, b.card_id) for customer, bs in (await s.bindings()).items() for b in bs}
+    names = await s.db(queries.customer_names, s.db_engine, [c for c, _ in bound.values()])
+    rows = []
+    for row in catalogue:
+        customer_id, card_id = bound.get(row.scenario_id, (None, None))
+        rows.append(
+            api.ScenarioSummary(
+                scenario_id=row.scenario_id,
+                name=row.scenario_name,
+                event_count=row.event_count,
+                instruction=row.cardholder_instruction,
+                customer_id=customer_id,
+                customer_name=names.get(customer_id, customer_id) if customer_id else None,
+                card_id=card_id,
+            )
+        )
+    rows.sort(key=lambda r: (r.customer_id is None, r.customer_name or "", r.customer_id or "", r.scenario_id))
+    return reply(api.ScenarioSummariesResponse(scenarios=rows))
 
 
 # D5 -------------------------------------------------------------------------------------

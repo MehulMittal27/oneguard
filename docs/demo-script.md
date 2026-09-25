@@ -23,16 +23,31 @@ were checked with the same pipeline and the scenario's policy fixture.
 
 ## Roles and screens
 
-- **Operator**: laptop terminal with `API=https://oneguard.fly.dev` exported, runs the curl
-  commands below. Nothing on stage needs `make`; `make demo-offline` calls the same D2 on
-  `ONEGUARD_API_URL` (default the cloud app) and starts nothing when it does not answer.
-- **Customer / presenter**: one browser on `https://oneguard.fly.dev/?demo=1`, projected.
-  `?demo=1` adds the dark **Operator** strip above the phone frame: the current replay's
-  `scenario · card`, `n/total delivered`, `running`/`idle`, and the **Soft signals: on**
-  button (the chaos toggle, D5).
-- Signing in: the sign-in screen lists the live customers first (Elias Egli, Hannah Chen,
-  Omar Chen, each with a **Live** badge; up to four). The public customers are behind
-  **+ 27 more customers** (27 today; the count moves as live customers are added): pick the name, press **Done**, then **Continue as <name>**.
+- **The stage is `/ops` on the projector**: `https://oneguard.fly.dev/ops`, the operator
+  console (Viseca · Agent control console), 1920×1080. Left: health chips from `/healthz`,
+  the scenario picker (grouped by customer, the running one marked) with the instruction
+  verbatim, **Replay 3 s** / **Replay 15 s** / **Judging run (live)**, the **Soft signals**
+  toggle (D5, it shows what the server reports), the run header (delivered / decided /
+  waiting, started, elapsed, passport line) and the run's decision stream, newest delivered
+  on top; click a row for its evidence, counterfactual and receipt. Right: the customer's
+  phone, embedded (`/?customer=<id>&embed=1`), signed in as the current run's customer.
+  The console follows whichever run started last, from its own buttons, curl or `make`,
+  within one poll (1.5 s); the phone follows it too.
+- **Customer / presenter**: answers step-ups and revokes on the embedded phone (the
+  projected one), or on a real phone in hand: **Open in new tab** above the embedded phone
+  is the link (`/?customer=<id>`: signed in, no picker); untick **Show customer phone** to
+  give the console the full width. The console never answers a step-up itself.
+- **Operator**: starts each replay with the console's buttons. The curl commands below stay
+  as the fallback (laptop terminal with `API=https://oneguard.fly.dev` exported); the
+  console follows a run started that way just the same. `make demo-offline` calls the same
+  D2 on `ONEGUARD_API_URL` (default the cloud app; without `CARD` it takes the scenario's
+  card from D9) and starts nothing when it does not answer. The `?demo=1` **Operator**
+  strip still exists for a phone-only setup.
+- Signing in: the embedded phone signs in as the run's customer by itself. By hand (another
+  customer, or a phone without a link): the sign-in screen lists the live customers first
+  (Elias Egli, Hannah Chen, Omar Chen, each with a **Live** badge; up to four). The public
+  customers are behind **+ 27 more customers** (27 today; the count moves as live customers
+  are added): pick the name, press **Done**, then **Continue as <name>**.
 - Signing out: the initials button top right (**Account menu**) then **Log out**.
 
 ## Pre-show checklist (T-30 min, operator)
@@ -60,8 +75,8 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
    store's worker lease (for example a laptop `make serve` with the Supabase `.env`
    sourced): stop that process.
 
-3. **Soft signals on** (the strip's button always starts as "on" after a reload and does
-   not read the server, so make the server agree):
+3. **Soft signals on** (live runs start on and the offline replay off, so the console reads
+   **Soft signals: live only** until someone sets D5; set it on):
    `curl -s -X POST $API/api/dev/soft-signals -H 'Content-Type: application/json' -d '{"enabled":true}'`.
 
 3a. **The operator terminal controls the stage cards** (docs/passport.md §4). Confirming,
@@ -175,11 +190,12 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
 7. **Record run on file**: Hannah Chen's Activity shows a SCEN0104 run made after the last
    deploy (see "Record" below). Note which of its purchases you will open in step 5.
 
-8. **Browser**: open `https://oneguard.fly.dev/?demo=1`, hard-reload (Cmd+Shift+R), log out
-   if signed in, check the Operator strip is there and shows the rehearsal's
-   `SCEN0003 · CA0023  11/11 delivered  idle` (it reads "backend unreachable" until the
-   first replay after a deploy, because D1 answers 404 then). Second tab: `https://oneguard.fly.dev/healthz`.
-   Third tab: `docs/replay-matrix.md` and `docs/benchmark.md` on GitHub. Have the SCEN0001
+8. **Browser (projector)**: open `https://oneguard.fly.dev/ops`, hard-reload (Cmd+Shift+R).
+   Check the health chips (`worker: polling`, `signals: keywords`, `engine: nothing
+   stubbed`, no red chip), **Soft signals: on**, the run header showing the rehearsal's
+   `Replay · SCEN0003` `done` with `Delivered 11/11`, and the embedded phone signed in as
+   Giulia Rossi. Second tab: `https://oneguard.fly.dev/healthz`. Third tab:
+   `docs/replay-matrix.md` and `docs/benchmark.md` on GitHub. Have the SCEN0001
    instruction on the clipboard.
 
 ## Stage (7:00)
@@ -196,7 +212,8 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
 
 ### 1. Policy (0:50) - Alex Meier, CA0001, SCEN0001's instruction
 
-**Sign in**: **+ 27 more customers** → Alex Meier → **Done** → **Continue as Alex Meier**.
+**Sign in** (the embedded phone shows the rehearsal run's customer): **Account menu** →
+**Log out** → **+ 27 more customers** → Alex Meier → **Done** → **Continue as Alex Meier**.
 
 **Customer**: **Accounts** tab → the row **Card CA0001** ("Policy revoked") opens the new-policy
 flow straight away: "Tell us what your agent may buy", "For card CA0001 only". **Read my
@@ -226,18 +243,20 @@ used" shows, the fallback compiler read it; confirm anyway.
 
 ### 2. Manipulated agent (1:15) - Oliver Graf, CA0039, SCEN0004
 
-**Sign in**: **Account menu** → **Log out** → **+ 27 more customers** → Oliver Graf →
-**Done** → **Continue as Oliver Graf**. Open **Activity**.
-
-**Operator**:
+**Operator**: in the console pick **SCEN0004 · Manipulated agent · 11** and press
+**Replay 3 s** (fallback: the curl below). The console shows "Sign in as Oliver Graf
+(CU0019, card CA0039)" and the embedded phone signs in as Oliver Graf by itself; open
+**Activity** on it.
 
 ```sh
 curl -s -X POST $API/api/dev/replay/restart -H 'Content-Type: application/json' \
   -d '{"scenario_id":"SCEN0004","card_id":"CA0039","speed_ms":3000}' | jq -c
 ```
 
-Eleven purchases arrive 3 s apart (strip: `SCEN0004 · CA0039`, `n/11 delivered`). Beats,
-in the order they are shown (tap the row in **Activity**; the detail's back link returns):
+Eleven purchases arrive 3 s apart (run header: `Replay · SCEN0004`, `Delivered n/11`; the
+stream fills in delivery order, AU0036 and AU0040 highlighted as **Waiting**). Beats, in
+the order they are shown: click the row in the console for evidence and counterfactual, or
+tap it in the phone's **Activity** for the customer's view (the detail's back link returns):
 
 | Beat | Row (shop, CHF) | Outcome | Expected message (matrix) | Point at |
 |---|---|---|---|---|
@@ -259,10 +278,15 @@ mark of this step.
 **Say**: shop text is data; nothing in it can raise a limit or approve. Only the customer
 answers a step-up.
 
+Each answer on the phone flips its console row from **Waiting** to **Answered** in place
+within one poll.
+
 **Fallback**: if a step-up expires before the customer answers, it shows as declined by
-timeout; say "no answer is never a yes" and move on. If the replay does not start (strip
-says "no replay running" or curl returns an error), repeat the curl once; if it still fails,
-open the rehearsal run under **Earlier runs (n)** and walk the same rows there.
+timeout (**Expired** in the console); say "no answer is never a yes" and move on. If the
+replay does not start (the console shows the backend's refusal under the buttons, or the
+run header does not change), press **Replay 3 s** once more or send the curl; if it still
+fails, open the rehearsal run under **Earlier runs (n)** on the phone and walk the same
+rows there.
 
 ### 2b. Passport (1:00) - Oliver Graf, CA0039
 
@@ -295,18 +319,16 @@ any phone (`/verify`).
 
 ### 3. Session integrity and control (2:40) - Giulia Rossi, CA0023, SCEN0003
 
-**Sign in**: **Log out** → **+ 27 more customers** → Giulia Rossi → **Done** →
-**Continue as Giulia Rossi**. Open **Activity**.
-
-**Operator** (send it as soon as the customer presses **Log out**; the first two purchases
-are plain approvals and can land while the customer signs in):
+**Operator**: pick **SCEN0003 · Session integrity · 11** and press **Replay 15 s**
+(fallback: the curl below). The embedded phone signs in as Giulia Rossi by itself; the
+first two purchases are plain approvals and can land while the presenter talks.
 
 ```sh
 curl -s -X POST $API/api/dev/replay/restart -H 'Content-Type: application/json' \
   -d '{"scenario_id":"SCEN0003","card_id":"CA0023","speed_ms":15000}' | jq -c
 ```
 
-Eleven purchases, 15 s apart, 150 s in total. Seconds after the curl:
+Eleven purchases, 15 s apart, 150 s in total. Seconds after the start:
 
 | t | Row (shop, CHF) | Outcome | Expected message | Customer / presenter |
 |---:|---|---|---|---|
@@ -336,20 +358,20 @@ on the very next purchase.
 
 ### 4. Predictable without AI (0:30) - Oliver Graf, CA0039
 
-**Sign in**: **Log out** → **+ 27 more customers** → Oliver Graf → **Done** →
-**Continue as Oliver Graf** → **Activity**.
-
-**Customer**: press **Soft signals: on** in the Operator strip; it reads **Soft signals: off**.
-**Operator**:
+**Operator**: press **Soft signals: on** in the console; it reads **Soft signals: off**.
+Then send the curl (a 300 ms replay: the console's buttons are 3 s and 15 s apart, too
+slow for this beat); the console switches to the new run within 1.5 s and the phone signs
+in as Oliver Graf, which is the "follows any run" point made in passing:
 
 ```sh
 curl -s -X POST $API/api/dev/replay/restart -H 'Content-Type: application/json' \
   -d '{"scenario_id":"SCEN0004","card_id":"CA0039","speed_ms":300}' | jq -c
 ```
 
-About 3 s later the newest run shows the same eleven outcomes; open **Earlier runs (n)** and
-the step-2 run (the latest "Started ...") to compare row by row. Switch to the `/healthz`
-tab and reload: `"signals": {"backend": "keywords", "configured": "keywords", "enabled": false, "model_loading": false, "model_loaded": false}`
+About 3 s later the console's stream shows the same eleven outcomes as step 2; on the
+phone, **Activity** → **Earlier runs (n)** holds the step-2 run (the latest "Started ...")
+to compare row by row. The header's `signals: keywords` chip names the detector; switch to
+the `/healthz` tab and reload: `"signals": {"backend": "keywords", "configured": "keywords", "enabled": false, "model_loading": false, "model_loaded": false}`
 and top-level `"model_loaded": false`: the cloud's soft signal is the keyword detector, and
 it is switched off for this replay.
 
@@ -371,7 +393,8 @@ Press **Soft signals: off** again so it reads **Soft signals: on** before leavin
 
 ### 5. The sandbox path: live judging run on record (0:25) - Hannah Chen, CA1643, SCEN0104
 
-**Sign in**: **Log out** → Hannah Chen is on the main list (**Live**) → **Continue as Hannah
+**Sign in** (on the embedded phone; the console keeps showing step 4's run): **Account
+menu** → **Log out** → Hannah Chen is on the main list (**Live**) → **Continue as Hannah
 Chen** → **Activity**.
 
 The newest run is the record run of SCEN0104 (Cross-border purchase: "Order hiking boots,
@@ -433,7 +456,6 @@ On the GitHub tab:
 - The agent-history line on the policy screen says "on this card", but `agent_history` is
   customer-level (docs/api-contract.md §6 item 9: labelled "across your cards"): CA0001
   shows 29 attempts, which are Alex's across both cards (14 on CA0001).
-- The Operator strip's toggle starts as "on" on every page load without reading the
-  server; pre-show step 3 keeps them in agreement.
-- The Operator strip shows "backend unreachable" while no replay has run in the current
-  server process (D1 answers 404 "No replay has run yet."); the rehearsal replay clears it.
+- (`?demo=1` Operator strip only, not the `/ops` console) The strip shows "backend
+  unreachable" while no replay has run in the current server process (D1 answers 404 "No
+  replay has run yet."); the rehearsal replay clears it.

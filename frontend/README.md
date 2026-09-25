@@ -95,6 +95,16 @@ our own `/api`.
 | **Accounts** | Accounts → cards. A card with a policy opens card detail; one without offers "+ Add policy". |
 | **New policy** | Describe it in your own words (AI reads it) or fill in a form (no AI). Then review every check with its uncertainty and open questions, choose what happens when we are unsure, and confirm. |
 
+Two deep links, read once at load (`src/lib/deepLink.ts`): `?customer=<customer_id>` signs in as
+that customer and skips the picker (session only), and `?embed=1` drops `DeviceFrame`'s bezel.
+
+**Operator console (`/ops`)** is a separate desktop page of the same build, never linked from the
+phone UI (`src/ops/`, loaded lazily by `src/Root.tsx`): for the projector. It follows the current
+run (D7) whoever started it, lists its decisions (C6 with `?operator=1`) newest delivered first with expandable
+evidence and receipts, starts replays (D2) and judging runs (D3, typed confirmation), shows
+`/healthz` as chips and embeds this app as the run's customer (`/?customer=<id>&embed=1`). It never
+answers a step-up or touches a device. Contract: `../docs/api-contract.md` §6 item 19.
+
 ---
 
 ## 3. Project structure
@@ -129,6 +139,8 @@ src/
     CardDetail/               one card: instruction, what the rules do, meter, revoke, activity
     Accounts/                 accounts → cards → card detail or "+ Add policy"
     NewPolicy/                Flow · Shell · Describe · Form · Reading · Timeout · Check
+
+  ops/                      the operator console at /ops (desktop only, see §2)
 
   components/               TabBar, DeviceFrame, StatusBar, BottomSheet, CardPicker,
                             DecisionMark, CountdownBar, LeashMeter, OverviewHero,

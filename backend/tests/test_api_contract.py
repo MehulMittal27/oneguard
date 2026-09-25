@@ -1468,7 +1468,15 @@ def test_operator_endpoints(db_url: str) -> None:
             assert len(rows) == 11  # the live one and the replay's ten
             assert all("signals=off" in d["engine_version"] for d in rows)
             status = (await run.get("/api/dev/replay")).json()
-            assert status == {"scenario_id": "SCEN0001", "card_id": "CA0001", "delivered": 10, "total": 10, "running": False, "next_at": None}
+            assert {k: status[k] for k in ("scenario_id", "card_id", "delivered", "total", "running", "next_at")} == {
+                "scenario_id": "SCEN0001",
+                "card_id": "CA0001",
+                "delivered": 10,
+                "total": 10,
+                "running": False,
+                "next_at": None,
+            }
+            assert (status["decided"], status["customer_id"], status["customer_name"]) == (10, "CU0001", "Alex Meier")
             ledger = (await run.get("/api/dev/ledger/CA0001")).json()
             assert len(ledger["entries"]) == 10 and ledger["mandate_id"].startswith("md_")
             assert (await run.get("/api/dev/ledger/CA9999")).status_code == 404
@@ -1717,14 +1725,20 @@ def test_d7_shows_the_newest_run_live_or_replay(db_url: str, monkeypatch: pytest
             assert none.status_code == 404
             assert none.json() == {"error": {"code": "not_found", "message": "No run has started yet."}}
 
-            await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
+            decisions = await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
             current = (await run.get("/api/dev/runs/current")).json()
             assert current == (await run.get("/api/dev/replay")).json()
+            # the console follows it: whose run, since when, and which C6 rows are its
+            assert (current["customer_id"], current["customer_name"], current["decided"]) == ("CU0001", "Alex Meier", 10)
+            assert sum(d.get("run_id") == current["ledger_run_id"] for d in decisions) == 10
+            assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", current["started_at"])
 
             await confirm_form(run)
             live = (await run.post("/api/dev/runs", json={"scenario_id": "SCEN0000", "card_id": "CA0001"})).json()
             current = (await run.get("/api/dev/runs/current")).json()
             assert current["run_id"] == live["run_id"]
+            assert current["ledger_run_id"] == live["ledger_run_id"] == f"live-{live['run_id']}"
+            assert current["started_at"] == live["started_at"]
 
             async def decided() -> bool:
                 return (await run.get("/api/dev/runs/current")).json()["decided"] == 1
@@ -1734,8 +1748,20 @@ def test_d7_shows_the_newest_run_live_or_replay(db_url: str, monkeypatch: pytest
             assert current == (await run.get(f"/api/dev/runs/{live['run_id']}")).json()
             await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
             current = (await run.get("/api/dev/runs/current")).json()
-            assert set(current) == {"scenario_id", "card_id", "delivered", "total", "running", "next_at"}
-            assert (current["delivered"], current["total"], current["running"]) == (10, 10, False)
+            assert set(current) == {
+                "scenario_id",
+                "card_id",
+                "delivered",
+                "total",
+                "running",
+                "next_at",
+                "ledger_run_id",
+                "started_at",
+                "decided",
+                "customer_id",
+                "customer_name",
+            }
+            assert (current["delivered"], current["decided"], current["total"], current["running"]) == (10, 10, 10, False)
 
             # read-only, whatever ONEGUARD_ALLOW_RUNS says
             monkeypatch.setenv("ONEGUARD_ALLOW_RUNS", "false")
@@ -1761,6 +1787,15 @@ def test_d7_reads_the_stored_newest_run_after_a_restart(db_url: str) -> None:
         async with running(db_url) as run:  # no worker now
             current = (await run.get("/api/dev/runs/current")).json()
             assert (current["run_id"], current["decided"], current["worker_ok"]) == (live["run_id"], 1, False)
+            assert (current["ledger_run_id"], current["started_at"]) == (live["ledger_run_id"], live["started_at"])
+            assert current["customer_id"] == "CU0001"
+
+            # a stored replay after a restart: the runs row, named the same way
+            await replay(run, "SCEN0001", "CA0001", 10, "CU0001")
+            replayed = (await run.get("/api/dev/runs/current")).json()
+        async with running(db_url) as run:
+            stored = (await run.get("/api/dev/runs/current")).json()
+            assert stored == replayed
 
     asyncio.run(scenario())
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import socket
 from datetime import UTC, datetime
 from typing import Any
 
@@ -20,6 +21,7 @@ import httpx
 import pytest
 from sqlalchemy import delete
 
+from oneguard.passport.signer import DeviceKey
 from oneguard.store.db import make_engine, session
 from oneguard.store.schema import Run, ScenarioProfile
 from oneguard.viseca import demo
@@ -170,6 +172,9 @@ def test_each_served_scenario_binds_its_own_customer_and_only_served_ones_are_li
 
             # SCEN9002's card is unknown: its policy goes on the bootstrap card, as demo-live does
             await confirm_form(run, "CA9001")
+            # Held in progress until the one-run check below: its single purchase would
+            # otherwise end the run first, and then no run is active (CI run 36094473743).
+            fake.hold()
             started = await run.post("/api/dev/runs", json={"scenario_id": "SCEN9002", "card_id": "CA9001"})
             assert started.status_code == 200, started.text
             live = started.json()
@@ -178,6 +183,7 @@ def test_each_served_scenario_binds_its_own_customer_and_only_served_ones_are_li
             # one run at a time
             again = await run.post("/api/dev/runs", json={"scenario_id": "SCEN9001", "card_id": "CA9001"})
             assert again.status_code == 409 and again.json()["error"]["code"] == "run_active", again.text
+            fake.release()
 
             # the policy moved to the card the platform runs it on
             moved = (await run.get("/api/cards/CA9002/policy")).json()["mandate"]
@@ -211,6 +217,39 @@ def test_each_served_scenario_binds_its_own_customer_and_only_served_ones_are_li
         async with running(db_url, fake=fake) as run:
             profile = (await scenarios(run))["SCEN9002"]["profile"]
             assert (profile["customer_id"], profile["card_id"], profile["source"]) == ("CU9002", "CA9002", "authorization")
+
+    asyncio.run(scenario())
+
+
+def test_d9_lists_every_scenario_grouped_by_customer_with_its_card(db_url: str) -> None:  # noqa: F811
+    """D9 (the operator console's picker): the pack's scenarios and the served ones, each with
+    its purchase count and the customer and card it runs on; unnamed ones last."""
+
+    async def scenario() -> None:
+        async with running(db_url, fake=two_profiles()) as run:
+            r = await run.get("/api/scenarios")
+            assert r.status_code == 200, r.text
+            listed = r.json()["scenarios"]
+            by_id = {s["scenario_id"]: s for s in listed}
+            assert by_id["SCEN9001"] == {
+                "scenario_id": "SCEN9001",
+                "name": by_id["SCEN9001"]["name"],
+                "event_count": by_id["SCEN9001"]["event_count"],
+                "instruction": by_id["SCEN9001"]["instruction"],
+                "customer_id": "CU9001",
+                "customer_name": "Test Served",
+                "card_id": "CA9001",
+            }
+            assert (by_id["SCEN0004"]["customer_id"], by_id["SCEN0004"]["card_id"]) == ("CU0019", "CA0039")
+            assert by_id["SCEN0004"]["customer_name"] == "Oliver Graf" and by_id["SCEN0004"]["event_count"] == 11
+            d8 = await scenarios(run)
+            assert by_id["SCEN0004"]["instruction"] == d8["SCEN0004"]["cardholder_instruction"]
+            assert set(by_id) == set(d8)
+            # grouped: one customer's scenarios are consecutive; SCEN9002 (no card yet) is last
+            assert listed[-1]["scenario_id"] == "SCEN9002" and listed[-1]["customer_id"] is None
+            order = [s["customer_id"] for s in listed]
+            assert all(order.index(c) + order.count(c) - 1 == len(order) - 1 - order[::-1].index(c) for c in order)
+            assert by_id["SCEN0000"]["customer_id"] == by_id["SCEN0001"]["customer_id"] == "CU0001"
 
     asyncio.run(scenario())
 
@@ -265,6 +304,50 @@ def test_demo_live_starts_through_the_server_and_prints_whom_to_sign_in_as(
             assert no_local_worker == []
             assert any("SCEN9002 has not run yet" in line for line in lines)
             assert "Sign in as Second Served (CU9002, card CA9002)" in lines
+
+    asyncio.run(scenario())
+
+
+def test_demo_live_signs_the_policy_with_the_terminals_own_device(
+    db_url: str,  # noqa: F811
+    no_local_worker: list[str],
+) -> None:
+    """demo-live's device path end to end (api-contract §3.10, docs/passport.md): a fresh
+    terminal key on a card no device controls is enrolled at once, signs C2, and D3 starts the
+    run; the passport lists it as the card's device. A second terminal on that card changes
+    nothing until a device that controls the card approves it, then it runs too."""
+
+    async def scenario() -> None:
+        fake = two_profiles()
+        async with running(db_url, fake=fake, **REAL_ENGINE) as run:
+            no_local_worker.clear()  # the server's own worker is built; demo-live builds none
+            label = f"demo-live on {socket.gethostname()}"
+            terminal, lines = DeviceKey(), []
+            assert await demo_live(run, "SCEN9001", lines, device=terminal) == 0, lines
+            devices = (await run.get("/api/cards/CA9001/devices")).json()["devices"]
+            assert [(d["label"], d["status"], d["enrolled_by_device_id"]) for d in devices] == [(label, "enrolled", None)]
+            first = devices[0]["device_id"]
+            doc = (await run.get("/api/cards/CA9001/passport")).json()["document"]
+            assert [d["device_id"] for d in doc["devices"]] == [first]  # C2 was signed by this terminal
+            assert any(line.startswith("Policy md_") and line.endswith("confirmed on card CA9001") for line in lines)
+            assert lines[-1].startswith("Summary: ")
+            assert no_local_worker == []
+
+            # Another terminal: pending, so nothing is confirmed or started until it is approved.
+            second, lines = DeviceKey(), []
+            mandates, runs = dict(fake.mandates), len(fake.runs)
+            assert await demo_live(run, "SCEN9001", lines, device=second) == 1
+            assert f'This terminal ("{label}") is not approved for card CA9001 yet.' in lines[-1]
+            assert fake.mandates == mandates and len(fake.runs) == runs
+            pending = [d for d in (await run.get("/api/cards/CA9001/devices")).json()["devices"] if d["status"] == "pending"]
+            assert len(pending) == 1
+            path = f"/api/cards/CA9001/devices/{pending[0]['device_id']}/approve"
+            approved = await run.post(path, signed=False, headers=terminal.headers(first, "POST", path, None,
+                                                                                   ts=int(run.clock().timestamp())))
+            assert approved.status_code == 200 and approved.json()["enrolled_by_device_id"] == first, approved.text
+            lines = []
+            assert await demo_live(run, "SCEN9001", lines, device=second) == 0, lines
+            assert len(fake.runs) == runs + 1
 
     asyncio.run(scenario())
 
@@ -388,6 +471,14 @@ def test_demo_offline_restarts_the_servers_replay(db_url: str, no_local_worker: 
             assert code == 0, lines
             assert lines == [f"Replay of SCEN0000 on card CA0001 started at {API}: 1 purchase, 0 ms apart."]
             assert (await run.get("/api/dev/replay")).json()["scenario_id"] == "SCEN0000"
+
+            # no --card (`make demo-offline SCEN=…`): the scenario's own card, from D9
+            lines.clear()
+            code = await demo.offline(
+                "SCEN0001", api_base=API, speed_ms=0, transport=httpx.ASGITransport(app=run.app), out=lines.append
+            )
+            assert code == 0, lines
+            assert lines == [f"Replay of SCEN0001 on card CA0001 started at {API}: 10 purchases, 0 ms apart."]
         assert no_local_worker == []
 
     asyncio.run(scenario())

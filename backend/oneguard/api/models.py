@@ -351,19 +351,32 @@ class Decision(ApiModel):
 
 
 class ReplayStatus(ApiModel):
+    """D1, D2, D7. ``ledger_run_id``: the ``run_id`` this replay's C6 decisions carry;
+    ``started_at``: when it started, real clock; ``decided``: purchases decided so far;
+    ``customer_id`` / ``customer_name``: who holds ``card_id``."""
+
+    _omit_if_none = frozenset({"ledger_run_id", "started_at", "decided", "customer_id", "customer_name"})
+
     scenario_id: str
     card_id: str
     delivered: int = Field(ge=0)
     total: int = Field(ge=0)
     running: bool
     next_at: Timestamp | None
+    ledger_run_id: str | None = None
+    started_at: Timestamp | None = None
+    decided: int | None = Field(default=None, ge=0)
+    customer_id: str | None = None
+    customer_name: str | None = None
 
 
 class LiveRun(ApiModel):
     """D3, D4, D7. ``customer_id`` / ``customer_name``: who holds ``card_id`` (the card the
-    platform's fixture profile runs the scenario on), once known."""
+    platform's fixture profile runs the scenario on), once known. ``ledger_run_id``: the
+    ``run_id`` this run's C6 decisions carry (``run_id`` is the platform's); ``started_at``:
+    when it started, real clock."""
 
-    _omit_if_none = frozenset({"customer_id", "customer_name"})
+    _omit_if_none = frozenset({"customer_id", "customer_name", "ledger_run_id", "started_at"})
 
     run_id: str
     scenario_id: str
@@ -378,6 +391,8 @@ class LiveRun(ApiModel):
     last_error: str | None
     customer_id: str | None = None
     customer_name: str | None = None
+    ledger_run_id: str | None = None
+    started_at: Timestamp | None = None
 
 
 class ScenarioProfile(ApiModel):
@@ -402,6 +417,19 @@ class Scenario(ApiModel):
     served: bool
     profile: ScenarioProfile | None
     active_run_id: str | None
+
+
+class ScenarioSummary(ApiModel):
+    """D9: one scenario of the store's catalogue with the customer and card it runs on
+    (null until something names its card) and its purchase count (``event_count``)."""
+
+    scenario_id: str
+    name: str
+    event_count: int = Field(ge=0)
+    instruction: str
+    customer_id: str | None
+    customer_name: str | None
+    card_id: str | None
 
 
 class LedgerSnapshotEntry(ApiModel):
@@ -512,6 +540,12 @@ class ScenariosResponse(ApiModel):
     """D8."""
 
     scenarios: list[Scenario]
+
+
+class ScenarioSummariesResponse(ApiModel):
+    """D9, grouped by customer."""
+
+    scenarios: list[ScenarioSummary]
 
 
 class SoftSignalsToggle(ApiModel):

@@ -86,6 +86,10 @@ class ReplayState:
             total=len(self.events),
             running=self.running,
             next_at=self.next_at if self.running else None,
+            ledger_run_id=self.run_id,
+            started_at=self.started_at,
+            decided=len(self.decided),
+            customer_id=self.customer_id,
         )
 
 

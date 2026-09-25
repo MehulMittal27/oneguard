@@ -36,3 +36,14 @@ def test_placeholder_is_no_cache(tmp_path: Path) -> None:
     static.mount(app, tmp_path)  # no index.html: the placeholder page
     (page,) = _get(app, "/")
     assert page.status_code == 200 and page.headers["cache-control"] == "no-cache"
+
+
+def test_ops_and_verify_serve_the_app_page(tmp_path: Path) -> None:
+    (tmp_path / "index.html").write_text("<!doctype html><title>app</title>", encoding="utf-8")
+    app = FastAPI()
+    static.mount(app, tmp_path)
+    for path in ("/ops", "/verify"):  # the console; the passport QR link (docs/passport.md)
+        (page,) = _get(app, path)
+        assert page.status_code == 200 and page.headers["cache-control"] == "no-cache", path
+        assert page.headers["content-type"].startswith("text/html"), path
+        assert page.text == "<!doctype html><title>app</title>", path
