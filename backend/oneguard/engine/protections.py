@@ -76,11 +76,16 @@ AGENT_DIRECTED_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\bpre[- ]?authori[sz]ed?\b",
         r"\bapprove\b[^.;]{0,30}\b(payment|purchase|transaction|order|charge)\b",
         r"\blimits?\b[^.;]{0,30}\b(do|does|will)\s+not\s+apply\b",
-        r"(^|[\s.;:!])system\s*:",
+        # "System:" as a speaker tag: at the start, after a sentence or a bracket, never
+        # after a word ("Operating system: Android 14" is a product fact).
+        r"(^|[.;!?\n]\s*|[\[(<{]\s*)system\s*:",
         r"\bcardholder\b[^.;]{0,20}\b(is\s+)?(unavailable|away|unreachable|has\s+(already\s+)?(approved|agreed|authori[sz]ed))\b",
         r"\bnote\s+(for|to)\s+(the\s+)?(automated|ai|purchasing|shopping)\b",
         r"\b(without|skip|bypass)\b[^.;]{0,20}\b(further\s+)?(checks?|verification|confirmation|approval)\b",
         r"\b(you|agents?|assistants?)\s+(must|should|are\s+required\s+to)\s+(approve|pay|complete|buy|purchase)\b",
+        # "the customer already confirmed this, no need to ask them"
+        r"\b(user|customer|cardholder|owner)\s+(has\s+)?already\s+(confirmed|approved|agreed|authori[sz]ed)\b",
+        r"\bno\s+need\s+to\s+(ask|confirm\s+with|check\s+with)\s+(the\s+|your\s+)?(user|customer|cardholder|owner|them)\b",
     )
 )
 
