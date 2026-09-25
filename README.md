@@ -57,6 +57,52 @@ models, under a second end to end with Laya on.
 - Passport and receipts are verifiable by anyone.
 - No-history customers get "ask once, then remember".
 
+## The Passport: the leash as a signed contract
+
+The customer's confirmed rules become a signed document, the passport. Every decision
+leaves a signed receipt that points back to it and says what would have been approved
+(`would_approve_if`). Only devices enrolled on the passport can confirm, tighten, revoke or
+answer, and a new device is approved by one already enrolled. Anyone can verify a passport
+or receipt at `/verify`.
+
+```mermaid
+sequenceDiagram
+    participant C as Customer (enrolled device)
+    participant O as OneGuard (issuer side)
+    participant V as Viseca sandbox
+    participant A as Shopping agent
+    C->>O: Confirm policy (signed by device key)
+    O->>V: Register mandate
+    O->>O: Issue Passport v1 (Ed25519) · list devices
+    A->>V: Propose purchase
+    V->>O: Decision request
+    O->>O: Verify passport · rules · ledger · signals
+    O->>V: approve / decline / step_up + would_approve_if
+    O->>O: Issue signed Receipt
+    O-->>C: Ask (step_up) → answer signed by device
+    C->>O: Enrol second device (pending)
+    C->>O: Approve it from the first device → Passport v2
+    Note over O: /api/verify checks any passport or receipt
+```
+
+### Documents
+
+| Document | One per | Contains | Signed by | Verify |
+|---|---|---|---|---|
+| Passport | active policy (versioned) | holder, card, rules in words + typed, uncertainty setting, devices, expiry | OneGuard Ed25519 | POST /api/verify, /verify?passport=… |
+| Receipt | decision | proposed, permitted checks, evidence hash, outcome, reason codes, would_approve_if, resolution | OneGuard Ed25519 | POST /api/verify, /verify?receipt=… |
+| Device | enrolled browser/terminal | P-256 public key, label, enrolled_by | the device itself signs writes | header check on every write |
+
+### Device compatibility
+
+WebCrypto ECDSA P-256 with non-extractable keys and IndexedDB: current Safari, Chrome, Edge
+and Firefox. The terminal device (`python -m oneguard.passport.cli`) is
+for operators. Keys never leave the device; clearing site data removes the device (recover
+by approving from another enrolled device, or the issuer-side reset in a real rollout).
+Deferred: passkeys/WebAuthn, HSM key storage.
+
+Details: [docs/passport.md](docs/passport.md).
+
 ## Research this builds on
 
 - **APort Vault** (arXiv:2609.22076): deterministic pre-action gate, signed agent passport.
