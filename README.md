@@ -18,7 +18,6 @@ limit catches 6 of them. OneGuard catches all 33 and still lets the 8 ordinary p
 straight through.**
 
 | Setup | Problem purchases stopped or asked | Money that goes through unchecked |
-|---|---|---:|
 | No control | 🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴 0 of 33 | CHF 7,458.68 |
 | Plain spending limit | 🟢🟢🔴🔴🔴🔴🔴🔴🔴🔴 6 of 33 | CHF 5,732.68 |
 | **OneGuard** | 🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢 **33 of 33** | **CHF 0** |
