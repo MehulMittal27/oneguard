@@ -72,6 +72,10 @@ FIELDS: dict[str, tuple[ValueType, tuple[str, ...], RuleKind]] = {
     "unverifiable": ("text", ("=",), "other"),
 }
 MONEY_FIELDS = frozenset({"authorization.billing_amount_chf", "items[].unit_price_chf"})
+HOUR_FIELD = "authorization.local_hour"
+# "Dinners", "weeknights": the evening, local_hour >= 17 and < 23 (Europe/Zurich), an
+# inferred window (parser.evening_window, decisions.md).
+EVENING_HOURS: tuple[int, int] = (17, 23)
 # The engine evaluates C9 through this field (engine/policy.py); api-contract §3.3
 # names merchant.known_shop as the same check.
 KNOWN_SHOP_FIELD = "merchant.familiar_on_card"
@@ -248,7 +252,9 @@ def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
         else:
             names = ", ".join(d.capitalize() for d in days)
             text = f"Only on {names}" if op == "in" else f"Not on {names}"
-    elif f == "authorization.local_hour":
+    elif f == HOUR_FIELD and spec.source == "inferred" and (op, v) in ((">=", EVENING_HOURS[0]), ("<", EVENING_HOURS[1])):
+        text = f"Only in the evening: {'from' if op == '>=' else 'before'} {int(v):02d}:00 (Swiss time)"
+    elif f == HOUR_FIELD:
         hour = int(v)
         text = {"<": f"Only before {hour:02d}:00", "<=": f"Only until {hour:02d}:59",
                 ">=": f"Only from {hour:02d}:00", ">": f"Only after {hour:02d}:59"}[op]

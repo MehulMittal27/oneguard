@@ -20,7 +20,9 @@ from oneguard.compiler.draft import (
     ALCOHOL_FIELD,
     COUNT_FIELD,
     COUNTRY_NAMES,
+    EVENING_HOURS,
     FIELDS,
+    HOUR_FIELD,
     ITEM_CATEGORIES,
     KNOWN_SHOP_FIELD,
     MERCHANT_CATEGORIES,
@@ -37,6 +39,7 @@ from oneguard.compiler.lint import stated_boundary
 from oneguard.compiler.parser import (
     NO_ALCOHOL,
     each_is_per_purchase,
+    evening_window,
     excluded_item_categories,
     is_product_question,
     per_item_amount,
@@ -372,6 +375,10 @@ Rules:
   as well.
 - Days: "weekdays" / "weeknights" -> weekday in mon..fri; "never at the weekend" alone ->
   weekday not_in [sat, sun]; both together are one rule (in mon..fri).
+- Evening: "dinner(s)", "supper(s)" and "weeknight(s)" also mean the evening, two
+  authorization.local_hour rules: ">=" {EVENING_HOURS[0]} and "<" {EVENING_HOURS[1]} (source "inferred", words the
+  meal or day word). "Weeknight dinners" is the item types, the weekdays and this window.
+  Lunch and breakfast get no hours. An hour the customer states ("after 19:00") is its own rule.
 - A count of purchases per period ("one delivery a day", "two orders a week", "once a week") is one
   {COUNT_FIELD} rule: "<=" the count ("fewer than N" is "<"), value_number the count, scope
   "period", period_days 1 for a day, 7 for a week, 30 for a month. It is never an amount. A meal or
@@ -563,6 +570,10 @@ def read_with_llm(
             specs.append(spec)
         if question:
             questions.append(question)
+    # An hour the customer did not write in digits is inferred: the parser's evening window,
+    # never the model's own guess, so both paths read "weeknight dinners" the same.
+    specs = [s for s in specs if s.field != HOUR_FIELD or re.search(r"\d", s.words)]
+    specs += evening_window(" ".join(instruction.split()), specs)
     if requested and not any(s.field == "items[].item_category" and s.operator == "in" for s in specs):
         # The parser's mapping, not the model's: the item's type from the catalogue, or the question.
         if categories := product_categories(requested):

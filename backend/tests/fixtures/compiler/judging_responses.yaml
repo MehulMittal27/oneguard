@@ -26,6 +26,11 @@
 # After both prompts merged (2026-09-25, gpt-4.1, two live runs each; SCEN0101 fourteen) all ten
 # compile the same as recorded. SCEN0101 sometimes reads "for CHF 20 or less" as a per-item limit
 # (1 run in 4 on the alcohol prompt alone); the LLM path now follows the parser there (per order).
+# SCEN0113 re-recorded on 2026-09-25 (gpt-4.1, same settings) after the prompt learned the evening
+# window (p4/dinner-hours): "dinners" is also authorization.local_hour >= 17 and < 23. Five live runs
+# all read the window; two in five add "not Sat, Sun" beside "Mon-Fri" (as before), so the recorded
+# run is one of the three without it. The other entries are unchanged: no other served instruction
+# names dinner, supper or a weeknight.
 - scenario: SCEN0101
   response:
     uncertainty_policy: ask
@@ -225,6 +230,47 @@
       words: dinners
       source: inferred
       on_fail: decline
+    - field: authorization.weekday
+      operator: in
+      value_number: null
+      value_text: null
+      value_list:
+      - mon
+      - tue
+      - wed
+      - thu
+      - fri
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: weeknight
+      source: inferred
+      on_fail: decline
+    - field: authorization.local_hour
+      operator: '>='
+      value_number: 17
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: dinners
+      source: inferred
+      on_fail: decline
+    - field: authorization.local_hour
+      operator: <
+      value_number: 23
+      value_text: null
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: dinners
+      source: inferred
+      on_fail: decline
     - field: cart.purchases_in_period
       operator: <=
       value_number: 1
@@ -258,25 +304,8 @@
       currency: null
       scope: null
       period_days: null
-      words: from my usual services
+      words: my usual services
       source: exact
-      on_fail: decline
-    - field: authorization.weekday
-      operator: in
-      value_number: null
-      value_text: null
-      value_list:
-      - mon
-      - tue
-      - wed
-      - thu
-      - fri
-      value_from: literal
-      currency: null
-      scope: null
-      period_days: null
-      words: weeknight dinners only; Never at the weekend
-      source: inferred
       on_fail: decline
     open_questions: []
 - scenario: SCEN0117
