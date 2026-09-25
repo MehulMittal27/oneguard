@@ -142,7 +142,7 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 - **E5** For A1: say instructions were found and ignored; never repeat the injected instruction as if true.
 - **E6** No codes, jargon or "risk detected".
 - **E7** Every decision records the facts used (API: `evidence[]`).
-- **E8** After posting, an LLM may rewrite the explanation from the structured evidence only; it never sees or alters the decision.
+- **E8** After posting, an LLM may rewrite the explanation from the structured evidence only; it never sees or alters the decision. The rewrite is used only if it contains every number and every shop and item name of the template message verbatim (names case-insensitive); otherwise the template stays.
 
 ## 10. Turning words into rules
 

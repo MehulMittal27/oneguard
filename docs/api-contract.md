@@ -355,7 +355,9 @@ fields, never in place of them. Both default to unknown, and unknown is never a 
   model rewrite on a later poll (`explanation_source: 'model'`). The worker posts the
   template, then, only while a provider is configured (D5 toggles it), rewrites it in the
   background and updates the stored decision's `message` and `explanation_source`. A
-  failed or rejected rewrite leaves the template.
+  failed or rejected rewrite leaves the template. A rewrite is rejected unless it contains
+  verbatim every number (amounts, counts, times) and every shop and item name
+  (case-insensitive) of the template message (`engine/tier3.py`).
 - The engine reconciles `context.approved_spend_in_period_chf` from Viseca against its own
   ledger on every event, and each decision against the platform's event feed
   (`GET /v1/events?since=<cursor>`, advancing with the returned `next_cursor`) as well as

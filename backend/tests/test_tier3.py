@@ -105,9 +105,76 @@ def test_rewrites_in_any_language_keep_the_deciding_numbers(explanation, rewrite
     assert rewrite_explanation(explanation, FACTS, Says(rewrite), 2.0) == rewrite
 
 
-def test_numbers_match_whatever_their_format():
+def test_numbers_are_kept_as_the_template_writes_them():
     template = Explanation(message="Declined: CHF 1,250.00 is over your CHF 1000 limit.", evidence=[])
-    assert acceptable("Stopped: CHF 1250 is over your CHF 1'000 limit.", template, FACTS) is None
+    assert acceptable("Stopped: CHF 1,250.00 is over your CHF 1000 limit.", template, FACTS) is None
+    assert acceptable("Stopped: CHF 1250 is over your CHF 1'000 limit.", template, FACTS) == \
+        "lost '1,250.00' from the template"
+
+
+def test_a_count_and_a_time_are_kept_verbatim():
+    template = Explanation(message="Waiting for you: 3 orders since 22:00 tonight.", evidence=[])
+    assert acceptable("Please check: 3 orders since 22:00 tonight.", template, FACTS) is None
+    assert acceptable("Please check: 3 orders since 22.00 tonight.", template, FACTS) is not None
+    assert acceptable("Please check: three orders since 22:00 tonight.", template, FACTS) is not None
+
+
+def _named_facts(merchant: str, item: str):
+    event = copy.deepcopy(all_events()["SCEN0004"][0])
+    event["authorization"]["merchant"]["merchant_name"] = merchant
+    event["authorization"]["items"][0]["item_name"] = item
+    event["authorization"]["items"][0]["item_details"] = ""
+    return build_facts(event)
+
+
+# SCEN0117: rewrites the model gave that dropped a name the template had.
+NAMED = [
+    ("Fresh Market", "Digital gift voucher",
+     "Declined CHF 47.95: Digital gift voucher is gift card, not groceries or household.",
+     "Declined CHF 47.95: the item is gift card, not groceries or household.",
+     "I declined CHF 47.95 because the Digital Gift Voucher is a gift card, not groceries or household."),
+    ("Fresh Market", "Drinks and snacks",
+     "Declined CHF 45.00: Drinks and snacks is alcohol, which you excluded.",
+     "Declined CHF 45.00: the item is alcohol, which you excluded.",
+     "I declined CHF 45.00: Drinks and snacks contains alcohol, which you excluded."),
+    ("Valley Fresh", "Weekly vegetable box",
+     "Declined CHF 61.13: You haven't bought from Valley Fresh before.",
+     "Declined CHF 61.13: You haven't bought from the shop before.",
+     "I declined CHF 61.13 because you haven't bought from Valley Fresh before."),
+]
+
+
+@pytest.mark.parametrize("merchant,item,template,dropped,kept", NAMED, ids=["gift-card", "alcohol", "new-shop"])
+def test_a_rewrite_that_drops_a_name_keeps_the_template(merchant, item, template, dropped, kept):
+    facts = _named_facts(merchant, item)
+    explanation = Explanation(message=template, evidence=[])
+    assert acceptable(dropped, explanation, facts) is not None
+    assert rewrite_explanation(explanation, facts, Says(dropped), 2.0) == template
+    assert acceptable(kept, explanation, facts) is None
+    assert rewrite_explanation(explanation, facts, Says(kept), 2.0) == kept
+
+
+def test_the_model_writes_placeholders_and_the_names_come_back():
+    facts = _named_facts("Valley Fresh", "Drinks and snacks")
+    explanation = Explanation(
+        message="Declined CHF 45.00 at Valley Fresh: Drinks and snacks is alcohol, which you excluded.", evidence=[])
+    provider = Says("I declined CHF 45.00 at [SHOP] because [ITEM] is alcohol, which you excluded.")
+    out = rewrite_explanation(explanation, facts, provider, 2.0)
+    assert out == "I declined CHF 45.00 at Valley Fresh because Drinks and snacks is alcohol, which you excluded."
+    _, user, _ = provider.calls[0]
+    assert "Valley Fresh" not in user and "Drinks and snacks" not in user
+    assert "[SHOP]" in user and "[ITEM]" in user
+
+
+@pytest.mark.parametrize("answer", [
+    "I declined CHF 45.00 at [SHOP] because [ITEM B] is alcohol, which you excluded.",
+    "I declined CHF 45.00 at [SHOP] because the item is alcohol, which you excluded.",
+], ids=["unknown-placeholder", "dropped-placeholder"])
+def test_a_placeholder_that_does_not_come_back_keeps_the_template(answer):
+    facts = _named_facts("Valley Fresh", "Drinks and snacks")
+    explanation = Explanation(
+        message="Declined CHF 45.00 at Valley Fresh: Drinks and snacks is alcohol, which you excluded.", evidence=[])
+    assert rewrite_explanation(explanation, facts, Says(answer), 2.0) == explanation.message
 
 
 @pytest.mark.parametrize("provider", [NullProvider(), Unavailable()], ids=["null", "timeout"])
@@ -174,14 +241,16 @@ def test_an_injection_in_any_shop_field_never_reaches_the_model():
                            *(row.detail for row in explanation.evidence)])
     assert PLANTED["merchant_name"] in unredacted and PLANTED["item_name"] in unredacted  # the risk is real
 
-    good = "I stopped this order at the shop: CHF 520.00 is more than your CHF 400 limit per order."
-    provider = Says(good)
-    assert rewrite_explanation(explanation, facts, provider, 2.0) == good
-    [(system, user, _)] = provider.calls
-    for planted in PLANTED.values():
-        assert planted not in system and planted not in user
-    assert not _INJECTION.search(user) and "900" not in user
-    assert "the shop" in user and "the item" in user and "520.00" in user
+    for answer in ["I stopped this order at the shop: CHF 520.00 is more than your CHF 400 limit per order.",
+                   "I stopped this order at [SHOP]: [ITEM] costs CHF 520.00, over your CHF 400 limit."]:
+        provider = Says(answer)
+        # Without the names the rewrite loses them; with them it repeats the injection.
+        assert rewrite_explanation(explanation, facts, provider, 2.0) == explanation.message
+        [(system, user, _)] = provider.calls
+        for planted in PLANTED.values():
+            assert planted not in system and planted not in user
+        assert not _INJECTION.search(user) and "900" not in user
+        assert "[SHOP]" in user and "[ITEM]" in user and "520.00" in user
 
 
 def test_an_instruction_the_redaction_cannot_see_is_never_sent():
