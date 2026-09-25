@@ -92,6 +92,8 @@ def _dedupe(codes: list[str]) -> list[str]:
 
 
 def _fail_code(result: RuleResult, rule: Rule | None) -> str:
+    if result.rule_id == "policy_status":
+        return "no_active_policy"
     if result.rule_id in STEP1_RULE_IDS:
         return "card_or_authority_inactive"
     if rule is not None and rule.field == COUNT_FIELD:
@@ -175,7 +177,7 @@ def decide(
     # Step 1: policy, authority, card.
     inactive = [r for r in step1.values() if r.outcome == "fail"]
     if inactive:
-        return result("decline", 1, ["card_or_authority_inactive"], [r.rule_id for r in inactive])
+        return result("decline", 1, [_fail_code(r, None) for r in inactive], [r.rule_id for r in inactive])
     step1_unsure = [rid for rid in STEP1_RULE_IDS if step1.get(rid) is None or step1[rid].outcome != "pass"]
 
     # Step 2: a broken rule declines, whatever the uncertainty setting (D1).

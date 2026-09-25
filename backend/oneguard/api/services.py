@@ -159,8 +159,7 @@ class Services:
         ``moved``: the row is a D3 copy of the policy its Viseca mandate already held, so a
         live run in flight under that mandate takes it too (``Worker.move_policy``).
         """
-        rules, flags = policies.load_rules(row.rules, row.checks)
-        policy = policies.policy_of(row.mandate_id, row.status, row.instruction, rules, flags, row.uncertainty_policy)
+        policy = policies.mandate_policy(row)
         self.offline.bind_policy(policy)
         if self.worker is not None and row.viseca_mandate_id:
             if moved:

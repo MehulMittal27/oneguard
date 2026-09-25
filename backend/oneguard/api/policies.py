@@ -14,11 +14,14 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from oneguard.api import models as api
 from oneguard.engine.ledger_base import LedgerEntry, is_final_approval
 from oneguard.engine.types import CompiledDraft, HistoryIndex, Policy, Rule
+
+if TYPE_CHECKING:
+    from oneguard.store.schema import Mandate
 
 POLICY_KEY = "__policy__"
 """Key of the Policy flags inside a stored ``rules`` object."""
@@ -136,14 +139,35 @@ def load_rules(stored: dict[str, Any], checks: Iterable[dict[str, Any]]) -> tupl
     return rules, flags
 
 
-def policy_of(mandate_id: str, status: str, instruction: str, rules: list[Rule], flags: dict[str, Any], uncertainty: str) -> Policy:
+def policy_of(
+    mandate_id: str,
+    status: str,
+    instruction: str,
+    rules: list[Rule],
+    flags: dict[str, Any],
+    uncertainty: str,
+    *,
+    card_id: str | None = None,
+    revoked_at: datetime | None = None,
+) -> Policy:
     return Policy(
         mandate_id=mandate_id,
         status="active" if status == "active" else "revoked",
         instruction=instruction,
         rules=rules,
         uncertainty_policy=uncertainty,
+        card_id=card_id,
+        revoked_at=revoked_at if status != "active" else None,
         **flags,
+    )
+
+
+def mandate_policy(row: Mandate) -> Policy:
+    """The policy a stored mandate holds, tied to its card (§4 step 1)."""
+    rules, flags = load_rules(row.rules, row.checks)
+    return policy_of(
+        row.mandate_id, row.status, row.instruction, rules, flags, row.uncertainty_policy,
+        card_id=row.card_id, revoked_at=row.revoked_at,
     )
 
 

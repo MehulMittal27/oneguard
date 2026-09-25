@@ -45,6 +45,7 @@ const REASON_LABEL: Record<string, string> = {
   period_count_exceeded: 'More orders than you allowed for this period',
   shop_terms_contradictory: "The shop's own terms contradict each other",
   no_purchase_history: 'You have no purchase history yet',
+  no_active_policy: 'No active policy on this card',
 
   // Session and timing. `session_watch` is the engine watching a card after
   // unusual activity: the wording is the same sentence the session banner uses,

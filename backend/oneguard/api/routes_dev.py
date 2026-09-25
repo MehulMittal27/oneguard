@@ -167,9 +167,7 @@ async def _replay_policy(s: Services, scenario_id: str, card_id: str) -> tuple[P
     the policy came from."""
     row = await s.db(queries.latest_mandate, s.db_engine, card_id)
     if row is not None:
-        rules, flags = policies.load_rules(row.rules, row.checks)
-        policy = policies.policy_of(row.mandate_id, row.status, row.instruction, rules, flags, row.uncertainty_policy)
-        return policy, row.viseca_mandate_id or REPLAY_MANDATE, "card" if row.status == "active" else "revoked"
+        return policies.mandate_policy(row), row.viseca_mandate_id or REPLAY_MANDATE, "card" if row.status == "active" else "revoked"
     instruction = await _instruction(s, scenario_id)
     compile_instruction = s.functions["compile_instruction"]
     try:
@@ -280,7 +278,12 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
     if s.worker is None or s.client is None:
         raise ApiError(503, "upstream_unavailable", "The payment platform is not connected.")
     await s.worker.refresh_bootstrap("run start")
-    started = await s.viseca(s.client.create_run(body.scenario_id, row.viseca_mandate_id), "new run")
+    s.worker.expect_run(row.viseca_mandate_id, body.scenario_id)
+    try:
+        started = await s.viseca(s.client.create_run(body.scenario_id, row.viseca_mandate_id), "new run")
+    except BaseException:
+        s.worker.forget_run(row.viseca_mandate_id, body.scenario_id)
+        raise
     run_id = str(started["run_id"])
     total = first_value(started, "generated_event_count", "total", "total_events", "event_count")
     s.live_started[run_id] = s.now()

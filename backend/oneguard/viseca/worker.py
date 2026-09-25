@@ -64,8 +64,14 @@ loop, never blocked by a human:
 - a customer answer (C8) goes through ``resolve_by_customer``; it and the expiry are
   serialised, so exactly one of them closes a step-up.
 - ``revoke``: our policy flips to revoked at once, then ``DELETE /v1/mandates/{id}``;
-  anything delivered afterwards is declined with ``card_or_authority_inactive``
-  (rules.md T6, Q6; pipeline step 3).
+  anything delivered afterwards is declined with ``no_active_policy`` (rules.md T6, Q6;
+  pipeline step 3).
+- a purchase is decided only under its own card's confirmed policy: a mandate with no
+  policy stored here, or one whose policy is another card's, is declined with
+  ``no_active_policy`` (rules.md §4 step 1). The platform's copy of the mandate never
+  decides. The one exception is a run D3 starts (``expect_run``): the platform picks its
+  card and D3 moves the policy there once the run is created, so a purchase that arrives
+  before the move decides under the policy it is moving.
 - after each decision the feed ``GET /v1/events?since=<cursor>`` is compared with the
   ledger; a mismatch becomes an ``info`` evidence row on the next decision. Once a page is
   processed its ``next_cursor`` is stored (``worker_state``); ``start`` resumes from the
@@ -602,8 +608,10 @@ def _rule_text(raw: Mapping[str, Any]) -> str:
 def policy_from_snapshot(mandate: Mapping[str, Any]) -> Policy:
     """A Policy from the event's ``mandate`` snapshot (hard_rules as stored at Viseca).
 
-    Used only when no confirmed policy is bound for that mandate. The convenience fields
-    are restated from the rules where the field vocabulary allows (api-contract §3.3).
+    Never decides a purchase (a mandate with no confirmed policy here is declined,
+    ``no_active_policy``); C6 uses it to show the checks of decisions made before that,
+    and tests use it to bind a platform mandate's rules as a confirmed policy. The
+    convenience fields are restated from the rules where the field vocabulary allows (api-contract §3.3).
     """
     rules: list[Rule] = []
     allowed: list[str] | None = None
@@ -1013,6 +1021,8 @@ class VisecaWorker:
         self._events: dict[str, dict[str, Any]] = {}
         self._policies: dict[str, Policy] = {}
         self._revoked: set[str] = set()
+        self._expected: set[tuple[str, str]] = set()
+        """(Viseca mandate id, scenario id) of runs D3 is starting (``expect_run``)."""
         self._expiry: dict[str, asyncio.Task[None]] = {}
         self._claims = OverrunClaims()
         self._run_write_lock = threading.Lock()
@@ -1075,9 +1085,19 @@ class VisecaWorker:
 
     def bind_policy(self, viseca_mandate_id: str, policy: Policy) -> None:
         """The confirmed policy (typed rules) behind a Viseca ``TM…`` mandate."""
-        if viseca_mandate_id in self._revoked:
-            policy = policy.model_copy(update={"status": "revoked"})
+        if viseca_mandate_id in self._revoked and policy.status == "active":
+            policy = policy.model_copy(update={"status": "revoked", "revoked_at": self._now()})
         self._policies[viseca_mandate_id] = policy
+
+    def expect_run(self, viseca_mandate_id: str, scenario_id: str) -> None:
+        """D3 is about to start ``scenario_id`` under ``viseca_mandate_id``: the platform
+        picks the run's card and D3 moves the policy there afterwards (``move_policy``), so
+        that run's purchases decide under this mandate's policy whatever their card."""
+        self._expected.add((viseca_mandate_id, scenario_id))
+
+    def forget_run(self, viseca_mandate_id: str, scenario_id: str) -> None:
+        """The run ``expect_run`` announced was not created."""
+        self._expected.discard((viseca_mandate_id, scenario_id))
 
     def move_policy(self, viseca_mandate_id: str, policy: Policy) -> None:
         """D3 moved the policy behind ``viseca_mandate_id`` to a new mandate id (same rules):
@@ -1312,13 +1332,12 @@ class VisecaWorker:
     async def revoke(self, viseca_mandate_id: str) -> None:
         """Revoke a mandate: locally at once (nothing more is approved), then at Viseca."""
         self._revoked.add(viseca_mandate_id)
+        revoked = {"status": "revoked", "revoked_at": self._now()}
         if viseca_mandate_id in self._policies:
-            self._policies[viseca_mandate_id] = self._policies[viseca_mandate_id].model_copy(
-                update={"status": "revoked"}
-            )
+            self._policies[viseca_mandate_id] = self._policies[viseca_mandate_id].model_copy(update=revoked)
         for run in self._runs.values():
             if run.viseca_mandate_id == viseca_mandate_id and run.ctx is not None:
-                run.ctx.policy = run.ctx.policy.model_copy(update={"status": "revoked"})
+                run.ctx.policy = run.ctx.policy.model_copy(update=revoked)
         await self._store(self._mark_mandate_revoked, viseca_mandate_id)
         log.info("mandate %s revoked; later requests under it are declined", viseca_mandate_id)
         await self.client.delete_mandate(viseca_mandate_id)
@@ -2100,10 +2119,9 @@ class VisecaWorker:
         """Bind our confirmed policy for a Viseca mandate from the store.
 
         ``bind_policy`` lives in memory, so after a restart or redeploy every live run
-        would otherwise be decided from the platform snapshot, which carries only the
-        typed ``hard_rules``: the requested item (C5), "nothing extra" (C10) and
-        ``on_fail: ask`` are not in it. The newest mandate confirmed for that id wins;
-        a revoked one binds as revoked, so later purchases are still declined (T6).
+        would otherwise find no policy and decline (``no_active_policy``). The newest
+        mandate confirmed for that id wins, tied to its card; a revoked one binds as
+        revoked, so later purchases are still declined (T6).
         """
         from oneguard.api import policies
 
@@ -2115,10 +2133,7 @@ class VisecaWorker:
             ).first()
             if row is None:
                 return
-            rules, flags = policies.load_rules(row.rules, row.checks)
-            policy = policies.policy_of(
-                row.mandate_id, row.status, row.instruction, rules, flags, row.uncertainty_policy
-            )
+            policy = policies.mandate_policy(row)
         log.info("restored confirmed policy %s for mandate %s from the store", policy.mandate_id, viseca_mandate_id)
         self.bind_policy(viseca_mandate_id, policy)
 
@@ -2128,17 +2143,22 @@ class VisecaWorker:
             return run
         auth, mandate = data["authorization"], data["mandate"]
         tm = mandate["mandate_id"]
+        card_id = auth["card_id"]
         policy = self._policies.get(tm)
         if policy is None:
-            log.warning(
-                "no confirmed policy bound for mandate %s; deciding from the platform snapshot", tm
-            )
-            policy = policy_from_snapshot(mandate)
+            log.warning("no confirmed policy stored for mandate %s; card %s has no active policy", tm, card_id)
+            policy = Policy(mandate_id=tm, status="none", instruction="", rules=[], uncertainty_policy="decline")
         if tm in self._revoked and policy.status == "active":
-            policy = policy.model_copy(update={"status": "revoked"})
+            policy = policy.model_copy(update={"status": "revoked", "revoked_at": self._now()})
+        expected = (tm, auth.get("scenario_id") or "")
+        if expected in self._expected:
+            self._expected.discard(expected)
+            if policy.card_id not in (None, card_id):
+                log.info("D3 run on card %s: the policy of %s moves there", card_id, policy.card_id)
+                policy = policy.model_copy(update={"card_id": card_id})
         run.viseca_mandate_id = tm
         run.mandate_id = policy.mandate_id
-        run.card_id = auth["card_id"]
+        run.card_id = card_id
         run.scenario_id = run.scenario_id or auth.get("scenario_id")
         run.state = "running"
         run.ctx = PipelineContext(

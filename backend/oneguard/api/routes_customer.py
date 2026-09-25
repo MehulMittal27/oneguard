@@ -143,21 +143,26 @@ def merchant_view(entry: LedgerEntry, earlier: list[LedgerEntry], history: Histo
     )
 
 
-def mandate_policy(row: Mandate) -> Policy:
-    rules, flags = policies.load_rules(row.rules, row.checks)
-    return policies.policy_of(row.mandate_id, row.status, row.instruction, rules, flags, row.uncertainty_policy)
-
-
 def decided_by_platform(event: dict, entry: LedgerEntry) -> Policy:
     """The policy a decision with no stored mandate was checked against: the platform
-    mandate's rules from its stored event (as the worker did, ``policy_from_snapshot``),
-    else a policy without rules (a replay whose policy was never stored)."""
+    mandate's rules from its stored event (as the worker did before ``no_active_policy``,
+    ``policy_from_snapshot``), else a policy without rules (a replay whose policy was never
+    stored, or a purchase declined because the card had no policy of its own)."""
     from oneguard.viseca.worker import policy_from_snapshot
 
     mandate = event.get("mandate") or {}
-    if mandate.get("mandate_id") == entry.mandate_id and mandate.get("hard_rules"):
+    if (
+        "no_active_policy" not in entry.reason_codes
+        and mandate.get("mandate_id") == entry.mandate_id
+        and mandate.get("hard_rules")
+    ):
         return policy_from_snapshot(mandate)
-    return Policy(mandate_id=entry.mandate_id, status="active", instruction="", rules=[], uncertainty_policy="ask")
+    return without_rules(entry.mandate_id)
+
+
+def without_rules(mandate_id: str) -> Policy:
+    """A policy with no checks: C6 shows no "Policy applied" for it (``pipeline.policy_applied``)."""
+    return Policy(mandate_id=mandate_id, status="active", instruction="", rules=[], uncertainty_policy="ask")
 
 
 def build_decisions(
@@ -166,9 +171,10 @@ def build_decisions(
     """Contract ``Decision`` rows in the order given; one without its event is left out.
 
     Each is mapped with the policy it was decided under (``Decision.confirmable``); a
-    replay's policy that was never stored as a mandate maps as one without rules.
+    replay's policy that was never stored as a mandate maps as one without rules, and so
+    does another card's policy: a customer never sees the policy of a card not theirs.
     """
-    decided_under = {mandate_id: mandate_policy(row) for mandate_id, row in mandates.items()}
+    decided_under = {mandate_id: policies.mandate_policy(row) for mandate_id, row in mandates.items()}
     by_run: dict[str, list[LedgerEntry]] = defaultdict(list)
     for item in stored:
         by_run[item.entry.run_id].append(item.entry)
@@ -178,7 +184,13 @@ def build_decisions(
             log.error("decision %s has no stored event; left out of C6", item.entry.live_authorization_id)
             continue
         view = merchant_view(item.entry, by_run[item.entry.run_id], history)
-        policy = decided_under.get(item.entry.mandate_id) or decided_by_platform(item.event, item.entry)
+        row = mandates.get(item.entry.mandate_id)
+        if row is None:
+            policy = decided_by_platform(item.event, item.entry)
+        elif row.card_id == item.entry.card_id:
+            policy = decided_under[item.entry.mandate_id]
+        else:
+            policy = without_rules(item.entry.mandate_id)
         decisions.append(to_api_decision(item.event, item.entry, view, policy, item.run_started_at))
     return decisions
 
