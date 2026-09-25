@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 from typing import TypeVar
 
 from oneguard.api.models import DryRunResult
@@ -21,7 +21,7 @@ from oneguard.compiler.dryrun import dry_run
 from oneguard.compiler.lint import LintResult, lint, lint_accepted, lint_against_floor
 from oneguard.compiler.llm import read_with_llm
 from oneguard.compiler.parser import parse
-from oneguard.compiler.resolve import simulated_today
+from oneguard.compiler.resolve import confirmation_date, simulated_today
 from oneguard.engine.interfaces import INTERFACES, register
 from oneguard.engine.types import CompiledDraft, HistoryIndex, Policy, Rule
 from oneguard.llm.provider import Provider, ProviderUnavailable, provider_available
@@ -45,13 +45,18 @@ def _with_questions(draft: ParsedDraft, result: LintResult) -> ParsedDraft:
 @register("compile_instruction")
 def compile_instruction(
     text: str, history: HistoryIndex, card_id: str, provider: Provider, customer_id: str | None = None,
-    *, today: date | None = None, preferences: str | None = None,
+    *, confirmed_at: datetime | None = None, today: date | None = None,
+    preferences: str | None = None,
 ) -> CompiledDraft:
-    """api-contract §3.2 C1 with ``instruction``. ``today`` defaults to the card's
-    simulated present (its latest history row, M6); ``customer_id`` is the card's owner,
-    for the dry run's customer-level ``agent_history``."""
+    """api-contract §3.2 C1 with ``instruction``. ``customer_id`` is the card's owner, for
+    the dry run's customer-level ``agent_history``.
+
+    Relative dates ("by Friday") count from ``today``: the card's simulated present (its
+    latest history row, M6), or the Europe/Zurich date of ``confirmed_at`` when a caller
+    gives one (no route does: C2 does not pass the real clock). An explicit ``today``
+    wins over both."""
     if today is None:
-        today = simulated_today(history, card_id)
+        today = confirmation_date(confirmed_at) if confirmed_at else simulated_today(history, card_id)
 
     fallback = parse(text, history, card_id, today)
     fallback_lint = lint(fallback)

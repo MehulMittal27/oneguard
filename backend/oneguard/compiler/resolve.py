@@ -5,18 +5,21 @@ read from HistoryIndex, never from text (A2). When the purchases it points at we
 at several shops (several subscriptions), no one price is meant: the rule keeps the
 reference ``LAST_PRICE_AT_SHOP`` and the engine compares each purchase with the last
 price at its own shop (engine/policy.py). "By Friday" is a date resolved against the
-card's simulated present (M6: the latest history row, not the real clock); the check
-text shows the date so the customer confirms it (T5).
+card's simulated present (M6: the latest history row, not the real clock), or against a
+``confirmed_at`` a caller gives (its Europe/Zurich date; no route does); the check text
+shows the date so the customer confirms it (T5).
 """
 
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from oneguard.engine.types import HistoryIndex, HistoryRow
 
+ZURICH = ZoneInfo("Europe/Zurich")
 LOOKBACK_DAYS = 400  # a yearly renewal is still "last time"
 _STOP = {"my", "the", "a", "an", "our", "same", "as", "last", "time", "renew", "again", "usual"}
 
@@ -40,6 +43,12 @@ def simulated_today(history: HistoryIndex, card_id: str) -> date | None:
     """The card's latest history timestamp as a date, or None without history."""
     rows = card_rows(history, card_id)
     return max(r.timestamp for r in rows).date() if rows else None
+
+
+def confirmation_date(confirmed_at: datetime) -> date:
+    """The Europe/Zurich date of the confirmation time (a naive time is read as UTC)."""
+    aware = confirmed_at if confirmed_at.tzinfo else confirmed_at.replace(tzinfo=UTC)
+    return aware.astimezone(ZURICH).date()
 
 
 def _matches(history: HistoryIndex, card_id: str, item_words: str) -> list[HistoryRow]:

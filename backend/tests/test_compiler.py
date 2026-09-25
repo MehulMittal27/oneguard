@@ -473,3 +473,20 @@ def test_the_reference_date_is_the_simulated_present(history):
     assert parse(PRESENT, today=date(2026, 8, 14)).rules  # a Friday reads as the next one
     assert next(r.value for r in parse(PRESENT, today=date(2026, 8, 14)).rules
                 if r.field == "authorization.delivery_by") == "2026-08-21"
+
+
+@pytest.mark.parametrize("provider", [NullProvider(), ScriptedProvider(MODEL_READINGS)], ids=["fallback", "llm"])
+def test_by_friday_counts_from_a_given_confirmation_time(history, provider):
+    """No route passes ``confirmed_at`` (C2 does not pass the real clock), so "by Friday"
+    counts from the card's simulated present. A caller that gives one gets its
+    Europe/Zurich date as "today": Thu 13 Aug 22:30 UTC is already Fri 14 Aug in Zurich,
+    so "by Friday" is the next one, 21 Aug."""
+    def delivery_by(**when: Any) -> Rule:
+        draft = compile_instruction(PRESENT, history, CARD, provider, **when)
+        return next(r for r in draft.rules if r.field == "authorization.delivery_by")
+
+    assert delivery_by().value == "2026-08-14"  # no confirmation time: the card's simulated present
+    assert delivery_by(confirmed_at=datetime(2026, 8, 13, 9, 0, tzinfo=UTC)).value == "2026-08-14"
+    late = delivery_by(confirmed_at=datetime(2026, 8, 13, 22, 30, tzinfo=UTC))
+    assert late.value == "2026-08-21" and "Fri 21 Aug 2026" in late.text
+    assert delivery_by(confirmed_at=datetime(2026, 8, 13, 22, 30, tzinfo=UTC), today=date(2026, 8, 10)).value == "2026-08-14"

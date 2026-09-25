@@ -197,3 +197,8 @@ inside the 2 s budget · Viseca POST ~100–300 ms. Internal budget 2 s; platfor
 8 s from queueing. Tier 3 runs after posting, not in the budget.
 Measured (docs/benchmark.md, `backend/scripts/bench_engine.py`): end-to-end P95 5.6 ms on
 SQLite with signals off; Laya agent_directed P95 99 ms per purchase on the laptop.
+
+Tier 3 is a background task the worker starts once a decision is posted (only while the
+run has a provider; D5 off clears it): the model call runs on tier-3 threads, off the engine
+thread, with an 8 s timeout, then one short ledger session stores the new message with
+`explanation_source: model`. The poll loop never waits for it.
