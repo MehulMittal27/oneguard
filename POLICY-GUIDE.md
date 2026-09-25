@@ -3,9 +3,6 @@
 Every check OneGuard runs on a purchase, what it does today, and how often it decided the
 45 public test purchases.
 
-Source: `main` at `7f0a7e0` (25 Sep 2026): `docs/rules.md`, `docs/acceptance-oracle.yaml`.
-"Oracle" means our own answer key for the 45 public purchases; Viseca publishes none.
-
 ## How to change a policy
 
 - **A customer's own rules** (limits, shops, item types): no code. The customer writes them in
