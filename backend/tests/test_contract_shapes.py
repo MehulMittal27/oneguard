@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import inspect
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +16,7 @@ from oneguard import pipeline
 from oneguard.api import models as api
 from oneguard.engine import interfaces, stubs
 from oneguard.engine.ledger_base import InMemoryLedger
-from oneguard.engine.types import FactValue, Policy, Rule, RuleResult
+from oneguard.engine.types import FactValue, ItemFacts, Policy, Rule, RuleResult
 from oneguard.llm.provider import (
     NullProvider,
     Provider,
@@ -467,8 +467,11 @@ def test_every_interface_exists_and_raises_until_implemented() -> None:
     assert set(interfaces.IMPLEMENTATION_MODULES) == EXPECTED_INTERFACES
     for name, fn in interfaces.INTERFACES.items():
         assert getattr(interfaces, name) is fn
+        positional = [
+            p for p in inspect.signature(fn).parameters.values() if p.kind is p.POSITIONAL_OR_KEYWORD
+        ]
         with pytest.raises(NotImplementedError):
-            fn(*[None] * len(inspect.signature(fn).parameters))
+            fn(*[None] * len(positional))
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED_INTERFACES))
@@ -518,6 +521,27 @@ def test_fact_value_known_needs_a_value() -> None:
         FactValue[int](known=True, source="regex")
     assert FactValue[int](value=43, known=True, source="regex").value == 43
     assert FactValue[int](known=False, source="regex", detail="absent").value is None
+
+
+def test_item_facts_second_sources_default_to_unknown() -> None:
+    """C5 and C12 read these after the trusted fields; until read they are unknown."""
+    unknown = FactValue[int](known=False, source="regex", detail="absent")
+    line = ItemFacts(
+        line_no=1, item_id="IT1", item_name="Shoes", item_category="shoes", quantity=1,
+        unit_price=90.0, currency="CHF", unit_price_chf=90.0, item_details="Ships Friday",
+        size_eu=unknown, return_window_days=unknown, recurring=FactValue[bool](known=False, source="regex"),
+    )
+    assert (line.matches_requested.known, line.matches_requested.source) == (False, "regex")
+    assert (line.delivery_date_text.known, line.delivery_date_text.source) == (False, "model")
+    read = line.model_copy(update={
+        "matches_requested": FactValue[bool](value=True, known=True, source="model", detail="read by model"),
+        "delivery_date_text": FactValue[date].model_validate(
+            {"value": "2026-08-14", "known": True, "source": "model", "detail": 'read by model from: "Friday"'}
+        ),
+    })
+    assert read.matches_requested.value is True and read.delivery_date_text.value == date(2026, 8, 14)
+    with pytest.raises(ValidationError):
+        FactValue[date].model_validate({"value": "next Friday", "known": True, "source": "model"})
 
 
 def test_rule_value_is_never_a_boolean() -> None:

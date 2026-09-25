@@ -119,7 +119,7 @@ class Services:
     # Models (D5) -------------------------------------------------------------------------
 
     def live_models(self) -> bool:
-        """Soft signals and tier 2 for live runs: on unless signals are off or D5 says so."""
+        """Soft signals, tier 2 and tier 3 for live runs: on unless signals are off or D5 says so."""
         return self.signals_backend != "off" if self.models_enabled is None else self.models_enabled
 
     def active_signals(self) -> SignalsBackend:

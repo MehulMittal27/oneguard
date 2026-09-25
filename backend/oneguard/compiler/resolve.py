@@ -1,19 +1,25 @@
 """Values the instruction points at but does not state (oracle ``value_from``).
 
 "Same price as last time" is the customer's last approved price at the shop they mean,
-read from HistoryIndex, never from text (A2). "By Friday" is a date resolved against the
-card's simulated present (M6: the latest history row, not the real clock); the check
-text shows the date so the customer confirms it (T5).
+read from HistoryIndex, never from text (A2). When the purchases it points at were made
+at several shops (several subscriptions), no one price is meant: the rule keeps the
+reference ``LAST_PRICE_AT_SHOP`` and the engine compares each purchase with the last
+price at its own shop (engine/policy.py). "By Friday" is a date resolved against the
+card's simulated present (M6: the latest history row, not the real clock), or against a
+``confirmed_at`` a caller gives (its Europe/Zurich date; no route does); the check text
+shows the date so the customer confirms it (T5).
 """
 
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from oneguard.engine.types import HistoryIndex, HistoryRow
 
+ZURICH = ZoneInfo("Europe/Zurich")
 LOOKBACK_DAYS = 400  # a yearly renewal is still "last time"
 _STOP = {"my", "the", "a", "an", "our", "same", "as", "last", "time", "renew", "again", "usual"}
 
@@ -39,20 +45,36 @@ def simulated_today(history: HistoryIndex, card_id: str) -> date | None:
     return max(r.timestamp for r in rows).date() if rows else None
 
 
-def last_price(
-    history: HistoryIndex, card_id: str, item_words: str
-) -> tuple[Decimal, HistoryRow] | None:
-    """The last approved purchase on this card that matches ``item_words`` (by the
-    trusted merchant category or the history description), priced by
-    ``HistoryIndex.last_price`` for that shop. None when nothing matches."""
+def confirmation_date(confirmed_at: datetime) -> date:
+    """The Europe/Zurich date of the confirmation time (a naive time is read as UTC)."""
+    aware = confirmed_at if confirmed_at.tzinfo else confirmed_at.replace(tzinfo=UTC)
+    return aware.astimezone(ZURICH).date()
+
+
+def _matches(history: HistoryIndex, card_id: str, item_words: str) -> list[HistoryRow]:
+    """Approved purchases on this card that match ``item_words`` (by the trusted merchant
+    category or the history description)."""
     wanted = _tokens(item_words)
     if not wanted:
-        return None
-    matches = [
+        return []
+    return [
         r for r in card_rows(history, card_id)
         if r.transaction_type == "purchase" and r.status == "approved"
         and wanted & _tokens(f"{r.description} {r.merchant_category} {r.merchant_name}")
     ]
+
+
+def at_several_shops(history: HistoryIndex, card_id: str, item_words: str) -> bool:
+    """True when the purchases ``item_words`` points at were made at more than one shop."""
+    return len({r.merchant_id for r in _matches(history, card_id, item_words)}) > 1
+
+
+def last_price(
+    history: HistoryIndex, card_id: str, item_words: str
+) -> tuple[Decimal, HistoryRow] | None:
+    """The last approved purchase on this card that matches ``item_words``, priced by
+    ``HistoryIndex.last_price`` for that shop. None when nothing matches."""
+    matches = _matches(history, card_id, item_words)
     if not matches:
         return None
     row = max(matches, key=lambda r: (r.timestamp, r.authorization_id))

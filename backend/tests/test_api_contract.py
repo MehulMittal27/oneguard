@@ -15,6 +15,7 @@ without depending on which engine lanes have landed.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import shutil
@@ -43,6 +44,7 @@ from oneguard.api.policies import (
 from oneguard.api.services import Services
 from oneguard.engine import stubs
 from oneguard.engine.interfaces import load_implementations
+from oneguard.engine.tier3 import rewrite_explanation
 from oneguard.engine.types import (
     CompiledDraft,
     EngineDecision,
@@ -1433,6 +1435,56 @@ def test_operator_endpoints(db_url: str) -> None:
             assert health["events_cursor"] == health["worker"]["events_cursor"] > 0
             assert health["database"]["ok"] and health["database"]["round_trip_ms"] is not None
             assert TIMESTAMP.match(health["worker"]["last_poll_at"])
+
+    asyncio.run(scenario())
+
+
+class Rephrases:
+    """A tier-3 provider: the template with a friendlier opening, every number kept."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete_json(self, schema: dict, system: str, user: str, timeout_s: float) -> dict:
+        self.calls += 1
+        template = json.loads(user)["template_message"]
+        return {"message": f"Quick note: {template[0].lower()}{template[1:]}"}
+
+
+def test_d5_switches_tier3_rewrites_on_and_off(db_url: str) -> None:
+    """With the models on, C6 shows the template first and the rewrite on a later poll
+    (``explanation_source: model``); D5 off stops rewrites of later decisions. The worker
+    schedules a decision's rewrite as it notifies, so the test awaits those tasks."""
+
+    async def scenario() -> None:
+        provider = Rephrases()
+        engine = {**TEST_ENGINE, "rewrite_explanation": rewrite_explanation}
+        async with running(
+            db_url, fake=FakeViseca(fast()), provider=provider, implementations=engine,
+            stubbed=TEST_STUBBED - {"rewrite_explanation"},
+        ) as run:
+            worker = run.services.worker
+            seen: list[Any] = []
+            worker.add_listener(seen.append)
+            assert run.services.live_models() is False  # signals off: models off until D5
+            assert (await run.post("/api/dev/soft-signals", json={"enabled": True})).json() == {"enabled": True}
+            await confirm_form(run)
+            r = await run.post("/api/dev/runs", json={"scenario_id": "SCEN0000", "card_id": "CA0001"})
+            assert r.status_code == 200, r.text
+            await until(lambda: len(seen) >= 1)  # the posted decision; its rewrite may follow at once
+            await asyncio.wait_for(asyncio.gather(*worker._rewrites), 30)
+            (row,) = await run.decisions()
+            assert row["explanation_source"] == "model" and row["message"].startswith("Quick note: ")
+            assert f"CHF {row['billing_amount_chf']:.2f}" in row["message"]
+            assert provider.calls == 1
+
+            assert (await run.post("/api/dev/soft-signals", json={"enabled": False})).json() == {"enabled": False}
+            r = await run.post("/api/dev/runs", json={"scenario_id": "SCEN0001", "card_id": "CA0001"})
+            assert r.status_code == 200, r.text
+            await until(lambda: len({d.authorization_id for d in seen}) == 11)
+            assert not worker._rewrites and provider.calls == 1
+            rows = await run.decisions()
+            assert len(rows) == 11 and sum(d["explanation_source"] == "model" for d in rows) == 1
 
     asyncio.run(scenario())
 

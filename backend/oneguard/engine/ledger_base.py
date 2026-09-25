@@ -143,6 +143,22 @@ def confirmation_keys(rule_ids: Iterable[str], merchant_id: str, item_ids: Itera
     return keys
 
 
+def last_prices(history: HistoryIndex | None, customer_id: str, approved: Iterable[Any]) -> dict[str, float]:
+    """``LedgerView.last_price_chf_by_merchant``: history's last approved price at each shop
+    the customer knows, replaced by this run's final approvals (``approved``: decisions with
+    ``customer_id``, ``merchant_id``, ``ts_sim``, ``billing_amount_chf``), the latest by
+    simulated time winning. The run comes after the history it is scored against."""
+    prices: dict[str, float] = {}
+    if history is not None:
+        for merchant_id in history.known_merchants(customer_id):
+            price = history.last_price(customer_id, merchant_id)
+            if price is not None:
+                prices[merchant_id] = float(price)
+    for d in sorted((d for d in approved if d.customer_id == customer_id), key=lambda d: d.ts_sim):
+        prices[d.merchant_id] = float(d.billing_amount_chf)
+    return prices
+
+
 def known_merchant_names(history: HistoryIndex | None, merchant_ids: set[str]) -> dict[str, str]:
     """Catalogue names of the known merchants (``LedgerView.known_merchant_names``, A7).
 
@@ -230,6 +246,17 @@ class Ledger(ABC):
         replacing the local default set at record time. Nothing else changes. Raises
         KeyError if unknown, ValueError if not a pending step-up. Not abstract so an
         implementation without it still loads; the worker then keeps the local default.
+        """
+        raise NotImplementedError
+
+    def set_explanation(self, authorization_id: str, message: str) -> LedgerEntry:
+        """Store tier 3's rewrite of a posted decision's message and return the stored entry.
+
+        Sets ``message`` and ``explanation_source="model"`` (rules.md §4a, E8); the
+        outcome, evidence, amounts and resolution are unchanged, whatever the entry's
+        state. The worker calls this after posting, outside the decision budget; C6 then
+        shows the new message. Raises KeyError if unknown. Not abstract, as
+        ``set_deadline``; without it the template message stays.
         """
         raise NotImplementedError
 
@@ -328,6 +355,7 @@ class InMemoryLedger(Ledger):
             known_countries=(set(self.history.known_countries(customer_id)) if self.history else set())
             | run_countries,
             max_approved_chf=max(maxima) if maxima else None,
+            last_price_chf_by_merchant=last_prices(self.history, customer_id, approved),
             flagged_merchant_ids=set(self.flags.get(run_id, set())),
             frozen=False,
             confirmed_keys={
@@ -400,5 +428,12 @@ class InMemoryLedger(Ledger):
             if entry.outcome != "step_up" or entry.final:
                 raise ValueError(f"{authorization_id} is not awaiting an answer")
             updated = entry.model_copy(update={"deadline_at": deadline_at})
+            self.entries[authorization_id] = updated
+            return updated
+
+    def set_explanation(self, authorization_id: str, message: str) -> LedgerEntry:
+        with self._lock:
+            entry = self.entries[authorization_id]
+            updated = entry.model_copy(update={"message": message, "explanation_source": "model"})
             self.entries[authorization_id] = updated
             return updated

@@ -26,7 +26,7 @@ from oneguard.compiler.draft import (
     human,
     to_chf,
 )
-from oneguard.engine.policy import KNOWN_SHOP_FIELDS
+from oneguard.engine.policy import KNOWN_SHOP_FIELDS, is_last_price_rule
 from oneguard.engine.types import HistoryIndex, HistoryRow, Rule
 
 WINDOW_DAYS = 90
@@ -46,11 +46,26 @@ def _known_shop(row: HistoryRow, seen: set[str]) -> tuple[str, str]:
     return "ask", "a shop not bought from before on this card"
 
 
+def _last_price(rule: Rule, row: HistoryRow, prior: list[HistoryRow]) -> tuple[str, str]:
+    """"Same price as last time at this shop" on a past purchase: against the card's last
+    approved purchase at the same shop before it; the first one there asks, as the engine does."""
+    last = next((p for p in reversed(prior) if p.merchant_id == row.merchant_id), None)
+    if last is None:
+        return "ask", f"first payment at {row.merchant_name}, no earlier price"
+    amount, before = Decimal(str(row.billing_amount_chf)), Decimal(str(last.billing_amount_chf))
+    reason = f"CHF {fmt_amount(amount)} vs CHF {fmt_amount(before)} last time"
+    if _cmp(amount, rule.operator, before):
+        return "fit", reason
+    return ("ask" if rule.on_fail == "ask" else "violate"), reason
+
+
 def _check(rule: Rule, row: HistoryRow, prior: list[HistoryRow], seen: set[str]) -> tuple[str, str] | None:
     """(verdict, reason) for one rule on one past purchase, or None if history can't show it."""
     f, op = rule.field, rule.operator
     local = row.timestamp.astimezone(ZURICH)
     amount = Decimal(str(row.billing_amount_chf))
+    if is_last_price_rule(rule):
+        return _last_price(rule, row, prior)
     if f == "authorization.billing_amount_chf":
         limit = to_chf(rule.value, rule.currency)
         if rule.scope == "period":

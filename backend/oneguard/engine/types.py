@@ -78,7 +78,7 @@ class FactValue[T](_Model):
 
 
 class ItemFacts(_Model):
-    """One cart line (C3, C4, C5, C6, C10, A3, A6, W6; M1, M2).
+    """One cart line (C3, C4, C5, C6, C10, C12, A3, A6, W6; M1, M2).
 
     ``item_name`` and ``item_details`` are untrusted shop text: facts come from them
     only through the FactValues. ``size_eu`` is decimal (43.5 is a real size and is not
@@ -87,6 +87,12 @@ class ItemFacts(_Model):
     allowlisted lexicon over the catalogue's and the shop's text, unknown when the text
     names drinks without saying which. The catalogue range comes from ``items`` and is
     ``None`` when the ``item_id`` is not in the catalogue.
+
+    Two facts are a second source after the trusted fields, never in place of them, and
+    stay unknown until something reads them: ``matches_requested`` says whether this
+    line is the item the customer asked for (C5; ``regex`` or ``model``), and
+    ``delivery_date_text`` is a delivery date the shop's text states for this line (C12
+    ``authorization.delivery_by``; ``model``). Unknown is never a pass.
     """
 
     line_no: int = Field(ge=1)
@@ -106,6 +112,12 @@ class ItemFacts(_Model):
     recurring: FactValue[bool]
     contains_alcohol: FactValue[bool] = Field(
         default_factory=lambda: FactValue[bool](known=False, source="regex", detail="not extracted")
+    )
+    matches_requested: FactValue[bool] = Field(
+        default_factory=lambda: FactValue[bool](known=False, source="regex", detail="not extracted")
+    )
+    delivery_date_text: FactValue[date] = Field(
+        default_factory=lambda: FactValue[date](known=False, source="model", detail="not extracted")
     )
     unit_price_min_chf: float | None = None
     unit_price_typical_chf: float | None = None
@@ -237,6 +249,10 @@ class LedgerView(_Model):
     ``merchant_approvals_on_card`` / ``merchant_approvals_other_cards`` count
     approved purchases per ``merchant_id`` for ``Decision.merchant_meta``.
     ``max_approved_chf`` is ``None`` when the customer has no approved purchase (W4).
+    ``last_price_chf_by_merchant`` is the customer's last final approved CHF total per
+    ``merchant_id`` (C1 "same price as last time at this shop"): history's
+    ``last_price``, replaced by this run's latest final approval there; a shop the
+    customer never paid is absent, never zero (P3).
     ``flagged_merchant_ids`` carries A1 info evidence to later purchases.
     ``confirmed_keys`` are remembered customer confirmations: ``rule|merchant|item``
     (read only for restrictions no data can check) and ``rule|merchant|*`` (read only
@@ -264,6 +280,7 @@ class LedgerView(_Model):
     known_device_ids: set[str]
     known_countries: set[str]
     max_approved_chf: float | None
+    last_price_chf_by_merchant: dict[str, float] = Field(default_factory=dict)
     flagged_merchant_ids: set[str]
     frozen: bool
     confirmed_keys: set[str] = Field(default_factory=set)

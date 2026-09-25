@@ -341,6 +341,7 @@ expire — that is a broken state, not a degraded one.
   it unchanged. A form policy stores and serves "Built from the form" and sends Viseca its
   accepted checks as sentences ("Total at or below CHF 20 per order. Ask me when
   uncertain."), since the platform wants text.
+- C2 does not pass the real clock; date phrases resolve from the card's simulated date.
 - A confirmed draft replaces the card's active mandate, which is revoked (C5 semantics).
 - C4 `add_checks` are ids of checks proposed by this card's drafts; their text is ignored.
   Changing a check already in force is 409 `not_pure_addition`; an unknown id is 422.
@@ -350,6 +351,7 @@ expire — that is a broken state, not a degraded one.
 | `field` | meaning |
 |---|---|
 | `authorization.billing_amount_chf` | total in CHF, delivery included (never add delivery again) |
+| `authorization.billing_amount_chf` with `value: "last_price_at_shop"` (a reference, not a number; `currency: CHF`, `scope: purchase`) | the total against the customer's last approved total at this purchase's `merchant_id`: history's last approved price there, replaced by this run's latest final approval there (declines and pending step-ups set no price; a step-up the customer approved does). No earlier payment at the shop: `unknown`, never a pass. "If a price changes, ask me" for several subscriptions is `=` with `on_fail: ask`: evidence "CHF 14.90 at Streamly; last time it was CHF 12.90", counterfactual "Would approve at CHF 12.90, the price last time". Not a per-order cap (lint still asks for one). `LedgerView.last_price_chf_by_merchant` carries the prices |
 | `authorization.billing_amount_chf` + `scope: period`, `period_days: 7` | rolling window; sum of **final approvals** whose simulated timestamp ≥ current − 7×24h |
 | `cart.purchases_in_period` + `scope: period`, `period_days: N` | integer; purchases on this card in the rolling window of N×24h before the current simulated timestamp: **final approvals + pending step-ups** (declines and expired step-ups never count; a redelivered live id counts once). This purchase is compared as count + 1: `<= 1`, `period_days: 1` is "one a day", so a second purchase fails. Operators `<=` / `<` only. Fail: `period_count_exceeded`; evidence "You allowed one order per day; one was already approved today at 12:10" (time of the latest approval, Europe/Zurich), message "Declined CHF 32.00: You allowed one order per day; one was already approved today at 12:10.", counterfactual "Would approve from tomorrow at 12:10."; a breach caused only by pending step-ups asks (`period_reserved_pending`, M5) |
 | `merchant.merchant_category` | trusted catalogue category |
@@ -374,6 +376,14 @@ C2 (`scope: period`) is not evaluated with the other customer rules: it needs th
 
 Extraction from `item_details` is allowlisted regex only, produces facts, never instructions.
 
+Two per-line facts (`ItemFacts`, engine-side) are a **second source** after the trusted
+fields, never in place of them. Both default to unknown, and unknown is never a pass:
+
+| `ItemFacts` field | type | source | read after |
+|---|---|---|---|
+| `matches_requested` | `FactValue[bool]` | `regex` or `model` (tier 2) | the requested-item name match (C5, C10) |
+| `delivery_date_text` | `FactValue[date]` | `model` (tier 2), from the shop's text | the live `delivery_by` (C12 `authorization.delivery_by`) |
+
 ### 3.4 Decision lifecycle and the ledger
 
 - One transaction in the store (docs/database.md) per decision: insert decision, consume
@@ -390,7 +400,10 @@ Extraction from `item_details` is allowlisted regex only, produces facts, never 
   Re-quote: `related_authorization_id` points at a **declined** decision and the new facts
   comply → `requote_accepted`, `related.relation = 'requote_of'`, no duplicate penalty.
 - C6 may return the template message first (`explanation_source: 'template'`) and the
-  model rewrite on a later poll (`explanation_source: 'model'`).
+  model rewrite on a later poll (`explanation_source: 'model'`). The worker posts the
+  template, then, only while a provider is configured (D5 toggles it), rewrites it in the
+  background and updates the stored decision's `message` and `explanation_source`. A
+  failed or rejected rewrite leaves the template.
 - The engine reconciles `context.approved_spend_in_period_chf` from Viseca against its own
   ledger on every event, and each decision against the platform's event feed
   (`GET /v1/events?since=<cursor>`, advancing with the returned `next_cursor`) as well as

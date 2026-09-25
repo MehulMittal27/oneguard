@@ -24,6 +24,8 @@ from oneguard.compiler.draft import (
     RuleSpec,
     finalize,
     fmt_amount,
+    is_amount,
+    last_price_at_shop,
     next_weekday,
     number,
     to_chf,
@@ -267,6 +269,22 @@ def each_is_per_purchase(instruction: str, words: str) -> bool:
     return each and not _counted(with_shared_currency(" ".join(instruction.split())))
 
 
+def per_item_amount(instruction: str, value: Decimal) -> bool | None:
+    """How the parser reads this per-purchase amount in the instruction: True per item
+    ("CHF 200 per night", "max CHF 90 each" after counted items), False per order ("for
+    CHF 20 or less", "up to CHF 300 each" with nothing counted), None when it does not read
+    the amount (another language). The LLM path follows it, so both readings agree."""
+    reading = _Reading()
+    money = with_shared_currency(" ".join(instruction.split()))
+    counted = _counted(money)
+    for clause in _clauses(money):
+        _amounts(reading, clause, counted)
+    fields = {s.field for s in reading.specs if s.scope == "purchase" and Decimal(str(s.value)) == value}
+    if len(fields) != 1:
+        return None
+    return fields.pop() == "items[].unit_price_chf"
+
+
 def _num(word: str) -> int | None:
     word = word.lower()
     return int(word) if word.isdigit() else NUMBER_WORDS.get(word)
@@ -391,6 +409,14 @@ def _positive(text: str) -> str:
     """The instruction without its negated stretches: item types named after "no" or
     "never" are exclusions (C4), never what the customer allows (C3)."""
     return _NEGATED.sub(" ", text)
+
+
+def excluded_item_categories(words: str) -> list[str] | None:
+    """"no insurance" -> ["travel"]: the item types one exclusion names, as ``_blocked``
+    reads them; None when the words name no item type."""
+    m = re.fullmatch(r"(?:no|never|except|excluding|without)\s+(?:any\s+)?(?P<what>[\w -]+?)\W*", words.strip(),
+                     re.IGNORECASE)
+    return next((c for p, c in ITEM_WORDS if p.fullmatch(m.group("what").strip())), None) if m else None
 
 
 def _blocked(reading: _Reading, text: str) -> None:
@@ -568,11 +594,22 @@ ASK_IF_CHANGED = re.compile(
 _PRICE_SUBJECT = re.compile(r"\b(?:the|a|any) price\b|\bprices\b", re.IGNORECASE)
 
 
+def price_change_clause(text: str) -> str | None:
+    """"If a price changes, ask me": the customer's words, when they ask about a price."""
+    m = ASK_IF_CHANGED.search(text)
+    return m.group(0) if m and _PRICE_SUBJECT.search(m.group(0)) else None
+
+
 def _same_price(reading: _Reading, text: str, history, card_id: str) -> None:
-    from oneguard.compiler.resolve import last_price
+    """"Same price as last time": the one shop's last price from history, or, when the
+    purchases meant were made at several shops, each purchase's own shop's last price."""
+    from oneguard.compiler.resolve import at_several_shops, last_price
 
     m = re.search(r"\bsame (?:price|amount) as (?:last time|before|usual|last)\b", text, re.IGNORECASE)
     if not m:
+        return
+    if at_several_shops(history, card_id, reading.requested_item or text):
+        reading.specs.append(last_price_at_shop(m.group(0)))
         return
     found = last_price(history, card_id, reading.requested_item or text)
     if found is None:
@@ -679,22 +716,22 @@ def _stay(reading: _Reading, text: str) -> None:
 
 def _price_change(reading: _Reading, text: str) -> None:
     """"If a price changes, ask me" with no single price to compare against (several
-    subscriptions): engine gap, no field holds "the last price at this shop". It is an
-    unverifiable rule that asks (``on_fail: ask``) and carries the clause that allows it."""
-    m = ASK_IF_CHANGED.search(text)
-    if not m or not _PRICE_SUBJECT.search(m.group(0)):
+    subscriptions): each purchase's total against the last price the customer paid at
+    that shop (``LAST_PRICE_AT_SHOP``), asking when it differs (``on_fail: ask``) or when
+    there is no earlier price there. It carries the clause that allows the ask."""
+    said = price_change_clause(text)
+    if said is None:
         return
-    said = m.group(0)
     if re.search(r"\bsame (?:price|amount) as\b", text, re.IGNORECASE):
         return  # "same price as last time" is the price rule, found in history or asked for
     if any(s.ask_clause and said in s.ask_clause for s in reading.specs):
         return  # the clause covers a rule already ("same price as last time, ask me if ...")
-    reading.specs.append(RuleSpec(field="unverifiable", operator="=", value="the price has not changed since last time",
-                                  words=said, on_fail="ask", ask_clause=said))
+    reading.specs.append(last_price_at_shop(said, on_fail="ask", ask_clause=said))
 
 
 def _amount_question(reading: _Reading) -> None:
-    has_cap = any(s.field == "authorization.billing_amount_chf" and s.scope == "purchase" for s in reading.specs)
+    has_cap = any(s.field == "authorization.billing_amount_chf" and s.scope == "purchase" and is_amount(s)
+                  for s in reading.specs)
     if has_cap:
         return
     per_item = next((s for s in reading.specs if s.field == "items[].unit_price_chf" and s.operator in ("<=", "<")), None)

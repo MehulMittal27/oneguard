@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any, TypeVar
 
 from oneguard.api.models import DryRunResult
@@ -93,19 +94,28 @@ def explain(
 
 
 def rewrite_explanation(
-    explanation: Explanation, facts: Facts, provider: Provider, timeout_s: float
+    explanation: Explanation, facts: Facts, provider: Provider, timeout_s: float,
+    *, instruction: str | None = None,
 ) -> str:
-    """P4 tier3.py. Tier 3 (§4a, E8): rewrite from structured evidence, after posting."""
+    """P4 tier3.py. Tier 3 (§4a, E8): rewrite from structured evidence, after posting.
+
+    ``instruction`` is the customer's instruction, for the language only. The worker
+    calls it in the background once the decision is posted and stores a changed message
+    with ``explanation_source="model"``."""
     raise NotImplementedError
 
 
 def compile_instruction(
-    text: str, history: HistoryIndex, card_id: str, provider: Provider, customer_id: str | None = None
+    text: str, history: HistoryIndex, card_id: str, provider: Provider, customer_id: str | None = None,
+    *, confirmed_at: datetime | None = None,
 ) -> CompiledDraft:
     """P4 compiler/. Instruction → typed rules + dry-run (§10, api-contract §3.2).
 
     ``customer_id`` is the card's owner, for the dry run's customer-level
-    ``agent_history``; without it the card's history names the customer.
+    ``agent_history``; without it the card's history names the customer. Relative dates
+    ("by Friday") count from the card's simulated present (its latest history row, M6).
+    ``confirmed_at``, when given, replaces it with its Europe/Zurich date; no route
+    passes it (C2 does not pass the real clock, api-contract §3.2).
     """
     raise NotImplementedError
 
