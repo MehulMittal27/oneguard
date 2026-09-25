@@ -1,7 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import { approveDevice, getDevices, getPassport, passportQrUrl, removeDevice, thisDevice, verifyDocument } from '../api/passport'
+import {
+  approveDevice,
+  enrolThisDevice,
+  getDevices,
+  getPassport,
+  passportQrUrl,
+  removeDevice,
+  thisDevice,
+  verifyDocument,
+} from '../api/passport'
 import type { Device, Passport, VerifyResult } from '../api/types'
 import { formatShortDate } from '../lib/datetime'
+import { deviceOffer } from '../lib/passportDevices'
 import { REVEAL_MS, prefersReducedMotion, takeReveal } from '../lib/passportReveal'
 import { DeviceGateCancelled, useDevice } from '../state/DeviceContext'
 import { CheckIcon, CrossIcon, DeviceIcon, ShieldIcon } from './icons/lucide'
@@ -86,6 +96,24 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
     }
   }
 
+  // No device controls the card: this browser becomes its controller at once (the
+  // backend's trust on first use), and the passport re-reads with it listed.
+  async function makeController() {
+    setBusy('controller')
+    setActionError(null)
+    try {
+      const status = await enrolThisDevice(cardId)
+      if (status !== 'enrolled') {
+        setActionError('Another device took control of this card first. Ask it to approve this one.')
+      }
+      setRefresh((n) => n + 1)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Something went wrong. Try again.')
+    } finally {
+      setBusy(null)
+    }
+  }
+
   async function check() {
     if (!passport) return
     const { version } = passport
@@ -141,6 +169,7 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
   const iControl = mine?.status === 'enrolled'
   const listed = devices.filter((d) => d.status !== 'removed' || d.device_id === mine?.device_id)
   const removedCount = devices.length - listed.length
+  const offer = deviceOffer(devices, mine)
 
   return (
     <div>
@@ -230,7 +259,8 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
           </p>
           {listed.length === 0 ? (
             <p className="mt-2 text-[13px] text-ink-muted">
-              None yet. The first device to confirm or change this card&apos;s policy becomes its controller.
+              None yet. The first device to confirm or change this card&apos;s policy becomes its controller,
+              or make this one the controller now.
             </p>
           ) : (
             <ul className="mt-2 flex flex-col gap-2">
@@ -296,14 +326,24 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
             </p>
           )}
           {actionError && <p className="mt-2 text-[13px] text-destructive">{actionError}</p>}
-          {!iControl && listed.some((d) => d.status === 'enrolled') && (
+          {offer === 'controller' && (
+            <button
+              type="button"
+              onClick={makeController}
+              disabled={busy !== null}
+              className="mt-3 h-11.5 w-full rounded-button bg-ink text-[15px] font-semibold text-on-ink disabled:opacity-60"
+            >
+              {busy === 'controller' ? 'Working…' : 'Make this device the controller'}
+            </button>
+          )}
+          {(offer === 'add' || (offer === 'waiting' && listed.some((d) => d.status === 'enrolled'))) && (
             <div className="mt-3 flex flex-col gap-2">
               <p className="text-[13px] text-ink-muted">
-                {mine?.status === 'pending'
+                {offer === 'waiting'
                   ? 'This device is waiting for approval from one that controls the card.'
                   : "This device can see the card but can't change its policy."}
               </p>
-              {mine?.status !== 'pending' && (
+              {offer === 'add' && (
                 <button
                   type="button"
                   onClick={() => requestEnrol(cardId)}
