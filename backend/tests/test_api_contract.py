@@ -1568,6 +1568,9 @@ def test_d5_switches_tier3_rewrites_on_and_off(db_url: str) -> None:
             assert row["explanation_source"] == "model" and row["message"].startswith("Quick note: ")
             assert f"CHF {row['billing_amount_chf']:.2f}" in row["message"]
             assert provider.calls == 1
+            # D3 refuses while the worker still follows the first run; its decision can
+            # land a poll before the worker sees the run done.
+            await until(lambda: all(r.state not in ("starting", "running") for r in worker.status().runs))
 
             assert (await run.post("/api/dev/soft-signals", json={"enabled": False})).json() == {"enabled": False}
             r = await run.post("/api/dev/runs", json={"scenario_id": "SCEN0001", "card_id": "CA0001"})

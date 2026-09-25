@@ -112,6 +112,32 @@ export function lastRunLine(run: ConsoleRun): string {
 }
 
 /**
+ * In progress: starting or running, or with step-ups still waiting for the
+ * customer (`waiting`, counted from the stream; D7's `pending_human` for a live run).
+ */
+export function runInProgress(run: Pick<ConsoleRun, 'state' | 'pendingHuman'>, waiting: number): boolean {
+  return run.state === 'starting' || run.state === 'running' || waiting > 0 || (run.pendingHuman ?? 0) > 0
+}
+
+export interface RunPanel {
+  run: ConsoleRun
+  // Not in progress: shown only because its scenario is selected.
+  finished: boolean
+}
+
+/**
+ * The run the run panel shows: D7's run while it is in progress; once it is
+ * not, only while its scenario is selected (D7 names the newest run, so it is
+ * that scenario's latest), labelled finished. Otherwise null: "No run in
+ * progress", with the last run still named on its own line.
+ */
+export function runPanel(run: ConsoleRun | null, waiting: number, selectedScenarioId: string | null): RunPanel | null {
+  if (!run) return null
+  if (runInProgress(run, waiting)) return { run, finished: false }
+  return run.scenarioId === selectedScenarioId ? { run, finished: true } : null
+}
+
+/**
  * The run's own decisions out of the customer's C6 list, order kept (newest
  * first). A backend that names no ledger run id falls back to the card's newest
  * run by `run_started_at`.

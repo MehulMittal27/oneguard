@@ -18,17 +18,22 @@ const STATE: Record<ConsoleRun['state'], { label: string; tone: keyof typeof TON
 }
 
 /**
- * The run the console follows (D7): whose it is, where it stands, and the card's
- * passport. `run` is undefined before the first read and null when no run has
- * started. `waiting` is counted from the stream, which C6 keeps current as the
- * customer answers.
+ * The run in progress (D7): whose it is, where it stands, and the card's
+ * passport; or, labelled `finished`, the selected scenario's run once it is over.
+ * `run` is undefined before the first read and null when no run is in progress
+ * (`lastRun`: one has run, and the scenario panel names it). `waiting` is counted
+ * from the stream, which C6 keeps current as the customer answers.
  */
 export function RunHeader({
   run,
+  finished = false,
+  lastRun = false,
   waiting,
   passport,
 }: {
   run: ConsoleRun | null | undefined
+  finished?: boolean
+  lastRun?: boolean
   waiting: number
   passport: PassportLine | null
 }) {
@@ -41,7 +46,9 @@ export function RunHeader({
   if (run === null) {
     return (
       <section aria-label="Current run" className="rounded-card border border-hairline bg-surface px-8 py-6">
-        <p className={`${TEXT_M} text-ink-muted`}>No run has started yet. Pick a scenario and replay it.</p>
+        <p className={`${TEXT_M} text-ink-muted`}>
+          {lastRun ? 'No run in progress.' : 'No run has started yet.'} Pick a scenario and replay it.
+        </p>
       </section>
     )
   }
@@ -50,10 +57,15 @@ export function RunHeader({
   const decided = run.decided ?? null
   return (
     <section
-      aria-label="Current run"
+      aria-label={finished ? 'Finished run' : 'Current run'}
       className="flex flex-wrap items-center gap-x-8 gap-y-3 rounded-card border border-hairline bg-surface px-8 py-5"
     >
       <div className="flex min-w-0 flex-col gap-1">
+        {finished && (
+          <p className={`${TEXT_S} font-semibold tracking-wide text-ink-muted uppercase`}>
+            Finished run of this scenario · no run in progress
+          </p>
+        )}
         <p className={`${TEXT_M} flex flex-wrap items-center gap-3 font-semibold text-ink`}>
           <span className="tabular-nums">
             {runTitle(run)} · {run.scenarioId}
