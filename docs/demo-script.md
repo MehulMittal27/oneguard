@@ -392,6 +392,3 @@ On the GitHub tab:
 - (`?demo=1` Operator strip only, not the `/ops` console) The strip shows "backend
   unreachable" while no replay has run in the current server process (D1 answers 404 "No
   replay has run yet."); the rehearsal replay clears it.
-- A step-up the customer answered keeps its "Waiting for you CHF …" message (only an
-  expiry rewrites it); the console's **Answered** badge and the phone's status say what
-  happened.
