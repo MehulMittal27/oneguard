@@ -30,6 +30,8 @@ behaviour the worker depends on:
 - the team keeps one active mandate: confirming a draft supersedes the active one
   (``status: "superseded"``, as the live sandbox showed on 25 Sep 2026); revoking a
   superseded mandate is 409 ``mandate_inactive`` (assumed, like PATCH and scenario runs);
+  each queued purchase's ``mandate`` snapshot carries the mandate's status at that moment,
+  so a run whose mandate was superseded meanwhile delivers ``status: "superseded"``;
 - knobs for redelivery, corrupt or rewritten events, a served history file or fx rates that differ, a
   context / event-feed that disagrees with the worker, whether team reset is enabled, a
   new pack (``pack_version``, ``served_extra`` changed while running), the long-poll cap
@@ -361,6 +363,9 @@ class FakeViseca:
             if a.status in ("pending", "approved", "declined")
         ]
         event = with_run_context(copy.deepcopy(auth.template), decided)
+        # The snapshot names the mandate's status now: superseded once a later
+        # confirmation replaced it while the run was still queuing purchases.
+        event["mandate"]["status"] = self.mandates.get(run.mandate["mandate_id"], run.mandate)["status"]
         event["deadline_at"] = _iso(auth.deadline_at)
         event["runtime"]["received_at"] = _iso(now)
         spend = self._approved_spend(run, auth) + self.config.context_spend_offset

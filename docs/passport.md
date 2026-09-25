@@ -88,6 +88,7 @@ Oliver Graf's card after enrolling the stage laptop (version 2; version 1 was th
   "holder": { "customer_id": "CU0019", "name": "Oliver Graf" },
   "card_id": "CA0039",
   "mandate_id": "md_75695eabc5fa7e82",
+  "platform_mandate_id": "TM5b8c2a41f09e6d73",
   "instruction": "Buy one 27-inch computer monitor from a known electronics seller for CHF 400 or less. No add-ons or protection plans. Ask me when uncertain.",
   "checks": [
     { "id": "C1", "text": "Total at or below CHF 400 per order", "source": "exact",
@@ -129,12 +130,18 @@ Oliver Graf's card after enrolling the stage laptop (version 2; version 1 was th
 - `devices`: the card's enrolled devices when this version was issued, each with its `role`:
   `controller` (exactly one while any device is enrolled) or `approved`.
   `controller_device_id` names the controller (null with no device enrolled).
+- `platform_mandate_id`: the policy's mandate at Viseca (null when it has none). When D3
+  registers the same policy again because the platform superseded its mandate
+  (api-contract.md §1.2), the policy keeps its `mandate_id` and the passport gets a new
+  version naming the new platform mandate (reason `platform`). A passport issued before this
+  field existed gets one version naming it at the next sync (reason `platform`).
 - `expires_at`: `issued_at` + 90 days (mandates carry no expiry of their own).
 - Versions: `GET /api/cards/{card}/passport` lists `{version, issued_at, reason}`. Reasons:
   `confirmed` (C2), `backfill` (first start after the deploy), `tightened` (C4),
   `devices` (a device enrolled, approved or removed), `controller` (control handed to another
   device, or named for the first time on a passport from before controllers),
-  `confirmation` (a step-up approved),
+  `confirmation` (a step-up approved), `platform` (the policy's mandate at Viseca changed:
+  D3 registered it again, or named for the first time),
   `revoked` (C5, or a new policy on the card), `updated` (anything else). A version is
   issued only when the content changed; the older one gets `superseded_at`. A revoked
   passport never changes again.

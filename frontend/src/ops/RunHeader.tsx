@@ -78,6 +78,14 @@ export function RunHeader({
           {run.fromRecord &&
             ` · events of run ${run.fromRecord.startedAt ? formatRunStart(run.fromRecord.startedAt) : run.fromRecord.runId}`}
           {run.policy ? ` · ${run.policy}` : ''}
+          {run.platformMandate && (
+            <>
+              {' · '}
+              <span title={run.platformMandate.detail} className="text-asked-ink">
+                {run.platformMandate.label}
+              </span>
+            </>
+          )}
         </p>
       </div>
 

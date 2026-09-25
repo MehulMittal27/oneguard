@@ -350,6 +350,19 @@ export interface LiveRun {
   customer_name?: string
   ledger_run_id?: string
   started_at?: string
+  // D3's check of the policy's mandate at the platform before it started the run;
+  // absent for runs D3 did not start and from older backends.
+  platform_mandate?: PlatformMandate
+}
+
+// The platform's status of the policy's mandate as D3 found it (`missing`: not
+// there; null: unread), and whether D3 registered the same policy again, under
+// `viseca_mandate_id` (`previous_viseca_mandate_id` the one it replaced).
+export interface PlatformMandate {
+  status_before: string | null
+  reregistered: boolean
+  viseca_mandate_id: string
+  previous_viseca_mandate_id?: string
 }
 
 // D8: one scenario of the store's catalogue as the platform sees it: whether it

@@ -379,6 +379,34 @@ async def reissue_passport(s: Services, card_id: str, reason: str = "confirmed")
         log.exception("passport of card %s not reissued now; the sweep will", card_id)
 
 
+async def register_at_platform(
+    s: Services,
+    instruction: str,
+    rules: list[Rule],
+    uncertainty: str,
+    open_questions: list[str],
+    what: str = "new policy",
+) -> tuple[str, str]:
+    """Create and confirm a policy at Viseca: the instruction, its checks as ``hard_rules``
+    and as ``guidance`` sentences. Returns (draft id, mandate id); a refusal is a 503 naming
+    the platform's status and code (``Services.viseca``). The sandbox keeps one active
+    mandate per team, so this supersedes whichever was active there."""
+    assert s.client is not None
+    created = await s.viseca(
+        s.client.create_mandate(
+            instruction,
+            [rule_to_viseca(r) for r in rules],
+            uncertainty,
+            guidance=[r.text for r in rules],
+            open_questions=open_questions,
+        ),
+        what,
+    )
+    draft_id = str(created["draft_id"])
+    confirmed = await s.viseca(s.client.confirm_mandate(draft_id), "policy confirmation")
+    return draft_id, str(confirmed["mandate_id"])
+
+
 @router.post("/policy-drafts/{draft_id}/confirm", response_model=api.Mandate)
 async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: Request) -> JSONResponse:
     """C2: the checks sent back are accepted ids; their text is ignored.
@@ -423,19 +451,13 @@ async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: R
 
         viseca_draft_id = viseca_mandate_id = None
         if s.client is not None:
-            created = await s.viseca(
-                s.client.create_mandate(
-                    policies.form_instruction(accepted, uncertainty) if row.compiler == "form" else row.instruction,
-                    [rule_to_viseca(r) for r in accepted],
-                    uncertainty,
-                    guidance=[r.text for r in accepted],
-                    open_questions=list(row.open_questions),
-                ),
-                "new policy",
+            viseca_draft_id, viseca_mandate_id = await register_at_platform(
+                s,
+                policies.form_instruction(accepted, uncertainty) if row.compiler == "form" else row.instruction,
+                accepted,
+                uncertainty,
+                list(row.open_questions),
             )
-            viseca_draft_id = str(created["draft_id"])
-            confirmed = await s.viseca(s.client.confirm_mandate(viseca_draft_id), "policy confirmation")
-            viseca_mandate_id = str(confirmed["mandate_id"])
 
         now = s.now()
         mandate = Mandate(

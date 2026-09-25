@@ -38,6 +38,7 @@ from oneguard.api.errors import ApiError, not_found
 from oneguard.api.offline import RecordRun, live_ids, record_fields
 from oneguard.api.operator import require_operator
 from oneguard.api.routes_customer import (
+    register_at_platform,
     reissue_passport,
     reply,
     revoke_at_platform,
@@ -49,11 +50,17 @@ from oneguard.engine.ledger_base import LedgerEntry
 from oneguard.engine.types import CompiledDraft, Policy
 from oneguard.passport import devices as device_store
 from oneguard.replay.events import Pack, build_events, recorded_events
+from oneguard.store import worker_events
 from oneguard.store.db import session
-from oneguard.store.schema import Run, ScenarioCatalogue
+from oneguard.store.schema import Mandate, Run, ScenarioCatalogue
 from oneguard.store.seed import ENV_VAR
 from oneguard.viseca.client import RUNS_DISABLED_MESSAGE, VisecaError, runs_allowed
-from oneguard.viseca.worker import PLATFORM_PENDING, first_value, run_finished
+from oneguard.viseca.worker import (
+    PLATFORM_PENDING,
+    first_value,
+    run_finished,
+    stored_platform_mandate,
+)
 
 log = logging.getLogger(__name__)
 
@@ -267,6 +274,12 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
     card than the one asked for (a scenario never run before, whose card nobody knew) the
     policy moves to that card (``queries.move_mandate``), so its holder sees it. The reply
     names the card's holder (``customer_id``, ``customer_name``).
+
+    Before the run, the policy's mandate is read at the platform (``_platform_mandate``):
+    the sandbox keeps one active mandate per team, so a policy confirmed later (another
+    card, another judging run) supersedes ours there while it stays active here. Then the
+    same policy is registered again at the platform and the run starts under the new
+    platform mandate; the reply's ``platform_mandate`` says what was found and done.
     """
     if not runs_allowed():
         raise ApiError(409, "runs_disabled", RUNS_DISABLED_MESSAGE)
@@ -280,6 +293,8 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
     if s.worker is None or s.client is None:
         raise ApiError(503, "upstream_unavailable", "The payment platform is not connected.")
     await s.worker.refresh_bootstrap("run start")
+    row, platform = await _platform_mandate(s, row)
+    assert row.viseca_mandate_id is not None
     s.worker.expect_run(row.viseca_mandate_id, body.scenario_id)
     try:
         started = await s.viseca(s.client.create_run(body.scenario_id, row.viseca_mandate_id), "new run")
@@ -294,6 +309,7 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
         scenario_id=body.scenario_id,
         viseca_mandate_id=row.viseca_mandate_id,
         total=total if isinstance(total, int) and not isinstance(total, bool) else None,
+        platform_mandate=platform,
     )
     profiles = [p for p in await s.worker.remember_profiles(started, "run") if p.scenario_id == body.scenario_id]
     card_id = profiles[0].card_id if profiles else body.card_id
@@ -304,6 +320,85 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
     assert live is not None
     return reply(
         await _with_customer(s, live.model_copy(update={"card_id": live.card_id or card_id, "mandate_id": mandate_id}))
+    )
+
+
+async def _platform_mandate(s: Services, row: Mandate) -> tuple[Mandate, api.PlatformMandate]:
+    """D3: the policy's mandate as the platform has it, registered again when not active.
+
+    ``GET /v1/mandates/{id}``: ``active`` starts the run under it. Missing (404), or any
+    other status (``superseded`` by a later confirmation, ``revoked`` or ``expired`` at
+    the platform while the customer's policy is active here) registers the same policy
+    again (``_reregister``). A read that fails otherwise starts the run as before, so the
+    platform's own answer to the run decides (a refusal is a 503 naming it)."""
+    assert s.client is not None and row.viseca_mandate_id is not None
+    tm = row.viseca_mandate_id
+    try:
+        found = await s.platform(s.client.get_mandate(tm))
+    except VisecaError as exc:
+        if exc.status != 404:
+            log.warning("mandate %s unread at the platform (%s); starting the run under it", tm, exc)
+            return row, api.PlatformMandate(status_before=None, reregistered=False, viseca_mandate_id=tm)
+        found = {"status": "missing"}
+    status = found.get("status") if isinstance(found, dict) else None
+    if not isinstance(status, str) or not status:
+        log.warning("mandate %s read at the platform with no status; starting the run under it", tm)
+        return row, api.PlatformMandate(status_before=None, reregistered=False, viseca_mandate_id=tm)
+    if status == "active":
+        return row, api.PlatformMandate(status_before=status, reregistered=False, viseca_mandate_id=tm)
+    return await _reregister(s, row, status)
+
+
+async def _reregister(s: Services, row: Mandate, status_before: str) -> tuple[Mandate, api.PlatformMandate]:
+    """Create and confirm the card's active policy at the platform again, as C2 did (its
+    instruction, a form policy's checks as sentences, its checks as ``hard_rules``), and
+    store the new platform id on the same policy: its ``mandate_id``, checks and status
+    stay as they are, only the platform reference changes, and the passport is re-issued
+    to name it. Tighten only holds: nothing about the policy changes (CLAUDE.md rule 7)."""
+    old = row.viseca_mandate_id
+    async with s.policy_lock:
+        current = await s.db(queries.latest_mandate, s.db_engine, row.card_id)
+        if current is None or current.mandate_id != row.mandate_id or current.status != "active":
+            raise ApiError(409, "validation", "The card's policy changed while the run was starting; nothing was started.")
+        if current.viseca_mandate_id != old:  # registered again meanwhile (another D3)
+            assert current.viseca_mandate_id is not None
+            return current, api.PlatformMandate(
+                status_before=status_before,
+                reregistered=True,
+                viseca_mandate_id=current.viseca_mandate_id,
+                previous_viseca_mandate_id=old,
+            )
+        rules, _ = policies.load_rules(current.rules, current.checks)
+        instruction = current.instruction
+        if instruction == policies.FORM_INSTRUCTION:
+            instruction = policies.form_instruction(rules, current.uncertainty_policy)
+        _, tm = await register_at_platform(
+            s, instruction, rules, current.uncertainty_policy, list(current.open_questions), "re-registered policy"
+        )
+        updated = await s.db(queries.update_mandate, s.db_engine, current.mandate_id, viseca_mandate_id=tm)
+        s.bind_mandate(updated)
+    log.warning(
+        "mandate %s of policy %s was %s at the platform; the policy is registered again as %s",
+        old, updated.mandate_id, status_before, tm,
+    )  # fmt: skip
+    try:
+        await s.db(
+            worker_events.record,
+            s.db_engine,
+            worker_events.Event(
+                at=s.now(),
+                kind="mandate_reregistered",
+                action="create_run",
+                code=status_before,
+                message=f"policy {updated.mandate_id} registered again: {old} was {status_before}",
+                mandate_id=tm,
+            ),
+        )
+    except ApiError:  # the policy is registered and stored; the run still starts
+        log.exception("re-registration of %s not recorded in worker_events", updated.mandate_id)
+    await reissue_passport(s, updated.card_id)
+    return updated, api.PlatformMandate(
+        status_before=status_before, reregistered=True, viseca_mandate_id=tm, previous_viseca_mandate_id=old
     )
 
 
@@ -419,6 +514,7 @@ def _stored_live_run(run_id: str, row: Run) -> api.LiveRun:
         last_error=row.last_error,
         ledger_run_id=row.run_id,
         started_at=row.started_at,
+        platform_mandate=stored_platform_mandate(row.platform_mandate),
     )
 
 @router.get("/runs/current", response_model=api.LiveRun | api.ReplayStatus)

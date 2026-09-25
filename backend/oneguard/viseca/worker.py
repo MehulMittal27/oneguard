@@ -154,6 +154,7 @@ from oneguard.pipeline import (
     to_api_decision,
 )
 from oneguard.store import seed as seed_module
+from oneguard.store import worker_events
 from oneguard.store.db import get_engine, session
 from oneguard.store.history import ReloadableHistory, StoreHistoryIndex
 from oneguard.store.lease import WorkerLease, worker_lease
@@ -892,6 +893,8 @@ class RunState:
     stored: RunCounts | None = None
     """The counters as last recomputed from the store (``_save_run``): they include what
     other processes, or this one before a restart, delivered and decided."""
+    platform_mandate: api.PlatformMandate | None = None
+    """D3's check of the mandate at the platform before it started the run."""
 
     def status(self) -> RunStatus:
         stored = self.stored or RunCounts(0, 0, 0)
@@ -1023,6 +1026,8 @@ class VisecaWorker:
         self._revoked: set[str] = set()
         self._expected: set[tuple[str, str]] = set()
         """(Viseca mandate id, scenario id) of runs D3 is starting (``expect_run``)."""
+        self._inactive_seen: set[tuple[str, str]] = set()
+        """(Viseca mandate id, status): the platform reported our mandate so; logged once."""
         self._expiry: dict[str, asyncio.Task[None]] = {}
         self._claims = OverrunClaims()
         self._run_write_lock = threading.Lock()
@@ -1129,11 +1134,13 @@ class VisecaWorker:
         scenario_id: str | None = None,
         viseca_mandate_id: str | None = None,
         total: int | None = None,
+        platform_mandate: api.PlatformMandate | None = None,
     ) -> RunStatus:
         """Follow a run from its creation, so its progress is read while nothing arrives.
 
         A run not seen before is a run start: ``/v1/bootstrap`` is re-read in the background
-        unless it was just read (``BOOTSTRAP_FRESH_S``).
+        unless it was just read (``BOOTSTRAP_FRESH_S``). ``platform_mandate``: D3's check of
+        the mandate at the platform, shown by D4 and D7 and stored with the run's row.
         """
         if viseca_run_id not in self._runs:
             self._run_started(viseca_run_id)
@@ -1141,6 +1148,7 @@ class VisecaWorker:
         run.scenario_id = scenario_id or run.scenario_id
         run.viseca_mandate_id = viseca_mandate_id or run.viseca_mandate_id
         run.total = max(run.total, total or 0)
+        run.platform_mandate = platform_mandate or run.platform_mandate
         return run.status()
 
     async def wait_run_recorded(self, viseca_run_id: str) -> RunStatus:
@@ -1177,6 +1185,7 @@ class VisecaWorker:
             last_error=run.last_error or self._last_error,
             ledger_run_id=run.run_id,
             started_at=run.started_at,
+            platform_mandate=run.platform_mandate,
         )
 
     def status(self) -> WorkerStatus:
@@ -1997,6 +2006,7 @@ class VisecaWorker:
         run.mandate_id = run.mandate_id or row.mandate_id or None
         run.card_id = run.card_id or row.card_id or None
         run.total = max(run.total, row.total)
+        run.platform_mandate = run.platform_mandate or stored_platform_mandate(row.platform_mandate)
         if run.state == "starting":
             run.state = "running"
         return run
@@ -2052,6 +2062,7 @@ class VisecaWorker:
         if not bound and data["mandate"]["mandate_id"] not in self._policies:
             await asyncio.to_thread(self._restore_policy, str(data["mandate"]["mandate_id"]))
         run = self._bind_run(viseca_run_id, data)
+        self._note_mandate_status(run, data["mandate"])
         if not bound:
             # The ledger reads runs.kind (live) to carry the session watch and remembered
             # answers over from earlier live runs, so the row is written before the first
@@ -2136,6 +2147,46 @@ class VisecaWorker:
             policy = policies.mandate_policy(row)
         log.info("restored confirmed policy %s for mandate %s from the store", policy.mandate_id, viseca_mandate_id)
         self.bind_policy(viseca_mandate_id, policy)
+
+    def _note_mandate_status(self, run: RunState, mandate: Mapping[str, Any]) -> None:
+        """The platform reports our mandate other than active (``superseded``: the team keeps
+        one active mandate, and a later confirmation replaced it) while its run is still
+        delivering: logged and recorded once per mandate and status, and the run decides on
+        under the local policy bound to it. The snapshot's status never decides a purchase:
+        the customer's policy does, and it is still active here."""
+        status = str(mandate.get("status") or "")
+        tm = str(mandate.get("mandate_id") or "")
+        if status in ("", "active") or (tm, status) in self._inactive_seen:
+            return
+        self._inactive_seen.add((tm, status))
+        local = run.ctx.policy if run.ctx is not None else None
+        log.warning(
+            "the platform reports mandate %s %s during run %s; deciding on under the local policy %s (%s)",
+            tm, status, run.viseca_run_id, local.mandate_id if local else "none", local.status if local else "none",
+        )  # fmt: skip
+        self._record_event(
+            worker_events.Event(
+                at=self._now(),
+                kind="mandate_inactive",
+                action="authorization.request",
+                code=status,
+                message=f"deciding under the local policy {local.mandate_id if local else 'none'}",
+                mandate_id=tm,
+                run_id=run.viseca_run_id,
+            )
+        )
+
+    def _record_event(self, event: worker_events.Event) -> None:
+        """Write a ``worker_events`` row on a store thread; never waited for, never raised."""
+        work = self._store_pool.submit(worker_events.record, self._db_engine, event)
+        self._store_work.add(work)
+        work.add_done_callback(self._store_work.discard)
+
+        def settled(done: Future[None]) -> None:
+            if not done.cancelled() and done.exception() is not None:
+                log.error("worker event %s not recorded: %s", event.kind, done.exception())
+
+        work.add_done_callback(settled)
 
     def _bind_run(self, viseca_run_id: str, data: dict[str, Any]) -> RunState:
         run = self._run(viseca_run_id)
@@ -2840,6 +2891,7 @@ class VisecaWorker:
                         finished_at=run.finished_at,
                         worker_last_poll_at=self._last_poll_at,
                         last_error=run.last_error,
+                        platform_mandate=run.platform_mandate.model_dump(mode="json") if run.platform_mandate else None,
                     )
                 )
                 return written
@@ -2855,6 +2907,8 @@ class VisecaWorker:
             row.finished_at = run.finished_at
             row.worker_last_poll_at = self._last_poll_at or row.worker_last_poll_at
             row.last_error = run.last_error
+            if run.platform_mandate is not None:
+                row.platform_mandate = run.platform_mandate.model_dump(mode="json")
         return written
 
     def _save_runs_while_held(self) -> None:
@@ -2963,6 +3017,17 @@ class VisecaWorker:
     def _note_error(self, message: str) -> None:
         self._last_error = message
         log.error("%s", message)
+
+
+def stored_platform_mandate(value: Any) -> api.PlatformMandate | None:
+    """A ``runs.platform_mandate`` value as the API shows it; None when absent or unreadable."""
+    if not value:
+        return None
+    try:
+        return api.PlatformMandate.model_validate(value)
+    except ValueError:
+        log.warning("runs.platform_mandate unreadable: %r", value)
+        return None
 
 
 def overrun_setting(policy: Policy) -> Literal["ask", "decline", "approve"]:

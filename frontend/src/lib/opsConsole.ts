@@ -1,6 +1,6 @@
 import type { Health } from '../api/ops'
 import type { CurrentRun } from '../api/operator'
-import type { Decision, LiveRun, ReplayStatus, ScenarioSummary } from '../api/types'
+import type { Decision, LiveRun, PlatformMandate, ReplayStatus, ScenarioSummary } from '../api/types'
 
 /**
  * Pure logic behind the operator console (`/ops`, `src/ops/`). Nothing here
@@ -37,6 +37,10 @@ export interface ConsoleRun {
   // A replay from record: the live run whose stored events it replays (the
   // platform's run id) and when that run started. Null for a pack replay or a live run.
   fromRecord: { runId: string; startedAt: string | null } | null
+  // Live runs only: D3 registered the policy at the platform again before the run
+  // (its mandate there was superseded or missing), as the run header words it,
+  // with the detail for its tooltip. Null when D3 did not.
+  platformMandate: { label: string; detail: string } | null
 }
 
 /** D7's answer, live or replay, as one shape. */
@@ -66,6 +70,7 @@ export function consoleRun(current: CurrentRun | null): ConsoleRun | null {
       lastError: live.last_error,
       policy: null,
       fromRecord: null,
+      platformMandate: platformMandateNote(live.platform_mandate),
     }
   }
   const replay = current.run
@@ -83,6 +88,25 @@ export function consoleRun(current: CurrentRun | null): ConsoleRun | null {
       replay.source === 'record' && replay.record_run_id
         ? { runId: replay.record_run_id, startedAt: replay.record_started_at ?? null }
         : null,
+    platformMandate: null,
+  }
+}
+
+/**
+ * "platform mandate re-registered" when D3 found the policy's mandate at the
+ * platform superseded (or missing, revoked there) and registered the same policy
+ * again; the detail names both platform mandates. Null otherwise: the local
+ * policy is what decides, so an active platform mandate needs no word.
+ */
+export function platformMandateNote(
+  platform: PlatformMandate | undefined,
+): { label: string; detail: string } | null {
+  if (!platform?.reregistered) return null
+  const before = platform.previous_viseca_mandate_id ?? 'The previous mandate'
+  const status = platform.status_before ?? 'not active'
+  return {
+    label: 'platform mandate re-registered',
+    detail: `${before} was ${status} at the platform; the same policy now runs as ${platform.viseca_mandate_id}.`,
   }
 }
 

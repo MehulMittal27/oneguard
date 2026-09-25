@@ -67,6 +67,7 @@ def passport_body(
     holder_name: str,
     card_id: str,
     mandate_id: str,
+    platform_mandate_id: str | None,
     instruction: str,
     checks: Sequence[Mapping[str, Any]],
     flags: Mapping[str, Any],
@@ -80,7 +81,8 @@ def passport_body(
     """The passport's signed body. ``flags`` keeps only the policy flags that restrict
     something (``requested_item``, ``nothing_extra``, ...); ``devices`` are the card's
     enrolled devices, each with its ``role`` (``controller`` or ``approved``);
-    ``controller_device_id`` names the controller (None when no device is enrolled)."""
+    ``controller_device_id`` names the controller (None when no device is enrolled);
+    ``platform_mandate_id`` is the policy's mandate at Viseca (None when it has none)."""
     return normalise({
         "type": PASSPORT_TYPE,
         "passport_id": passport_id,
@@ -88,6 +90,7 @@ def passport_body(
         "holder": {"customer_id": customer_id, "name": holder_name},
         "card_id": card_id,
         "mandate_id": mandate_id,
+        "platform_mandate_id": platform_mandate_id,
         "instruction": instruction,
         "checks": list(checks),
         "flags": {k: v for k, v in sorted(flags.items()) if v not in (None, False, [], "")},
