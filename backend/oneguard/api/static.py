@@ -1,7 +1,7 @@
 """The built frontend at ``/``, mounted after every API route (Appendix A).
 
 ``frontend/dist`` (or ``ONEGUARD_FRONTEND_DIST``) is served as static files with
-``index.html`` at ``/``. HTML pages carry ``Cache-Control: no-cache`` so a browser picks up
+``index.html`` at ``/`` and at ``/verify`` (the passport QR link; the app reads the query). HTML pages carry ``Cache-Control: no-cache`` so a browser picks up
 a new deploy on the next load; the hashed ``/assets`` files stay cacheable. Without a build, ``/`` answers with a one-line placeholder
 page. Unknown ``/api/…`` paths always answer with the JSON error envelope, never HTML.
 """
@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 from starlette.types import Scope
@@ -51,6 +51,12 @@ def mount(app: FastAPI, dist: Path | None = None) -> None:
 
     dist = dist or frontend_dist()
     if (dist / "index.html").is_file():
+        index = dist / "index.html"
+
+        @app.get("/verify", include_in_schema=False)
+        async def verify_page() -> FileResponse:
+            return FileResponse(index, media_type="text/html", headers={"Cache-Control": "no-cache"})
+
         app.mount("/", AppFiles(directory=dist, html=True), name="frontend")
         return
 

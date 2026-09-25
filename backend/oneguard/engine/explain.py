@@ -8,7 +8,11 @@ the decision and writes, for the customer:
   (E1, E2, E4); never the counterfactual;
 - ``counterfactual``: "Would approve …", from the failing rules or the deciding signal (E3);
 - ``evidence``: every rule result and every triggered signal, plus info rows (E7);
-- ``injection_flag``: set when shop text tried to instruct the agent (E5).
+- ``injection_flag``: set when shop text tried to instruct the agent (E5);
+- ``would_approve_if``: the counterfactual structured, for the agent and the receipt
+  (docs/passport.md): ``with_bounds`` gives every rule result and triggered signal that
+  has a counterfactual its ``counterfactual_bound``, and a decline lists the bounds of
+  the same rules (or protections) its counterfactual names. The words never change.
 
 Shop text reaches the customer only through rule and signal details, and every such
 string is cleaned first: anything that reads as an instruction to the agent is replaced,
@@ -22,9 +26,16 @@ import ast
 import re
 from decimal import Decimal
 
-from oneguard.engine.facts import CONTRADICTORY
+from oneguard.engine.facts import CONTRADICTORY, to_chf
 from oneguard.engine.interfaces import register
-from oneguard.engine.policy import ASK_CHANGED, NO_HISTORY, RESERVATION_ONLY
+from oneguard.engine.policy import (
+    ASK_CHANGED,
+    COUNT_FIELD,
+    KNOWN_SHOP_FIELDS,
+    NO_HISTORY,
+    RESERVATION_ONLY,
+    matches_requested_item,
+)
 from oneguard.engine.protections import (
     AGENT_DIRECTED_PATTERNS,
     FLAGGED_SHOP_DETAIL,
@@ -32,12 +43,16 @@ from oneguard.engine.protections import (
     shop_texts,
 )
 from oneguard.engine.types import (
+    STEP1_RULE_IDS,
+    CounterfactualBound,
     EngineDecision,
     EvidenceRow,
     EvidenceSource,
     Explanation,
     Facts,
+    LedgerView,
     Policy,
+    Rule,
     RuleResult,
     Signal,
 )
@@ -434,6 +449,171 @@ def _counterfactual(
     return None
 
 
+# --- would_approve_if: the counterfactual, structured (docs/passport.md) -------------------
+# One bound per counterfactual sentence, from the typed rule behind it (never from shop
+# text): the field and the value it must meet, the cart lines to drop, or a condition no
+# field states. The customer still reads the sentence; the agent and the receipt read this.
+
+AMOUNT_FIELD = "authorization.billing_amount_chf"
+_MONEY_FIELDS = (AMOUNT_FIELD, "items[].unit_price_chf")
+_STEP1_REQUIRES = dict(zip(STEP1_RULE_IDS, ("active_policy", "active_authority", "active_card"), strict=True))
+_SIGNAL_REQUIRES = {
+    "A1": "clean_merchant_text", "S_agent_directed": "clean_merchant_text", "A3": "not_a_repeat",
+    "A4": "orders_together_within_limit", "A7": "known_shop",
+}  # fmt: skip
+
+
+def _number(value: object) -> object:
+    """A whole float as an int (400.0 → 400), so the bound reads as the customer set it."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    return value
+
+
+def _field_bound(field: str, operator: str, value: object, **extra: object) -> CounterfactualBound:
+    return {"field": field, "operator": operator, "value": _number(value), **extra}
+
+
+def _remove(lines: list[str]) -> CounterfactualBound:
+    return {"remove_items": list(dict.fromkeys(lines))}
+
+
+def _rule_value(rule: Rule) -> object:
+    """The rule's value in CHF for a money field stated in another currency (T4)."""
+    if rule.field in _MONEY_FIELDS and rule.currency not in (None, "CHF") and isinstance(rule.value, int | float):
+        return to_chf(rule.value, rule.currency)
+    return rule.value
+
+
+def _category_lines(facts: Facts, categories: list[str], allowed: bool) -> list[str]:
+    wanted = {c.lower() for c in categories}
+    return [ln.item_id for ln in facts.items if (ln.item_category.lower() in wanted) != allowed]
+
+
+def _extra_lines(facts: Facts, policy: Policy) -> list[str]:
+    """C10: the lines that are not the requested item (or not an allowed type)."""
+    if policy.requested_item:
+        return [ln.item_id for ln in facts.items if not matches_requested_item(ln, policy.requested_item)]
+    allowed = policy.allowed_item_categories or []
+    return [ln.item_id for ln in facts.items if allowed and ln.item_category not in allowed]
+
+
+def _period_bound(rule: Rule, view: LedgerView) -> CounterfactualBound:
+    """C2: the room left in the window (M4, M5); a count rule keeps its own limit."""
+    extra = {"scope": "period", "period_days": rule.period_days}
+    if rule.field == COUNT_FIELD:
+        return _field_bound(COUNT_FIELD, rule.operator, rule.value, **extra)
+    limit = Decimal(str(_rule_value(rule)))
+    room = limit - Decimal(str(view.period_spent_chf)) - Decimal(str(view.period_reserved_chf))
+    return _field_bound(AMOUNT_FIELD, rule.operator, max(room, Decimal(0)), **extra)
+
+
+def _typed_bound(rule: Rule, facts: Facts, view: LedgerView) -> CounterfactualBound | None:
+    values = rule.value if isinstance(rule.value, list) else [rule.value]
+    if rule.field in KNOWN_SHOP_FIELDS:
+        return {"requires": "known_shop"}
+    if rule.field == "items[].item_category" and rule.operator in ("in", "not_in"):
+        return _remove(_category_lines(facts, [str(v) for v in values], allowed=rule.operator == "in"))
+    if rule.scope == "period":
+        return _period_bound(rule, view)
+    if not rule.field or rule.field == "unverifiable":
+        return None
+    return _field_bound(rule.field, rule.operator, _rule_value(rule))
+
+
+def _flag_bound(rule_id: str, facts: Facts, policy: Policy) -> CounterfactualBound | None:
+    """The Policy flags' own checks (C3, C4, C5, C8, C9, C10)."""
+    if rule_id == "C3" and policy.allowed_item_categories:
+        return _remove(_category_lines(facts, policy.allowed_item_categories, allowed=True))
+    if rule_id == "C4" and policy.blocked_item_categories:
+        return _remove(_category_lines(facts, policy.blocked_item_categories, allowed=False))
+    if rule_id == "C5":
+        return {"requires": "requested_item"}
+    if rule_id == "C8" and policy.shop_type:
+        return _field_bound("merchant.merchant_category", "in", [policy.shop_type])
+    if rule_id == "C9":
+        return {"requires": "known_shop"}
+    if rule_id == "C10":
+        return _remove(_extra_lines(facts, policy))
+    return None
+
+
+def rule_bound(result: RuleResult, policy: Policy, facts: Facts, view: LedgerView) -> CounterfactualBound | None:
+    """The structured form of ``result.counterfactual``; None when it has none."""
+    if not result.counterfactual:
+        return None
+    if result.rule_id in _STEP1_REQUIRES:
+        return {"requires": _STEP1_REQUIRES[result.rule_id]}
+    if result.detail == NO_HISTORY:
+        return {"requires": "customer_approval"}
+    if RESERVATION_ONLY in result.detail:
+        return {"requires": "unanswered_declined"}
+    rule = next((r for r in policy.rules if r.id == result.rule_id), None)
+    bound = _typed_bound(rule, facts, view) if rule is not None else _flag_bound(result.rule_id, facts, policy)
+    return None if bound == {"remove_items": []} else bound
+
+
+def signal_bound(signal: Signal, facts: Facts) -> CounterfactualBound | None:
+    """What would clear a triggered protection that has a counterfactual (SIGNAL_COUNTERFACTUALS)."""
+    if not signal.triggered:
+        return None
+    if signal.id == "A6" and (m := _RECURRING.match(signal.detail)):
+        numbers = {int(n) for n in re.findall(r"line (\d+)", m["lines"])}
+        lines = [ln.item_id for ln in facts.items if ln.line_no in numbers]
+        return _remove(lines) if lines else None
+    requires = _SIGNAL_REQUIRES.get(signal.id)
+    return {"requires": requires} if requires else None
+
+
+def with_bounds(
+    rules: list[RuleResult], signals: list[Signal], policy: Policy, facts: Facts, view: LedgerView
+) -> tuple[list[RuleResult], list[Signal]]:
+    """Every rule result with a counterfactual, and every triggered signal that has one,
+    with its ``counterfactual_bound`` set. Nothing else changes; decide never reads it."""
+    bounded_rules = [
+        r.model_copy(update={"counterfactual_bound": rule_bound(r, policy, facts, view)}) if r.counterfactual else r
+        for r in rules
+    ]
+    bounded_signals = [
+        s.model_copy(update={"counterfactual_bound": bound}) if (bound := signal_bound(s, facts)) else s
+        for s in signals
+    ]
+    return bounded_rules, bounded_signals
+
+
+def _merged(bounds: list[CounterfactualBound]) -> list[CounterfactualBound] | None:
+    """Each bound once, every ``remove_items`` in one entry at the place of the first."""
+    out: list[CounterfactualBound] = []
+    removal: CounterfactualBound | None = None
+    for bound in bounds:
+        if "remove_items" in bound:
+            if removal is None:
+                removal = {"remove_items": []}
+                out.append(removal)
+            removal["remove_items"] = list(dict.fromkeys([*removal["remove_items"], *bound["remove_items"]]))
+        elif bound not in out:
+            out.append(bound)
+    return out or None
+
+
+def would_approve_if(
+    decision: EngineDecision, rules: list[RuleResult], signals: list[Signal]
+) -> list[CounterfactualBound] | None:
+    """A decline's bounds, from the same rules its counterfactual names: every failing
+    rule's, else every declining protection's. An approval or an ask has none."""
+    if decision.outcome != "decline":
+        return None
+    failing = [r.counterfactual_bound for r in rules if r.outcome == "fail" and r.counterfactual]
+    if failing:
+        return _merged([b for b in failing if b])
+    return _merged([
+        s.counterfactual_bound for s in signals
+        if s.triggered and s.strength == "protection" and s.outcome_if_triggered == "decline" and s.counterfactual_bound
+    ])  # fmt: skip
+
+
 @register("explain")
 def explain(
     decision: EngineDecision,
@@ -449,4 +629,5 @@ def explain(
         evidence=_evidence(facts, policy, rules, signals, decision),
         injection_flag={"flagged": True, "reason": INSTRUCTIONS_IGNORED} if _injection_found(signals) else None,
         source="template",
+        would_approve_if=would_approve_if(decision, rules, signals),
     )

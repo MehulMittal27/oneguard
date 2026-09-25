@@ -1,0 +1,303 @@
+"""Device binding (docs/passport.md, "Devices"): only a device enrolled on a card may
+change what that card's agent is allowed to do.
+
+A device is a P-256 key pair made in the browser (WebCrypto, not extractable); OneGuard
+keeps the public key (JWK). A device-bound request carries four headers:
+
+    X-OneGuard-Device     the device id the card's enrolment returned
+    X-OneGuard-Ts         Unix time in seconds when the request was signed
+    X-OneGuard-Nonce      a random string, never reused by that device
+    X-OneGuard-Signature  base64 ECDSA-P256-SHA256 over
+                          canonical({"method", "path", "body", "ts", "nonce"})
+
+``body`` is the request's JSON body (``null`` when there is none), ``path`` the URL path
+without the query, ``ts`` the header's integer. The signature may be raw ``r || s`` (64
+bytes, what WebCrypto makes) or DER. A request is accepted only when the device is
+``enrolled`` on the card it acts on, ``|now - ts| <= 120 s`` and the nonce is new.
+
+Enrolment: the first device on a card (none enrolled) is enrolled at once; any later one
+waits ``pending`` until an enrolled device approves it. At least one enrolled device
+always remains. The operator reset (``/api/dev/devices/reset/{card}``, outside prod)
+removes them all: issuer-side recovery in a real rollout.
+"""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import hashlib
+import json
+import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Any, Literal
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+from sqlalchemy import Engine, delete, select
+from sqlalchemy.exc import IntegrityError
+
+from oneguard.passport.canonical import canonical
+from oneguard.store.db import session
+from oneguard.store.schema import Device, DeviceNonce
+
+DEVICE_HEADER = "X-OneGuard-Device"
+SIGNATURE_HEADER = "X-OneGuard-Signature"
+TS_HEADER = "X-OneGuard-Ts"
+NONCE_HEADER = "X-OneGuard-Nonce"
+MAX_SKEW_S = 120
+NONCE_TTL = timedelta(minutes=10)
+LABEL_MAX = 60
+DEFAULT_LABEL = "This device"
+
+AuthCode = Literal["device_signature_required", "device_not_enrolled", "signature_invalid", "replay"]
+
+
+class DeviceAuthError(Exception):
+    """A device-bound request that is refused (401): nothing is applied."""
+
+    def __init__(self, code: AuthCode, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class DeviceStateError(Exception):
+    """A device change that does not fit the device's state (409)."""
+
+    def __init__(self, code: Literal["last_device", "device_state"], message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+# Keys --------------------------------------------------------------------------------------
+
+
+def _b64url(data: str) -> bytes:
+    return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+
+
+def public_key(jwk: Mapping[str, Any]) -> ec.EllipticCurvePublicKey:
+    """A P-256 public key from its JWK (``kty: EC``, ``crv: P-256``, ``x``, ``y``)."""
+    if jwk.get("kty") != "EC" or jwk.get("crv") != "P-256":
+        raise ValueError("the device key must be an EC P-256 JWK")
+    try:
+        x, y = _b64url(str(jwk["x"])), _b64url(str(jwk["y"]))
+    except (KeyError, binascii.Error) as exc:
+        raise ValueError("the device key has no valid x and y") from exc
+    if len(x) != 32 or len(y) != 32:
+        raise ValueError("the device key's x and y must be 32 bytes each")
+    numbers = ec.EllipticCurvePublicNumbers(int.from_bytes(x, "big"), int.from_bytes(y, "big"), ec.SECP256R1())
+    return numbers.public_key()  # raises ValueError when the point is not on the curve
+
+
+def public_jwk(jwk: Mapping[str, Any]) -> dict[str, str]:
+    """Only the public members of a JWK, validated (anything else is dropped)."""
+    public_key(jwk)
+    return {"kty": "EC", "crv": "P-256", "x": str(jwk["x"]), "y": str(jwk["y"])}
+
+
+def thumbprint(jwk: Mapping[str, Any]) -> str:
+    """RFC 7638 JWK thumbprint (base64url SHA-256): the same key has the same thumbprint."""
+    members = json.dumps({"crv": jwk["crv"], "kty": jwk["kty"], "x": jwk["x"], "y": jwk["y"]}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(hashlib.sha256(members.encode()).digest()).rstrip(b"=").decode()
+
+
+def signed_payload(method: str, path: str, body: Any, ts: int, nonce: str) -> bytes:
+    """The bytes a device signs for one request."""
+    return canonical({"method": method.upper(), "path": path, "body": body, "ts": ts, "nonce": nonce})
+
+
+def verify_signature(jwk: Mapping[str, Any], signature_b64: str, payload: bytes) -> bool:
+    try:
+        raw = base64.b64decode(signature_b64, validate=True)
+        if len(raw) == 64:  # WebCrypto: r || s
+            raw = encode_dss_signature(int.from_bytes(raw[:32], "big"), int.from_bytes(raw[32:], "big"))
+        public_key(jwk).verify(raw, payload, ec.ECDSA(hashes.SHA256()))
+    except (InvalidSignature, binascii.Error, ValueError):
+        return False
+    return True
+
+
+# Devices -----------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DeviceView:
+    device_id: str
+    card_id: str
+    customer_id: str
+    label: str
+    status: str
+    enrolled_at: datetime | None
+    enrolled_by_device_id: str | None
+    removed_at: datetime | None
+    last_seen_at: datetime
+
+
+def _view(row: Device) -> DeviceView:
+    return DeviceView(
+        device_id=row.device_id, card_id=row.card_id, customer_id=row.customer_id, label=row.label,
+        status=row.status, enrolled_at=row.enrolled_at, enrolled_by_device_id=row.enrolled_by_device_id,
+        removed_at=row.removed_at, last_seen_at=row.last_seen_at,
+    )  # fmt: skip
+
+
+def clean_label(label: str | None) -> str:
+    """The customer's name for the device: one line, at most 60 characters."""
+    text = " ".join((label or "").split())[:LABEL_MAX].strip()
+    return text or DEFAULT_LABEL
+
+
+def devices(db: Engine, card_ids: list[str]) -> list[DeviceView]:
+    """Every device on these cards, enrolled first, then pending, then removed; oldest first."""
+    if not card_ids:
+        return []
+    order = {"enrolled": 0, "pending": 1, "removed": 2}
+    with session(db) as s:
+        rows = list(s.scalars(select(Device).where(Device.card_id.in_(sorted(set(card_ids))))))
+    views = [_view(r) for r in rows]
+    return sorted(views, key=lambda d: (order.get(d.status, 3), d.enrolled_at or d.last_seen_at, d.device_id))
+
+
+def enrolled(db: Engine, card_id: str) -> list[DeviceView]:
+    return [d for d in devices(db, [card_id]) if d.status == "enrolled"]
+
+
+def enrol(db: Engine, card_id: str, customer_id: str, jwk: Mapping[str, Any], label: str | None, now: datetime) -> tuple[DeviceView, bool]:
+    """Register a device key on a card: ``(device, changed)``.
+
+    The same key on the same card returns its existing device (a removed one enrols
+    again as new). The card's first device is enrolled at once; others are pending.
+    """
+    public = public_jwk(jwk)
+    print_ = thumbprint(public)
+    with session(db) as s:
+        rows = list(s.scalars(select(Device).where(Device.card_id == card_id)))
+        for row in rows:
+            if row.status != "removed" and thumbprint(row.public_key_jwk) == print_:
+                return _view(row), False
+        first = not any(r.status == "enrolled" for r in rows)
+        row = Device(
+            device_id=str(uuid.uuid4()),
+            card_id=card_id,
+            customer_id=customer_id,
+            label=clean_label(label),
+            public_key_jwk=public,
+            status="enrolled" if first else "pending",
+            enrolled_at=now if first else None,
+            enrolled_by_device_id=None,
+            removed_at=None,
+            last_seen_at=now,
+        )
+        s.add(row)
+        s.flush()
+        return _view(row), True
+
+
+def approve(db: Engine, card_id: str, device_id: str, by_device_id: str, now: datetime) -> DeviceView:
+    with session(db) as s:
+        row = s.get(Device, device_id)
+        if row is None or row.card_id != card_id:
+            raise KeyError(device_id)
+        if row.status != "pending":
+            raise DeviceStateError("device_state", f"This device is {row.status}, not waiting for approval.")
+        row.status = "enrolled"
+        row.enrolled_at = now
+        row.enrolled_by_device_id = by_device_id
+        s.flush()
+        return _view(row)
+
+
+def remove(db: Engine, card_id: str, device_id: str, now: datetime) -> DeviceView:
+    """Remove a pending or enrolled device; the card's last enrolled device stays (409)."""
+    with session(db) as s:
+        row = s.get(Device, device_id)
+        if row is None or row.card_id != card_id:
+            raise KeyError(device_id)
+        if row.status == "removed":
+            raise DeviceStateError("device_state", "This device is already removed.")
+        if row.status == "enrolled":
+            others = s.scalars(
+                select(Device.device_id).where(
+                    Device.card_id == card_id, Device.status == "enrolled", Device.device_id != device_id
+                )
+            ).first()
+            if others is None:
+                raise DeviceStateError(
+                    "last_device", "This is the only device that controls this card; approve another one first."
+                )
+        row.status = "removed"
+        row.removed_at = now
+        s.flush()
+        return _view(row)
+
+
+def reset(db: Engine, card_id: str, now: datetime) -> int:
+    """Operator recovery: every device on the card removed (the next one enrols as first)."""
+    with session(db) as s:
+        rows = list(s.scalars(select(Device).where(Device.card_id == card_id, Device.status != "removed")))
+        for row in rows:
+            row.status = "removed"
+            row.removed_at = now
+        return len(rows)
+
+
+# Requests ----------------------------------------------------------------------------------
+
+
+def _header(headers: Mapping[str, str], name: str) -> str | None:
+    value = headers.get(name) or headers.get(name.lower())
+    return value.strip() if value and value.strip() else None
+
+
+def verify_request(
+    db: Engine,
+    card_id: str,
+    method: str,
+    path: str,
+    body: Any,
+    headers: Mapping[str, str],
+    now: datetime,
+) -> str:
+    """The id of the enrolled device that signed this request for ``card_id``.
+
+    Raises ``DeviceAuthError`` (401) when the headers are missing, the device is not
+    enrolled on the card, the signature does not match, the time is off by more than
+    120 s, or the nonce was seen before. The nonce is kept only for a valid request.
+    """
+    device_id, signature = _header(headers, DEVICE_HEADER), _header(headers, SIGNATURE_HEADER)
+    ts_raw, nonce = _header(headers, TS_HEADER), _header(headers, NONCE_HEADER)
+    if not (device_id and signature and ts_raw and nonce):
+        raise DeviceAuthError(
+            "device_signature_required", "This change must be signed by a device that controls this card."
+        )
+    if len(nonce) > 128:
+        raise DeviceAuthError("signature_invalid", "The request's nonce is too long.")
+    try:
+        ts = int(ts_raw)
+    except ValueError:
+        raise DeviceAuthError("signature_invalid", "The request's time is not a whole number of seconds.") from None
+    with session(db) as s:
+        row = s.get(Device, device_id)
+        if row is None or row.card_id != card_id or row.status != "enrolled":
+            raise DeviceAuthError("device_not_enrolled", "This device isn't approved for this card yet.")
+        jwk = dict(row.public_key_jwk)
+    if not verify_signature(jwk, signature, signed_payload(method, path, body, ts, nonce)):
+        raise DeviceAuthError("signature_invalid", "The device signature does not match this request.")
+    if abs(now.timestamp() - ts) > MAX_SKEW_S:
+        raise DeviceAuthError("replay", "The signed request is too old (or from the future); sign it again.")
+    try:
+        with session(db) as s:
+            s.execute(delete(DeviceNonce).where(DeviceNonce.seen_at < now - NONCE_TTL))
+            s.add(DeviceNonce(device_id=device_id, nonce=nonce, seen_at=now))
+            device = s.get(Device, device_id)
+            if device is not None:
+                device.last_seen_at = now
+    except IntegrityError:
+        raise DeviceAuthError("replay", "This signed request was already used.") from None
+    return device_id

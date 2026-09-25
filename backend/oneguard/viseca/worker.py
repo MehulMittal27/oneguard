@@ -99,7 +99,7 @@ import math
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
 from contextlib import contextmanager
@@ -130,6 +130,7 @@ from oneguard.engine.types import (
     RuleKind,
 )
 from oneguard.llm.provider import Provider
+from oneguard.passport.ids import receipt_id_for
 from oneguard.pipeline import (
     PipelineContext,
     budget_ms_from_env,
@@ -699,6 +700,25 @@ def store_run_id(viseca_run_id: str) -> str:
 def default_ledger(db: Engine, history: HistoryIndex) -> Ledger:
     """P2's store-backed ledger (``engine/ledger.py``) on short sessions."""
     return cast(Ledger, ScopedStoreLedger(db, history=history))
+
+
+WOULD_APPROVE_IF = "would_approve_if"
+"""``kind`` of the evidence row that carries a decline's structured counterfactual."""
+
+
+def posted_evidence(
+    rows: Sequence[EvidenceRow | api.Evidence], would_approve_if: list[dict[str, Any]] | None, counterfactual: str | None
+) -> list[dict[str, Any]]:
+    """The evidence a decision is posted to Viseca with: its rows, plus one row
+    ``{"kind": "would_approve_if", ...}`` with the structured counterfactual on a decline
+    (docs/passport.md), so the agent learns what the customer would accept."""
+    posted = [row.model_dump(mode="json") for row in rows]
+    if would_approve_if:
+        posted.append({
+            "kind": WOULD_APPROVE_IF, "rule": WOULD_APPROVE_IF, "outcome": "info", "source": "policy",
+            "detail": counterfactual or "", WOULD_APPROVE_IF: would_approve_if,
+        })  # fmt: skip
+    return posted
 
 
 def platform_result(item: Mapping[str, Any]) -> tuple[Literal["approve", "decline"], Literal["customer", "timeout"]] | None:
@@ -2245,6 +2265,7 @@ class VisecaWorker:
             signals_enabled=run.ctx.signals_enabled,
             decided_at=decided_at,
             deadline_at=None if decline else decided_at + timedelta(seconds=run.ctx.human_window_s),
+            receipt_id=receipt_id_for(auth["authorization_id"]),
         )
 
     async def _post_overrun(
@@ -2327,6 +2348,7 @@ class VisecaWorker:
             latency_ms=0.0,
             signals_enabled=run.ctx.signals_enabled,
             decided_at=self._now(),
+            receipt_id=receipt_id_for(live_id),
         )
         try:
             await self._engine(self.ledger.record, entry)
@@ -2390,8 +2412,8 @@ class VisecaWorker:
         """POST a decision, retrying transient failures until the deadline.
 
         Returns the platform's response, or None when it already holds a decision (409).
-        A 400/422 on the full body is retried once without ``evidence`` and
-        ``engine_version`` so a decision still lands in time.
+        A 400/422 on the full body is retried without the ``would_approve_if`` row, then
+        once without ``evidence`` and ``engine_version``, so a decision still lands in time.
         """
         extras: dict[str, Any] = {"evidence": evidence, "engine_version": engine_version}
         attempt = 0
@@ -2406,6 +2428,12 @@ class VisecaWorker:
                     log.info("Viseca already holds a decision for %s (%s)", live_id, exc.code)
                     return None
                 if exc.status in (400, 422) and extras:
+                    plain = [row for row in extras["evidence"] if row.get("kind") != WOULD_APPROVE_IF]
+                    if len(plain) < len(extras["evidence"]):
+                        log.warning("Viseca rejected the decision body for %s (%s); retrying without %s",
+                                    live_id, exc.code, WOULD_APPROVE_IF)  # fmt: skip
+                        extras = {**extras, "evidence": plain}
+                        continue
                     log.warning("Viseca rejected the full decision body for %s (%s); retrying minimal", live_id, exc.code)
                     extras = {}
                     continue
@@ -2421,7 +2449,7 @@ class VisecaWorker:
         self, run: RunState, data: dict[str, Any], decision: api.Decision, deadline_at: datetime
     ) -> None:
         live_id = decision.authorization_id
-        evidence = [row.model_dump(mode="json") for row in decision.evidence]
+        evidence = posted_evidence(decision.evidence, decision.would_approve_if, decision.counterfactual)
         outcome = {"approved": "approve", "stopped": "decline", "uncertain": "step_up"}[decision.decision]
         try:
             reply = await self._post(
@@ -2483,7 +2511,7 @@ class VisecaWorker:
                 stored.outcome,
                 stored.reason_codes,
                 stored.message,
-                [row.model_dump(mode="json") for row in stored.evidence],
+                posted_evidence(stored.evidence, stored.would_approve_if, stored.counterfactual),
                 stored.engine_version,
                 deadline_at,
             )

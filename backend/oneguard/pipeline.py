@@ -14,10 +14,12 @@
    then ``evaluate_rules`` again on the new facts; then ``policy.add_ledger_results`` adds
    the results that need the LedgerView (C2 period limits, remembered answers)
 6. ``protections``, ``warning_signs``, ``soft_signals`` (only when signals are enabled)
-7. ``decide``, then ``explain``
+7. ``decide``, then ``explain`` on the rule results and signals with their structured
+   counterfactuals (``explain.with_bounds``; decide never reads them)
 8. ``Ledger.record`` (and ``flag_merchant`` when A1 triggered), with any ``extra_evidence``
    (the worker's ``info`` reconciliation rows) appended to the explanation's evidence
-9. mapped to the API ``Decision``
+9. mapped to the API ``Decision``; ``would_approve_if`` and the ``receipt_id`` the
+   passport sweep signs the receipt under are stored with the entry (docs/passport.md)
 
 Functions are resolved by name through ``engine/stubs.py`` (``ONEGUARD_STUBS``). Tier 2
 and soft signals are optional: when they fail or run out of the internal budget
@@ -38,6 +40,7 @@ from typing import Any
 from oneguard import __version__
 from oneguard.api import models as api
 from oneguard.engine import stubs
+from oneguard.engine.explain import with_bounds
 from oneguard.engine.ledger_base import Ledger, LedgerEntry
 from oneguard.engine.policy import COUNT_FIELD, add_ledger_results
 from oneguard.engine.types import (
@@ -52,6 +55,7 @@ from oneguard.engine.types import (
     Signal,
 )
 from oneguard.llm.provider import Provider, provider_available
+from oneguard.passport.ids import receipt_id_for
 
 log = logging.getLogger(__name__)
 
@@ -166,6 +170,7 @@ def _inactive_policy(policy: Policy) -> tuple[EngineDecision, Explanation]:
         Explanation(
             message=f"Declined: {reason}, so nothing is approved under it.",
             counterfactual="Confirm a new policy to let purchases like this go ahead.",
+            would_approve_if=[{"requires": "active_policy"}],
             evidence=[
                 EvidenceRow(
                     rule="policy_status",
@@ -249,9 +254,8 @@ def decide_event(
         soft = _optional_stage("soft_signals", lambda: fn["soft_signals"](facts, budget), [])
 
     engine: EngineDecision = fn["decide"](rules, protections, warnings, soft, ctx.policy, view)
-    explanation: Explanation = fn["explain"](
-        engine, facts, ctx.policy, rules, [*protections, *warnings, *soft]
-    )
+    rules, signals = with_bounds(rules, [*protections, *warnings, *soft], ctx.policy, facts, view)
+    explanation: Explanation = fn["explain"](engine, facts, ctx.policy, rules, signals)
     return _record(event, ctx, facts, view, engine, explanation, extra_evidence, started, protections)
 
 
@@ -301,6 +305,8 @@ def _record(
         signals_enabled=ctx.signals_enabled,
         decided_at=decided_at,
         deadline_at=decided_at + timedelta(seconds=ctx.human_window_s) if pending else None,
+        would_approve_if=explanation.would_approve_if,
+        receipt_id=receipt_id_for(facts.authorization_id),
     )
     stored = ctx.ledger.record(entry)
     for signal in protections:
@@ -328,6 +334,7 @@ def _from_entry(entry: LedgerEntry) -> tuple[EngineDecision, Explanation]:
         evidence=entry.evidence,
         injection_flag=entry.injection_flag,
         source=entry.explanation_source,
+        would_approve_if=entry.would_approve_if,
     )
     return engine, explanation
 
@@ -440,4 +447,6 @@ def to_api_decision(
         policy_applied=policy_applied(event, entry, policy),
         run_id=entry.run_id,
         run_started_at=run_started_at,
+        would_approve_if=entry.would_approve_if,
+        receipt_id=entry.receipt_id,
     )

@@ -39,6 +39,8 @@ class LedgerEntry(BaseModel):
 
     ``reserved_chf`` and ``spent_chf`` are set by the ledger, not the caller.
     ``deadline_at`` is the real-clock end of the human window on a pending step-up.
+    ``would_approve_if`` is the explanation's structured counterfactual (declines only);
+    ``receipt_id`` names the signed receipt of this decision (docs/passport.md).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -75,6 +77,8 @@ class LedgerEntry(BaseModel):
     deadline_at: AwareDatetime | None = None
     resolved_at: AwareDatetime | None = None
     resolved_by: Literal["customer", "timeout"] | None = None
+    would_approve_if: list[dict[str, Any]] | None = None
+    receipt_id: str | None = None
 
 
 def is_final_approval(outcome: str, final: bool, uncertain_outcome: str | None) -> bool:

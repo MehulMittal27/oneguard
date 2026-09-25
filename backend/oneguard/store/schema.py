@@ -288,6 +288,7 @@ class Mandate(Base):
     status: Mapped[str]
     confirmed_at: Mapped[datetime]
     revoked_at: Mapped[datetime | None]
+    passport_id: Mapped[str | None]
 
 
 class Run(Base):
@@ -371,6 +372,8 @@ class Decision(Base):
     deadline_at: Mapped[datetime | None]
     resolved_at: Mapped[datetime | None]
     resolved_by: Mapped[str | None]
+    would_approve_if: Mapped[list[Any] | None]
+    receipt_id: Mapped[str | None]
 
 
 class MerchantFlag(Base):
@@ -434,3 +437,97 @@ class VisecaCall(Base):
     request_summary: Mapped[str | None] = mapped_column(Text)
     response_summary: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+# Passport (docs/passport.md) ---------------------------------------------------------------
+
+
+class SigningKey(Base):
+    """OneGuard's Ed25519 signing keys. Exactly one is ``active``; older keys stay so every
+    document they signed still verifies. The private key is stored as plain PEM for the demo
+    (encrypting it with a key from the environment is a follow-up, docs/passport.md)."""
+
+    __tablename__ = "signing_keys"
+
+    key_id: Mapped[str] = mapped_column(primary_key=True)
+    algorithm: Mapped[str]
+    public_key_pem: Mapped[str] = mapped_column(Text)
+    private_key_pem: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime]
+    active: Mapped[bool] = mapped_column(Boolean)
+
+
+class Device(Base):
+    """A browser or phone that controls a card: its P-256 public key, never the private one.
+
+    ``status``: ``pending`` (waits for an enrolled device to approve it), ``enrolled``,
+    ``removed``. ``enrolled_by_device_id`` is None for a card's first device.
+    """
+
+    __tablename__ = "devices"
+    __table_args__ = (Index("ix_devices_card_status", "card_id", "status"),)
+
+    device_id: Mapped[str] = mapped_column(primary_key=True)
+    card_id: Mapped[str]
+    customer_id: Mapped[str]
+    label: Mapped[str]
+    public_key_jwk: Mapped[dict[str, Any]]
+    status: Mapped[str]
+    enrolled_at: Mapped[datetime | None]
+    enrolled_by_device_id: Mapped[str | None]
+    removed_at: Mapped[datetime | None]
+    last_seen_at: Mapped[datetime]
+
+
+class DeviceNonce(Base):
+    """A nonce a device signed a request with; a second use is a replay. Kept 10 minutes."""
+
+    __tablename__ = "device_nonces"
+
+    device_id: Mapped[str] = mapped_column(primary_key=True)
+    nonce: Mapped[str] = mapped_column(primary_key=True)
+    seen_at: Mapped[datetime] = mapped_column(index=True)
+
+
+class Passport(Base):
+    """One signed version of a mandate's passport; the latest is the highest ``version``.
+
+    ``document`` is the canonical signed body; ``reason`` says why this version was issued
+    (``confirmed``, ``tightened``, ``revoked``, ``devices``, ``confirmation``, ``backfill``).
+    """
+
+    __tablename__ = "passports"
+    __table_args__ = (Index("ix_passports_card", "card_id"), Index("ix_passports_mandate", "mandate_id"))
+
+    passport_id: Mapped[str] = mapped_column(primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mandate_id: Mapped[str]
+    card_id: Mapped[str]
+    customer_id: Mapped[str]
+    document: Mapped[dict[str, Any]]
+    signature: Mapped[str] = mapped_column(Text)
+    key_id: Mapped[str]
+    issued_at: Mapped[datetime]
+    reason: Mapped[str]
+    superseded_at: Mapped[datetime | None]
+    revoked_at: Mapped[datetime | None]
+
+
+class Receipt(Base):
+    """The signed receipt of one decision. A step-up's answer is appended by re-signing;
+    each earlier ``{document, signature, key_id, signed_at}`` is kept in ``history``.
+    ``resolved_at`` mirrors ``document.resolution.resolved_at`` (None while unanswered)."""
+
+    __tablename__ = "receipts"
+
+    receipt_id: Mapped[str] = mapped_column(primary_key=True)
+    live_authorization_id: Mapped[str] = mapped_column(unique=True)
+    passport_id: Mapped[str | None]
+    passport_version: Mapped[int | None] = mapped_column(Integer)
+    document: Mapped[dict[str, Any]]
+    signature: Mapped[str] = mapped_column(Text)
+    key_id: Mapped[str]
+    issued_at: Mapped[datetime]
+    answered_by_device_id: Mapped[str | None]
+    resolved_at: Mapped[datetime | None]
+    history: Mapped[list[Any]]

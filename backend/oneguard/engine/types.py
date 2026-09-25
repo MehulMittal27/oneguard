@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from datetime import date, datetime
-from typing import Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import (
     AwareDatetime,
@@ -263,17 +263,26 @@ class LedgerView(_Model):
     confirmed_keys: set[str] = Field(default_factory=set)
 
 
+CounterfactualBound = dict[str, Any]
+"""What would make a fail a pass, structured (``would_approve_if``, docs/passport.md): one of
+``{"field", "operator", "value", "scope"?}`` (the purchase field and the bound it must meet),
+``{"remove_items": [item_id, ...]}`` (the cart lines to drop) or ``{"requires": <word>}``
+(a condition no field states, e.g. ``known_shop``)."""
+
+
 class RuleResult(_Model):
     """The outcome of one customer rule, or a step-1 check (C1–C12, §4 steps 1, 2, 4).
 
     ``unknown`` is never a pass (P3). ``counterfactual`` says what would make a fail a
-    pass (E3). ``rule_id`` is a ``Rule.id`` or one of ``STEP1_RULE_IDS``.
+    pass (E3); ``counterfactual_bound`` says the same, structured (set by
+    ``explain.with_bounds``). ``rule_id`` is a ``Rule.id`` or one of ``STEP1_RULE_IDS``.
     """
 
     rule_id: str
     outcome: RuleOutcome
     detail: str
     counterfactual: str | None = None
+    counterfactual_bound: CounterfactualBound | None = None
     source: FactSource
 
 
@@ -293,6 +302,8 @@ class Signal(_Model):
     detail: str
     source: EvidenceSource
     related: tuple[str, Relation] | None = None
+    counterfactual_bound: CounterfactualBound | None = None
+    """What would clear a declining protection, structured (``explain.with_bounds``)."""
 
 
 class EngineDecision(_Model):
@@ -325,6 +336,8 @@ class Explanation(_Model):
     ``message`` is one sentence naming the rule and the number (E1, E2);
     ``counterfactual`` is E3; ``injection_flag`` is ``{"flagged": True, "reason": …}``
     for A1 (E5) or ``None``. ``source`` is ``model`` only after a tier-3 rewrite.
+    ``would_approve_if`` is the counterfactual structured: the bounds of every failing
+    rule on a decline, ``None`` on an approval or an ask (docs/passport.md).
     """
 
     message: str
@@ -332,6 +345,7 @@ class Explanation(_Model):
     evidence: list[EvidenceRow]
     injection_flag: dict[str, bool | str] | None = None
     source: Literal["template", "model"] = "template"
+    would_approve_if: list[CounterfactualBound] | None = None
 
 
 class CompiledDraft(_Model):
