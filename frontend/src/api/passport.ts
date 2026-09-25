@@ -117,13 +117,16 @@ export async function enrolThisDevice(cardId: string, label?: string): Promise<D
   return enrolled.status
 }
 
-/** This browser's device on the card as the backend lists it, if it has one. */
+/**
+ * This browser's device on the card as the backend lists it, if it has one. In
+ * mock mode this browser is the fixture's enrolled device, so Approve and
+ * Remove can be shown offline.
+ */
 export async function thisDevice(cardId: string, devices?: Device[]): Promise<Device | null> {
-  const key = await getOrCreateDeviceKey()
-  const deviceId = key.deviceIds[cardId]
-  if (!deviceId) return null
   const listed = devices ?? (await getDevices(cardId))
-  return listed.find((d) => d.device_id === deviceId) ?? (MOCKS ? listed.find((d) => d.status === 'enrolled') ?? null : null)
+  if (MOCKS) return listed.find((d) => d.status === 'enrolled') ?? null
+  const deviceId = (await getOrCreateDeviceKey()).deviceIds[cardId]
+  return deviceId ? (listed.find((d) => d.device_id === deviceId) ?? null) : null
 }
 
 async function changeDevice(cardId: string, deviceId: string, action: 'approve' | 'remove'): Promise<Device> {

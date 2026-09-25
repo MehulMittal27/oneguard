@@ -144,12 +144,12 @@ def test_the_qr_code_links_to_the_verify_page_of_the_latest_version(db_url: str,
             await confirm_form(run, "CA0001")
             r = await run.get("/api/cards/CA0001/passport/qr.svg")
             assert r.status_code == 200 and r.headers["content-type"].startswith("image/svg+xml")
-            assert r.text.lstrip().startswith("<svg") and "<path" in r.text
-            import segno
+            assert 'xmlns="http://www.w3.org/2000/svg"' in r.text and "<path" in r.text  # a standalone image
+            from oneguard.api.routes_passport import qr_svg
 
             p = await passport(run)
-            expected = segno.make(f"https://example.test/verify?passport={p['passport_id']}&v=1", error="m")
-            assert r.text == expected.svg_inline(scale=4, border=2, dark="#111827", light="#ffffff")
+            assert r.content == qr_svg(f"https://example.test/verify?passport={p['passport_id']}&v=1")
+            assert f"verify?passport={p['passport_id']}&amp;v=1" in r.text  # the link, in its title
 
     asyncio.run(scenario())
 
@@ -429,3 +429,48 @@ def test_the_signature_headers_are_the_documented_names() -> None:
     assert (DEVICE_HEADER, SIGNATURE_HEADER, TS_HEADER, NONCE_HEADER) == (
         "X-OneGuard-Device", "X-OneGuard-Signature", "X-OneGuard-Ts", "X-OneGuard-Nonce",
     )  # fmt: skip
+
+
+# The CLI is synchronous, so it talks to the app through Starlette's TestClient (an httpx.Client).
+@pytest.mark.filterwarnings("ignore:Using `httpx` with `starlette.testclient` is deprecated")
+def test_the_operator_terminal_enrols_confirms_approves_removes_and_revokes(db_url: str, tmp_path: Any) -> None:  # noqa: F811
+    import json
+    from pathlib import Path
+
+    from fastapi.testclient import TestClient
+
+    from oneguard.api.app import AppConfig, create_app
+    from oneguard.passport import cli
+    from tests.test_api_contract import FORM, TEST_ENGINE, TEST_STUBBED
+
+    app = create_app(AppConfig(
+        database_url=db_url, frontend_dist=Path("/nonexistent-dist"), signals_backend="off", passport_sweep_s=None,
+        implementations=TEST_ENGINE, stubbed=TEST_STUBBED,
+    ))  # fmt: skip
+    terminal, stranger, lines = DeviceKey(), DeviceKey(), []
+    with TestClient(app) as client:
+
+        def run(*argv: str, key: DeviceKey = terminal) -> int:
+            return cli.main(["--api", "http://testserver", *argv], http=client, key=key, out=lines.append)
+
+        assert run("enrol", "CA0001", "--label", "Operator terminal") == 0
+        assert lines[-1].endswith(" enrolled")  # the card's first device
+        draft = client.post("/api/cards/CA0001/policy-drafts", json={"form": FORM}).json()
+        saved = tmp_path / "draft-CA0001.json"
+        saved.write_text(json.dumps(draft), encoding="utf-8")
+        assert run("confirm", str(saved)) == 0
+        assert lines[-1].endswith("active, passport version 1")
+
+        laptop = client.post("/api/cards/CA0001/devices", json={"public_key_jwk": DeviceKey().jwk, "label": "Stage laptop"})
+        assert laptop.json()["status"] == "pending"
+        assert run("approve", "CA0001", "--label", "Stage laptop") == 0
+        assert lines[-1] == "CA0001: Stage laptop is enrolled"
+        assert run("devices", "CA0001") == 0 and "Stage laptop" in lines[-1]
+        assert run("remove", "CA0001", "--label", "Stage laptop") == 0
+        assert lines[-1] == "CA0001: Stage laptop is removed"
+        assert run("approve", "CA0001", "--label", "Nobody") == 1 and "0 devices" in lines[-1]
+
+        assert run("revoke", "CA0001", key=stranger) == 1  # a key the card never approved
+        assert "device_not_enrolled" in lines[-1]
+        assert run("revoke", "CA0001") == 0
+        assert client.get("/api/cards/CA0001/policy").json()["mandate"]["status"] == "revoked"

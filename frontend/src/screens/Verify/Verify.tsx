@@ -20,13 +20,41 @@ function when(value: unknown): string | null {
 
 const OPERATOR: Record<string, string> = { '<=': '≤', '>=': '≥', '<': '<', '>': '>', '=': '=', '!=': '≠', in: 'in', not_in: 'not in' }
 
-/** One `would_approve_if` bound as a line of text (a receipt is read by people, not only agents). */
+// The receipt's field names in words; an unknown field is shown as it is signed.
+const FIELD: Record<string, string> = {
+  'authorization.billing_amount_chf': 'Total in CHF',
+  'items[].unit_price_chf': 'Each item in CHF',
+  'items[].size_eu': 'Size (EU)',
+  'items[].size_letter': 'Size',
+  'items[].quantity': 'Quantity per item',
+  'cart.quantity': 'Quantity',
+  'cart.purchases_in_period': 'Orders in the period',
+  'order.return_window_days': 'Return window in days',
+  'merchant.merchant_category': 'Type of shop',
+  'merchant.merchant_country': 'Shop country',
+  'authorization.weekday': 'Day',
+}
+
+const REQUIRES: Record<string, string> = {
+  known_shop: "At a shop you've bought from before",
+  requested_item: 'With the item you asked for',
+  clean_merchant_text: "Without instructions in the shop's text",
+  customer_approval: 'Once you approve this shop',
+  unanswered_declined: 'Once the unanswered orders are declined',
+  active_policy: 'Under an active policy',
+  active_authority: "With the agent's authority active",
+  active_card: 'On an active card',
+  not_a_repeat: 'If it is not a repeat of an earlier order',
+  orders_together_within_limit: 'If orders placed together stay within the limit',
+}
+
+/** One `would_approve_if` bound in words (a receipt is read by people, not only agents). */
 function boundLine(bound: WouldApproveIf): string {
-  if ('remove_items' in bound) return `without item ${bound.remove_items.join(', ')}`
-  if ('requires' in bound) return bound.requires.replace(/_/g, ' ')
+  if ('remove_items' in bound) return `Without item ${bound.remove_items.join(', ')}`
+  if ('requires' in bound) return REQUIRES[bound.requires] ?? bound.requires.replace(/_/g, ' ')
   const value = Array.isArray(bound.value) ? bound.value.join(', ') : String(bound.value)
-  const scope = bound.scope === 'period' && bound.period_days ? ` (over ${bound.period_days} days)` : ''
-  return `${bound.field} ${OPERATOR[bound.operator] ?? bound.operator} ${value}${scope}`
+  const scope = bound.scope === 'period' && bound.period_days ? ` over ${bound.period_days} days` : ''
+  return `${FIELD[bound.field] ?? bound.field} ${OPERATOR[bound.operator] ?? bound.operator} ${value}${scope}`
 }
 
 function Row({ label, value }: { label: string; value: string | null }) {

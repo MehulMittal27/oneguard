@@ -223,8 +223,11 @@ export function Home({
           </button>
         )}
 
+        {/* Approving happens in Card detail, which a card has once it has (or had) a policy. */}
         <PendingDevicesCard
-          cardIds={accounts.flatMap((account) => account.cards.map((card) => card.card_id))}
+          cardIds={accounts.flatMap((account) =>
+            account.cards.filter((card) => policiesByCard[card.card_id]).map((card) => card.card_id),
+          )}
           onOpenCard={onViewPolicy}
         />
 

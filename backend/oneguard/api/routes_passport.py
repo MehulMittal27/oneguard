@@ -7,6 +7,7 @@ approving or removing one needs a signature from a device already enrolled on th
 
 from __future__ import annotations
 
+import io
 import os
 from typing import Any
 
@@ -116,8 +117,14 @@ async def card_passport_qr(card_id: str, request: Request) -> Response:
     """A QR code of the verify link for the card's latest passport version."""
     latest, _ = await _card_passport(services(request), card_id)
     link = f"{public_url()}/verify?passport={latest.passport_id}&v={latest.version}"
-    svg = segno.make(link, error="m").svg_inline(scale=4, border=2, dark="#111827", light="#ffffff")
-    return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "no-cache"})
+    return Response(qr_svg(link), media_type="image/svg+xml", headers={"Cache-Control": "no-cache"})
+
+
+def qr_svg(link: str) -> bytes:
+    """A standalone SVG document (XML declaration, ``xmlns``), so it renders as an image."""
+    out = io.BytesIO()
+    segno.make(link, error="m").save(out, kind="svg", scale=4, border=2, dark="#111827", light="#ffffff", title=link)
+    return out.getvalue()
 
 
 @router.get("/authorizations/{authorization_id}/receipt", response_model=api.Receipt)

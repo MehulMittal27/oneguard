@@ -9,7 +9,7 @@ type Load = 'loading' | 'error' | 'ready'
 
 const STATUS: Record<Device['status'], { label: string; className: string }> = {
   enrolled: { label: 'Enrolled', className: 'bg-approved-tint text-approved' },
-  pending: { label: 'Waiting', className: 'bg-asked-tint text-asked' },
+  pending: { label: 'Pending', className: 'bg-asked-tint text-asked' },
   removed: { label: 'Removed', className: 'bg-surface-sunken text-ink-muted' },
 }
 
@@ -220,7 +220,7 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
                   device.status === 'enrolled' && device.enrolled_at
                     ? `Since ${formatShortDate(device.enrolled_at)}`
                     : device.status === 'pending'
-                      ? 'Asked to control this card'
+                      ? 'Asked to join'
                       : device.removed_at
                         ? `Removed ${formatShortDate(device.removed_at)}`
                         : ''

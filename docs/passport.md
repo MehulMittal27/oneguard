@@ -230,6 +230,11 @@ rejects the body). AU0042, the re-quote at CHF 350, is approved.
   endpoint `POST /api/dev/devices/reset/{card}` (refused when `ONEGUARD_ENV=prod`) removes
   them all, so the next device enrols as the first. In a real rollout this is issuer-side
   recovery: the bank re-establishes the customer's identity, then resets.
+- **Operator terminal** (`python -m oneguard.passport.cli`, docs/demo-script.md step 3a):
+  the terminal is a device too, with the same key as `make demo-live`; it enrols on cards
+  (`enrol`), lists (`devices`), approves or removes devices by label (`approve`, `remove`),
+  confirms a saved C1 draft (`confirm`) and revokes (`revoke`), all signed. In production
+  (no reset) it is how the operator keeps a way to approve the stage browser or a phone.
 - `make demo-live` signs its C2 with a key of its own per server
   (`~/.config/oneguard/device-<host>.pem`, override `ONEGUARD_DEVICE_KEY`), label
   "demo-live on <host>". On a card that already has an enrolled device it stops before
