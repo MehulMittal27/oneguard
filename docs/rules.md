@@ -53,6 +53,7 @@ The first step that applies decides.
 
 - **D1** A clear violation is Decline even under "ask me when uncertain". That setting covers uncertainty, not broken rules.
 - **D2** Under uncertainty setting `approve`, protections and warning signs still produce Ask (P2, P5).
+- **D4** When step 4 asks and shop text also addressed the agent (A1, or the agent-directed soft signal, set to ask), the reason codes name `injection_suspected` after the unknowns': the injection would have asked on its own. The deciding rule is still the unknown one, and the message already says the shop's instructions were ignored (E1).
 - **D3** The engine has an internal budget of 2 s. Anything not finished by then (model, history lookup) is dropped and the decision is made from what is known, which may be Ask. A decision is always posted before `deadline_at`. An overrun follows the uncertainty setting; approve is never automatic.
 
 ## 4a. Tiers
