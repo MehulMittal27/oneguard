@@ -495,8 +495,13 @@ class PolicyResponse(ApiModel):
 # §1.1 / §1.2 request bodies ----------------------------------------------------------
 
 
+MAX_INSTRUCTION_CHARS = 1000
+"""C1: a longer ``instruction`` is refused with 422 ``validation`` before anything compiles it."""
+
+
 class PolicyDraftRequest(ApiModel):
-    """C1: exactly one of ``instruction`` or ``form`` (422 on neither or both)."""
+    """C1: exactly one of ``instruction`` or ``form`` (422 on neither or both); an
+    ``instruction`` of at most ``MAX_INSTRUCTION_CHARS`` characters (422 beyond)."""
 
     _omit_if_none = frozenset({"instruction", "form"})
 
@@ -722,6 +727,9 @@ ErrorCode = Literal[
     "device_state",
     "not_controller",
     "forbidden",
+    "operator_required",
+    "operator_unconfigured",
+    "rate_limited",
 ]
 
 

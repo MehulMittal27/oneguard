@@ -152,7 +152,8 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
   new machine polls as soon as the app is up (with Laya on, the model loads in the
   background).
 - Fly secrets: `VISECA_API_KEY`, `OPENAI_API_KEY`, `ONEGUARD_DATABASE_URL`,
-  `ONEGUARD_LLM_PROVIDER`; temporarily `ONEGUARD_ALLOW_RUNS=false`
+  `ONEGUARD_LLM_PROVIDER`, `ONEGUARD_OPERATOR_TOKEN` (the operator gate on `/api/dev/*`,
+  api-contract §1.2: unset in production, every operator call answers 503); temporarily `ONEGUARD_ALLOW_RUNS=false`
   (D3 and `make demo-live` refuse to start a run while it is set). Set with `fly secrets`, never in files.
   `ONEGUARD_SOFT_SIGNALS=laya` and `ONEGUARD_SIGNAL_BUDGET_MS=1500` are set as secrets
   (decisions.md 2026-09-25: keywords missed two live injections; at 975 ms Laya went over

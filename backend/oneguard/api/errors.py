@@ -31,13 +31,19 @@ class ApiError(Exception):
     """A contract error: HTTP status, §3.8 code, a sentence for people, optional detail."""
 
     def __init__(
-        self, status: int, code: ErrorCode, message: str, detail: dict[str, Any] | None = None
+        self,
+        status: int,
+        code: ErrorCode,
+        message: str,
+        detail: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(f"{status} {code}: {message}")
         self.status = status
         self.code = code
         self.message = message
         self.detail = detail
+        self.headers = headers
 
 
 def not_found(message: str) -> ApiError:
@@ -49,10 +55,14 @@ def upstream_unavailable(message: str, detail: dict[str, Any] | None = None) -> 
 
 
 def error_response(
-    status: int, code: ErrorCode, message: str, detail: dict[str, Any] | None = None
+    status: int,
+    code: ErrorCode,
+    message: str,
+    detail: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     body = ErrorResponse(error=ErrorBody(code=code, message=message, detail=detail))
-    return JSONResponse(body.model_dump(mode="json"), status_code=status)
+    return JSONResponse(body.model_dump(mode="json"), status_code=status, headers=headers)
 
 
 def _validation_detail(exc: RequestValidationError) -> dict[str, Any]:
@@ -67,7 +77,7 @@ def install(app: FastAPI) -> None:
 
     @app.exception_handler(ApiError)
     async def _api_error(_: Request, exc: ApiError) -> JSONResponse:
-        return error_response(exc.status, exc.code, exc.message, exc.detail)
+        return error_response(exc.status, exc.code, exc.message, exc.detail, exc.headers)
 
     @app.exception_handler(RequestValidationError)
     async def _invalid(_: Request, exc: RequestValidationError) -> JSONResponse:

@@ -1,4 +1,5 @@
 import type { LiveRun, ReplayStatus, SoftSignalsState } from './types'
+import { operatorFetch } from './operatorFetch'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 
@@ -24,7 +25,7 @@ export type CurrentRun = { kind: 'live'; run: LiveRun } | { kind: 'replay'; run:
 export async function getCurrentRun(): Promise<CurrentRun | null> {
   if (import.meta.env.VITE_USE_MOCKS === 'true') return null
 
-  const response = await fetch(`${API_BASE_URL}/dev/runs/current`)
+  const response = await operatorFetch(`${API_BASE_URL}/dev/runs/current`)
   if (response.status === 404) return null
   if (!response.ok) throw new Error(`Failed to read current run (${response.status})`)
   const body = (await response.json()) as LiveRun | ReplayStatus
@@ -38,7 +39,7 @@ export async function getCurrentRun(): Promise<CurrentRun | null> {
 export async function getSoftSignals(): Promise<SoftSignalsState> {
   if (import.meta.env.VITE_USE_MOCKS === 'true') return { live: false, replay: false }
 
-  const response = await fetch(`${API_BASE_URL}/dev/soft-signals`)
+  const response = await operatorFetch(`${API_BASE_URL}/dev/soft-signals`)
   if (!response.ok) throw new Error(`Failed to read soft signals (${response.status})`)
   return (await response.json()) as SoftSignalsState
 }
@@ -53,7 +54,7 @@ export async function getSoftSignals(): Promise<SoftSignalsState> {
 export async function setSoftSignals(enabled: boolean): Promise<boolean> {
   if (import.meta.env.VITE_USE_MOCKS === 'true') return enabled
 
-  const response = await fetch(`${API_BASE_URL}/dev/soft-signals`, {
+  const response = await operatorFetch(`${API_BASE_URL}/dev/soft-signals`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled }),

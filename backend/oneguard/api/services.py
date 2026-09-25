@@ -21,6 +21,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from oneguard.api import policies, queries
 from oneguard.api.errors import ApiError, not_found, upstream_unavailable
 from oneguard.api.offline import OfflineRunner
+from oneguard.api.ratelimit import DRAFTS_PER_MINUTE, SlidingWindowLimiter
 from oneguard.engine import stubs
 from oneguard.engine.ledger_base import LedgerEntry
 from oneguard.engine.types import HistoryIndex
@@ -92,6 +93,8 @@ class Services:
     """Serialises C2, C4, C5 so one draft is never confirmed twice."""
     background: set[asyncio.Task[Any]] = field(default_factory=set)
     """Follow-up work a reply need not wait for (``spawn``), cancelled when the app stops."""
+    draft_limiter: SlidingWindowLimiter = field(default_factory=lambda: SlidingWindowLimiter(DRAFTS_PER_MINUTE))
+    """C1: drafts per customer per minute (``ratelimit``), in this process's memory."""
 
     def spawn(self, work: Awaitable[Any], name: str) -> None:
         """Run ``work`` after the reply; a failure is logged, never raised to the caller."""

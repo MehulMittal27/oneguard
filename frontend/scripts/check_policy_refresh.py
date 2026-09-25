@@ -19,12 +19,14 @@ Run it on a fresh store, the way docs/api-contract.md's local run does:
     python3 scripts/check_policy_refresh.py [http://localhost:8000]
 
 Standard library only. It confirms a policy on CA0001 and replays SCEN0000
-there through the operator endpoint (D2), so run it on a throwaway store.
+there through the operator endpoint (D2), so run it on a throwaway store. Against a
+production server, set ONEGUARD_OPERATOR_TOKEN: D2 needs it.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -43,9 +45,11 @@ INSTRUCTION = (
 
 def call(method: str, path: str, body: dict | None = None) -> tuple[int, dict | None]:
     data = json.dumps(body).encode() if body is not None else None
-    request = urllib.request.Request(
-        f"{BASE}{path}", data=data, method=method, headers={"Content-Type": "application/json"}
-    )
+    headers = {"Content-Type": "application/json"}
+    # A production server refuses /api/dev/* without the operator token (docs/api-contract.md §1.2).
+    if path.startswith("/api/dev/") and (token := os.environ.get("ONEGUARD_OPERATOR_TOKEN", "").strip()):
+        headers["X-OneGuard-Operator"] = token
+    request = urllib.request.Request(f"{BASE}{path}", data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             raw = response.read()

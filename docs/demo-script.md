@@ -42,8 +42,10 @@ were checked with the same pipeline and the scenario's policy fixture.
   is the link (`/?customer=<id>`: signed in, no picker); untick **Show customer phone** to
   give the console the full width. The console never answers a step-up itself.
 - **Operator**: starts each replay with the console's buttons. The curl commands below stay
-  as the fallback (laptop terminal with `API=https://oneguard.fly.dev` exported); the
-  console follows a run started that way just the same. `make demo-offline` calls the same
+  as the fallback (laptop terminal with `API=https://oneguard.fly.dev` and
+  `ONEGUARD_OPERATOR_TOKEN` exported: in production every `/api/dev/*` call needs it as
+  `X-OneGuard-Operator`, and `make demo-live` / `make demo-offline` send it from that
+  variable); the console follows a run started that way just the same. `make demo-offline` calls the same
   D2 on `ONEGUARD_API_URL` (default the cloud app; without `CARD` it takes the scenario's
   card from D9) and starts nothing when it does not answer. The `?demo=1` **Operator**
   strip still exists for a phone-only setup.
@@ -63,8 +65,9 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
 
    ```sh
    export API=https://oneguard.fly.dev
-   curl -s $API/api/dev/runs/current | jq '{run_id, scenario_id, state}'
-   curl -s $API/api/dev/scenarios | jq '[.scenarios[] | select(.active_run_id != null)]'
+   export OPS="X-OneGuard-Operator: $ONEGUARD_OPERATOR_TOKEN"   # the Fly secret; /api/dev/* is 401 without it
+   curl -s -H "$OPS" $API/api/dev/runs/current | jq '{run_id, scenario_id, state}'
+   curl -s -H "$OPS" $API/api/dev/scenarios | jq '[.scenarios[] | select(.active_run_id != null)]'
    ```
 
    `state` must not be `starting`/`running` and the second list must be `[]`. Nobody runs
@@ -81,7 +84,7 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
 
 3. **Soft signals on** (live runs start on and the offline replay off, so the console reads
    **Soft signals: live only** until someone sets D5; set it on):
-   `curl -s -X POST $API/api/dev/soft-signals -H 'Content-Type: application/json' -d '{"enabled":true}'`.
+   `curl -s -X POST -H "$OPS" $API/api/dev/soft-signals -H 'Content-Type: application/json' -d '{"enabled":true}'`.
 
 3a. **The operator terminal controls the stage cards** (docs/passport.md §4). Confirming,
    revoking and answering are device-bound: a plain `curl` gets `401`. The terminal is a
@@ -174,9 +177,9 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
 
    ```sh
    replay() {  # replay <scenario_id> <card_id> <speed_ms>: D2, then wait until D1 says done
-     curl -s -X POST $API/api/dev/replay/restart -H 'Content-Type: application/json' \
+     curl -s -X POST -H "$OPS" $API/api/dev/replay/restart -H 'Content-Type: application/json' \
        -d "{\"scenario_id\":\"$1\",\"card_id\":\"$2\",\"speed_ms\":$3}" | jq -c
-     until [ "$(curl -s $API/api/dev/replay | jq .running)" != true ]; do sleep 1; done
+     until [ "$(curl -s -H "$OPS" $API/api/dev/replay | jq .running)" != true ]; do sleep 1; done
    }
    latest() {  # latest <customer_id>: the newest run's messages, in delivery order
      curl -s $API/api/customers/$1/decisions |
@@ -197,6 +200,8 @@ stage), and Hannah Chen's policy comes from the record run (`make demo-live` cre
    deploy (see "Record" below). Note which of its purchases you will open in step 5.
 
 8. **Browser (projector)**: open `https://oneguard.fly.dev/ops`, hard-reload (Cmd+Shift+R).
+   It asks once for the operator token (the Fly secret `ONEGUARD_OPERATOR_TOKEN`) and keeps
+   it for the tab's session; paste it before the audience arrives.
    Check the health chips (`worker: polling`, `signals: keywords`, `engine: nothing
    stubbed`, no red chip), **Soft signals: on**, the run header showing the rehearsal's
    `Replay · SCEN0003` `done` with `Delivered 11/11`, and the embedded phone signed in as
@@ -260,7 +265,7 @@ and OneGuard asks every time.
 **Activity** on it.
 
 ```sh
-curl -s -X POST $API/api/dev/replay/restart -H 'Content-Type: application/json' \
+curl -s -X POST -H "$OPS" $API/api/dev/replay/restart -H 'Content-Type: application/json' \
   -d '{"scenario_id":"SCEN0004","card_id":"CA0039","speed_ms":3000}' | jq -c
 ```
 
@@ -360,7 +365,7 @@ any phone (`/verify`).
 first two purchases are plain approvals and can land while the presenter talks.
 
 ```sh
-curl -s -X POST $API/api/dev/replay/restart -H 'Content-Type: application/json' \
+curl -s -X POST -H "$OPS" $API/api/dev/replay/restart -H 'Content-Type: application/json' \
   -d '{"scenario_id":"SCEN0003","card_id":"CA0023","speed_ms":15000}' | jq -c
 ```
 
@@ -400,7 +405,7 @@ slow for this beat); the console switches to the new run within 1.5 s and the ph
 in as Oliver Graf, which is the "follows any run" point made in passing:
 
 ```sh
-curl -s -X POST $API/api/dev/replay/restart -H 'Content-Type: application/json' \
+curl -s -X POST -H "$OPS" $API/api/dev/replay/restart -H 'Content-Type: application/json' \
   -d '{"scenario_id":"SCEN0004","card_id":"CA0039","speed_ms":300}' | jq -c
 ```
 
@@ -483,7 +488,7 @@ On the GitHub tab:
 
 ## After the show
 
-- `curl -s -X POST $API/api/dev/soft-signals -H 'Content-Type: application/json' -d '{"enabled":true}'`
+- `curl -s -X POST -H "$OPS" $API/api/dev/soft-signals -H 'Content-Type: application/json' -d '{"enabled":true}'`
   if the toggle was left off.
 - CA0023 is revoked and CA0001 now holds Alex's stage policy; the next rehearsal starts at
   the pre-show checklist again.

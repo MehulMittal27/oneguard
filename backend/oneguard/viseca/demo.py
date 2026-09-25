@@ -30,6 +30,9 @@ replay of the scenario on the server, ``--speed-ms`` apart, on ``--card`` or els
 
 Nothing here answers a step-up: the customer does, in the app (CLAUDE.md rule 6).
 
+Every ``/api/dev/*`` call carries ``X-OneGuard-Operator`` from ``ONEGUARD_OPERATOR_TOKEN``
+when it is set: a production server refuses operator calls without it (``api/operator.py``).
+
     python -m oneguard.viseca.demo --scenario <scenario id> [--card <card id>] [--api <url>] [--force]
     python -m oneguard.viseca.demo --offline --scenario <scenario id> [--card <card id>] [--speed-ms 4000]
 """
@@ -53,6 +56,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from oneguard.api.operator import TOKEN_ENV as OPERATOR_TOKEN_ENV
+from oneguard.api.operator import operator_headers
 from oneguard.engine.types import Rule
 from oneguard.passport.signer import DeviceKey
 from oneguard.viseca.client import RUNS_DISABLED_MESSAGE, runs_allowed
@@ -117,6 +122,9 @@ class ApiRefused(Exception):
 async def _call(
     http: httpx.AsyncClient, method: str, path: str, body: Any = None, headers: dict[str, str] | None = None
 ) -> Any:
+    """One API call; ``/api/dev/*`` carries the operator token from ``ONEGUARD_OPERATOR_TOKEN``."""
+    if path.startswith("/api/dev/"):
+        headers = {**operator_headers(), **(headers or {})}
     reply = await http.request(method, path, json=body, headers=headers)
     if reply.is_success:
         return reply.json() if reply.content else None
@@ -125,6 +133,8 @@ async def _call(
         code, message = str(error["code"]), str(error["message"])
     except (ValueError, KeyError, TypeError):
         code, message = "http_error", reply.text[:300]
+    if code == "operator_required":
+        message = f"{message} Set {OPERATOR_TOKEN_ENV} to the server's operator token."
     raise ApiRefused(reply.status_code, code, message)
 
 

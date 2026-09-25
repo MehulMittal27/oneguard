@@ -49,14 +49,14 @@ The frontend ignores unknown fields, so additions are safe. Removing or renaming
 | C12 | GET | `/api/customers` | — | `{ customers: Customer[] }` | |
 | C10 | GET | `/api/customers/{customer_id}/accounts` | — | `{ accounts: Account[] }` | 404 |
 | C6 | GET | `/api/customers/{customer_id}/decisions[?operator=1]` | — | `{ decisions: Decision[] }` newest first; operator-only evidence only with `?operator=1` (§3.4) | 404 |
-| C1 | POST | `/api/cards/{card_id}/policy-drafts` | `{ instruction }` **or** `{ form: FormInput }` | `PolicyDraft` | 404 card · 422 neither/both · 504 compiler timeout |
+| C1 | POST | `/api/cards/{card_id}/policy-drafts` | `{ instruction }` **or** `{ form: FormInput }` | `PolicyDraft` | 404 card · 422 neither/both, or an `instruction` over 1,000 characters · 429 `rate_limited`: more than 10 drafts in a minute for the card's customer · 504 compiler timeout |
 | C2 | POST | `/api/policy-drafts/{draft_id}/confirm` | `{ checks: RuleCheck[], uncertainty_policy, open_questions }` | `Mandate` | 404 draft · 401 not signed by a device on the draft's card (§3.10) · 409 draft already confirmed · 422 unknown check id · 409 `lint_failed` (see §3.2) |
 | C3 | GET | `/api/cards/{card_id}/policy` | — | `{ mandate: Mandate \| null }` | 404 card |
 | C4 | POST | `/api/cards/{card_id}/policy/tighten` | `{ add_checks: RuleCheck[], uncertainty_policy?: 'decline' }` | `Mandate` | 404 · 401 (§3.10) · 409 not a pure addition |
 | C5 | POST | `/api/cards/{card_id}/policy/revoke` | — | 204 | 404 · 401 (§3.10) |
 | C8 | POST | `/api/authorizations/{authorization_id}/resolve` | `{ decision: 'approve' \| 'decline' }` | 204 | 404 · 401 not signed by a device on the purchase's card (§3.10) · 409 not awaiting an answer (incl. window closed) |
 
-Unchanged from the frontend README except: C1 gains `504`, C2 gains the two `409`s, and C2, C4, C5
+Unchanged from the frontend README except: C1 gains `504` and (NEW) the 1,000-character `422` and `429`, C2 gains the two `409`s, and C2, C4, C5
 and C8 are device-bound writes (§3.10, NEW): refused with `401` unless signed by a device enrolled
 on the card, before anything is read for the change or applied.
 
@@ -78,9 +78,20 @@ on the card, before anything is read for the change or applied.
 
 Operator-only: `POST /api/dev/devices/reset/{card_id}` → `{ card_id, removed }`: every device on
 the card removed, so the next one enrols as the card's first (issuer-side recovery in a real
-rollout). `403 forbidden` when `ONEGUARD_ENV=prod`.
+rollout). `403 forbidden` when `ONEGUARD_ENV=prod`. Behind the operator gate like every
+`/api/dev/*` route (§1.2).
 
 ### 1.2 Operator-only (never called by the UI, not shown to the customer)
+
+**Operator gate (NEW).** When `ONEGUARD_ENV=prod` (the image default) every `/api/dev/*`
+route needs the header `X-OneGuard-Operator` equal to the server's `ONEGUARD_OPERATOR_TOKEN`
+(a Fly secret), compared in constant time, before anything else runs: missing or wrong is
+`401 operator_required`, and a production server with no token set answers every
+`/api/dev/*` call `503 operator_unconfigured` rather than serving them open. Off production
+the check is skipped. The token is never logged or echoed. `make demo-live`,
+`make demo-offline` and `frontend/scripts/check_policy_refresh.py` send it from
+`ONEGUARD_OPERATOR_TOKEN` in their own environment; the console (`/ops`) asks for it once
+(§6 item 23). D9 (`/api/scenarios`) is outside `/api/dev` and stays open.
 
 | # | Method | Path | Request | Response |
 |---|---|---|---|---|
@@ -355,6 +366,12 @@ expire — that is a broken state, not a degraded one.
   `open_questions` entry rather than failing. If no check at all was read (e.g. "buy
   something nice"), that entry is "I couldn't read a spending limit or item type - try
   'groceries, max CHF 120 per order'", first, in place of the no-amount question.
+- C1 refuses an `instruction` longer than 1,000 characters (`422 validation`,
+  `detail: { max_chars, chars }`) before anything compiles it, and more than 10 drafts
+  (instruction or form) for one customer in any 60 s (`429 rate_limited`), counted before the
+  compiler runs, so a draft that later times out still counts. The window is real time, kept
+  in the server process's memory: the app runs on one machine, and a restart only forgets
+  it (the customer may draft again sooner).
 - C1 with `form`: no LLM; rules built directly. The form has no words of the customer's, so
   the draft's (and the mandate's) `instruction` is exactly "Built from the form".
 - The backend stores, per `RuleCheck.id`, the typed rule
@@ -523,7 +540,11 @@ All errors: `{ error: { code: string, message: string, detail?: object } }`. Cod
 `internal`, `runs_disabled`, `run_active` (D3: an unfinished run is still followed),
 and (NEW, §3.10, §1.3) `device_signature_required`, `device_not_enrolled`,
 `signature_invalid`, `replay` (401), `last_device`, `device_state` (409), `forbidden`,
-`not_controller` (403: P8–P10 signed by an enrolled device that is not the card's controller).
+`not_controller` (403: P8–P10 signed by an enrolled device that is not the card's controller),
+and (NEW) `operator_required` (401: `/api/dev/*` in production without the right
+`X-OneGuard-Operator`, §1.2), `operator_unconfigured` (503: production with no
+`ONEGUARD_OPERATOR_TOKEN` set), `rate_limited` (429: C1 over 10 drafts a minute for one
+customer; `detail: { limit, window_s, retry_after_s }` and a `Retry-After` header).
 `upstream_unavailable` (503: Viseca or the database unreachable or too slow) never changes a
 stored decision; the UI shows its offline state ("Nothing was approved while we were
 offline"). `internal` (500) is an unexpected server error.
@@ -641,6 +662,16 @@ fixtures to it.
 20. Phone UI deep links, both read once at load: `?customer=<customer_id>` signs in as that customer and skips the picker (session only, nothing stored; an unknown id shows the picker); `?embed=1` draws the phone UI without `DeviceFrame`'s bezel, for the console's embedded phone (an iframe of `/?customer=<id>&embed=1`, 390×844).
 21. Sign-in footer: "Powered by OneGuard" (small), the same line the console carries.
 22. Passport (§1.3, §3.10, docs/passport.md): `lib/deviceKey.ts` (a non-extractable P-256 key in IndexedDB, `signedFetch` for C2, C4, C5, C8, P8, P9, P10; a `device_not_enrolled` answer opens enrolment); NewPolicy confirm enrols this device first (the card's first device silently, otherwise "This device isn't approved for this card yet"), and a card's first passport (`Mandate.passport.version == 1`, none before) gets step 3 "Your passport is issued" with the first-passport animation; CardDetail gains a Passport section (QR, version, devices with Approve / Remove, Verify; when no device controls the card, "Make this device the controller" enrols this browser through P7 as the card's first device, trust on first use, and re-reads the re-issued passport, while a card another device controls keeps "Add this device", the pending path; `lib/passportDevices.ts`). The section names the controller ("Controller · this device" or its label; badges Controller / Approved); only the controller sees Approve / Remove and, on each other enrolled device, "Make this the controller" (P10, asked once more before it is sent); an approved device reads that it can change the policy and answer requests while the controller manages devices, and a pending one "Waiting for approval from <controller label>" (the enrolment sheet too). Home shows "Devices waiting for your approval" on the controller only (polled every 5 s); DecisionDetail shows "What your agent was told" (`would_approve_if`, in words from `counterfactual`) and "Receipt · Verify"; a `/verify` page for the QR link. Mock fixtures gain a passport, two devices and a receipt.
+
+23. Operator token (§1.2): every `/api/dev/*` call from the console and the `?demo=1` strip goes
+    through `api/operatorFetch.ts`, which sends `X-OneGuard-Operator` from `sessionStorage`
+    (`lib/operatorToken.ts`). A `401 operator_required` asks for the token once, however many
+    calls were refused together, keeps it for the tab's session and retries; a wrong token asks
+    again ("That token was not accepted"). The console asks in its own dialog, Viseca-styled like
+    the judging-run dialog; the strip, which has no dialog, uses the browser's prompt.
+24. NewPolicy describe: the instruction textarea stops at 1,000 characters and counts them
+    (C1 refuses more with 422); a C1 `429 rate_limited` shows the server's sentence on the step-1
+    error screen ("Too many drafts") instead of "The AI took too long".
 
 No customer endpoint changes. No screen removals. Tighten UI stays dormant.
 

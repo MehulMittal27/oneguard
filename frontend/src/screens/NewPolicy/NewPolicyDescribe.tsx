@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { MAX_INSTRUCTION_CHARS } from '../../api/policy'
 import type { Card, FormInput } from '../../api/types'
 import { CardPicker } from '../../components/CardPicker'
 import { NetworkState } from '../../components/NetworkState'
@@ -50,6 +51,7 @@ export function NewPolicyDescribe({
   onSubmitForm,
   onCancel,
   formError,
+  formRateLimited = null,
   accountStatus,
   onRetryAccounts,
 }: {
@@ -69,6 +71,8 @@ export function NewPolicyDescribe({
   onSubmitForm: () => void
   onCancel: () => void
   formError: boolean
+  // C1's 429 sentence, shown in place of the generic form error.
+  formRateLimited?: string | null
   accountStatus: 'loading' | 'error' | 'ready'
   onRetryAccounts: () => void
 }) {
@@ -102,12 +106,15 @@ export function NewPolicyDescribe({
           </>
         ) : (
           <>
-            {formError && (
-              <p className="text-[13px] text-destructive">
-                Couldn&apos;t read these checks. Nothing was approved while we were offline. Nothing
-                was saved. Try again.
-              </p>
-            )}
+            {formError &&
+              (formRateLimited ? (
+                <p className="text-[13px] text-destructive">{formRateLimited} Nothing was saved.</p>
+              ) : (
+                <p className="text-[13px] text-destructive">
+                  Couldn&apos;t read these checks. Nothing was approved while we were offline. Nothing
+                  was saved. Try again.
+                </p>
+              ))}
             <button
               type="button"
               onClick={onSubmitForm}
@@ -174,11 +181,21 @@ export function NewPolicyDescribe({
           <span className="text-[13px] font-medium text-ink-soft">Your words</span>
           <textarea
             value={instruction}
-            onChange={(e) => onChangeInstruction(e.target.value)}
+            onChange={(e) => onChangeInstruction(e.target.value.slice(0, MAX_INSTRUCTION_CHARS))}
             rows={6}
+            maxLength={MAX_INSTRUCTION_CHARS}
+            aria-describedby="new-policy-count"
             placeholder="Buy groceries for me, up to CHF 120 per order…"
             className="rounded-card border border-border-quiet bg-surface-sunken p-4 text-[15px] text-ink"
           />
+          <span
+            id="new-policy-count"
+            className={`self-end text-[12px] tabular-nums ${
+              instruction.length >= MAX_INSTRUCTION_CHARS ? 'font-semibold text-ink' : 'text-ink-muted'
+            }`}
+          >
+            {instruction.length.toLocaleString('en-US')} / {MAX_INSTRUCTION_CHARS.toLocaleString('en-US')}
+          </span>
         </label>
       ) : (
         <NewPolicyForm form={form} onChange={onChangeForm} />
