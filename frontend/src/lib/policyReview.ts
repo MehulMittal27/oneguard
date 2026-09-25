@@ -1,4 +1,4 @@
-import type { PolicyDraft } from '../api/types'
+import type { PolicyDraft, RuleCheck } from '../api/types'
 
 /**
  * What the review screen asks when no check at all was read ("buy something
@@ -33,4 +33,14 @@ export function agentHistoryLine({ attempts, approved }: { attempts: number; app
   if (attempts === 0) return 'No agent has tried to buy on any of your cards before.'
   const times = attempts === 1 ? 'once' : `${attempts} times`
   return `Across your cards, an agent has tried to buy ${times} before: ${approved} approved.`
+}
+
+/**
+ * Whether two check lists say the same thing (ids and wording, in any order).
+ * A policy moved to the card a run played on (D3) is the same policy under a new
+ * mandate id, so a decision made under the original is not "an earlier policy".
+ */
+export function sameChecks(a: RuleCheck[], b: RuleCheck[]): boolean {
+  const key = (checks: RuleCheck[]) => checks.map((c) => `${c.id}\u0000${c.text}`).sort().join('\n')
+  return key(a) === key(b)
 }
