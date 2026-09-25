@@ -396,6 +396,7 @@ def build_facts(event: dict, history: HistoryIndex | None = None) -> Facts:
         merchant_name=merchant["merchant_name"],  # untrusted; display and A7 only
         merchant_category=merchant["merchant_category"],
         merchant_country=merchant["merchant_country"],
+        merchant_city=merchant.get("merchant_city") or None,
         merchant_mcc=str(merchant.get("merchant_mcc") or ""),
         merchant_recurring_capable=str(merchant.get("recurring_capable", "false")).lower() == "true",
         device_id=auth.get("customer_device_id") or "",

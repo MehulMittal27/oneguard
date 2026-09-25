@@ -49,6 +49,7 @@ def _row(r: AuthorizationHistory) -> HistoryRow:
         merchant_name=r.merchant_name,
         merchant_category=r.merchant_category,
         merchant_country=r.merchant_country,
+        merchant_city=r.merchant_city or None,
         channel=r.channel,
         recurring=r.recurring,
         customer_device_id=r.customer_device_id or None,

@@ -12,6 +12,9 @@ compiler restates from the C3 rule (types.Policy) and P2's key leaves unset. Ids
 ``unverifiable`` rules are compared by content: P2 numbers them U1/U2 across policies,
 the compiler per policy.
 
+SCEN0124 (a served instruction, docs/judging-pack.md) is checked here too: "a hotel in
+Munich" is a check on the shop's city on both paths, never a restriction no data can check.
+
 "By Friday" is the Friday after confirmation: the policy is confirmed on Mon 10 Aug 2026
 (P2's PM decision), passed as ``today``.
 """
@@ -28,6 +31,7 @@ from oneguard.engine.types import HistoryRow, Policy, Rule
 from oneguard.llm.provider import NullProvider
 from oneguard.store.history import StoreHistoryIndex
 from tests.test_compiler import MODEL_READINGS, ScriptedProvider
+from tests.test_compiler_judging import RECORDED, SERVED, Scripted
 from tests.test_engine_core_unseen import POLICIES
 
 CARD = "CA_T1"
@@ -85,3 +89,33 @@ def test_on_fail_ask_is_only_where_the_customer_said_so(history):
         draft = parse(expected.instruction, history, CARD, today=CONFIRMED)
         asking = {r.id for r in draft.rules if r.on_fail == "ask"}
         assert asking == ({"C1-same", "C9-same"} if name == "gym" else set()), name
+
+
+# --- SCEN0124: "a hotel in Munich" is the shop's city ------------------------------------
+def _scen0124(path: str):
+    instruction = SERVED["SCEN0124"]
+    if path == "parser":
+        return parse(instruction, None, "", today=CONFIRMED)
+    provider = NullProvider() if path == "fallback" else Scripted(
+        next(e["response"] for e in RECORDED if e["scenario"] == "SCEN0124"))
+    draft = compile_instruction(instruction, None, "", provider, today=CONFIRMED)
+    assert draft.compiler == path
+    return draft
+
+
+@pytest.mark.parametrize("path", ["parser", "fallback", "llm"])
+def test_scen0124_in_munich_is_a_city_check_on_both_paths(path):
+    draft = _scen0124(path)
+    [city] = [r for r in draft.rules if r.field == "merchant.merchant_city"]
+    assert (city.id, city.operator, city.value, city.source) == ("C12-city", "=", "Munich", "exact")
+    assert city.text == "Only shops in Munich"
+    # No restriction no data can check names the place: the stay's dates are the only one.
+    assert [r.value for r in draft.rules if r.field == "unverifiable"] == [
+        "for 3 nights from 10 September to 13 September"]
+    assert draft.open_questions == []
+
+
+def test_scen0124_reads_the_same_on_both_paths():
+    keys = {path: sorted((r.id, r.field, r.operator, str(r.value), r.source) for r in _scen0124(path).rules)
+            for path in ("parser", "fallback", "llm")}
+    assert keys["parser"] == keys["fallback"] == keys["llm"]

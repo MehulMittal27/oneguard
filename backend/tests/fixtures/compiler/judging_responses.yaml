@@ -35,6 +35,12 @@
 # that the order limit for the stated nights is added for the model (p1/scen0122-lessons): the
 # same rules, and no longer the question "is the order limit CHF 600 (3 nights at CHF 200 each)?".
 # The other nine compile the same under the new prompt (two live runs each), so they are unchanged.
+# SCEN0124 re-recorded on 2026-09-25 (gpt-4.1, same settings) after the booking rule learned that
+# a place the shop data holds becomes a check on the shop's city or country (p4/city-check). The
+# model still writes "in Munich" as unverifiable (five live runs, all identical and the same as the
+# recorded response); the LLM path now reads it, as the parser does, as merchant.merchant_city =
+# Munich (parser.places). The other nine name no place and compile the same (one live run each),
+# except SCEN0113's run adding "not Sat, Sun" beside "Mon-Fri", the variance noted above.
 - scenario: SCEN0101
   response:
     uncertainty_policy: ask

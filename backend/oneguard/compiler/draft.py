@@ -45,6 +45,17 @@ COUNTRY_NAMES: dict[str, str] = {
     "CH": "Switzerland", "DE": "Germany", "FR": "France", "IT": "Italy", "AT": "Austria",
     "NL": "the Netherlands", "GB": "the United Kingdom", "US": "the United States",
 }
+# The catalogue's shop cities (merchants.csv), as events spell them, keyed by how a
+# customer may write them. A city outside this list stays a restriction no data can check.
+CITY_NAMES: dict[str, str] = {
+    **{c.lower(): c for c in (
+        "Amsterdam", "Annecy", "Basel", "Berlin", "Bern", "Biel", "Boston", "Chur", "Como", "Fribourg",
+        "Freiburg", "Geneva", "Innsbruck", "Interlaken", "Lausanne", "London", "Lucerne", "Lugano",
+        "Lyon", "Milan", "Munich", "Neuchatel", "Portland", "St. Gallen", "Winterthur", "Zurich")},
+    "zürich": "Zurich", "genève": "Geneva", "geneve": "Geneva", "luzern": "Lucerne",
+    "münchen": "Munich", "muenchen": "Munich", "neuchâtel": "Neuchatel", "milano": "Milan",
+    "st gallen": "St. Gallen", "sankt gallen": "St. Gallen", "basle": "Basel",
+}
 SIZE_LETTERS: tuple[str, ...] = ("XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL")
 
 ValueType = Literal["number", "text", "list", "date", "none"]
@@ -67,6 +78,7 @@ FIELDS: dict[str, tuple[ValueType, tuple[str, ...], RuleKind]] = {
     "merchant.merchant_category": ("text", ("=", "!="), "merchant"),
     "merchant.familiar_on_card": ("text", ("=",), "merchant"),
     "merchant.merchant_country": ("text", ("=", "!="), "merchant"),
+    "merchant.merchant_city": ("text", ("=", "!="), "merchant"),
     "authorization.delivery_by": ("date", ("<=",), "terms"),
     "authorization.weekday": ("list", ("in", "not_in"), "other"),
     "authorization.local_hour": ("number", ("<", "<=", ">=", ">"), "other"),
@@ -80,6 +92,8 @@ EVENING_HOURS: tuple[int, int] = (17, 23)
 # The engine evaluates C9 through this field (engine/policy.py); api-contract §3.3
 # names merchant.known_shop as the same check.
 KNOWN_SHOP_FIELD = "merchant.familiar_on_card"
+COUNTRY_FIELD = "merchant.merchant_country"
+CITY_FIELD = "merchant.merchant_city"
 
 
 class _Model(BaseModel):
@@ -242,6 +256,8 @@ def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
     elif f == "merchant.merchant_country":
         where = COUNTRY_NAMES.get(str(v), str(v))
         text = f"Only shops in {where} ({v})" if op == "=" else f"No shops in {where} ({v})"
+    elif f == "merchant.merchant_city":
+        text = f"Only shops in {v}" if op == "=" else f"No shops in {v}"
     elif f == "authorization.delivery_by":
         d = date.fromisoformat(str(v))
         text = f"Delivered on or before {d.strftime('%a')} {d.day} {d.strftime('%b %Y')}"
@@ -294,6 +310,7 @@ def _base_id(spec: RuleSpec) -> str:
     return {
         "cart.quantity": "C12-qty", "items[].quantity": "C12-qty", COUNT_FIELD: "C12-count",
         "items[].unit_price_chf": "C12-price", "merchant.merchant_country": "C12-country",
+        "merchant.merchant_city": "C12-city",
         "authorization.delivery_by": "C12-delivery", "authorization.weekday": "C12-day",
         "authorization.local_hour": "C12-hour", "cart.recurring": "C12-recurring",
     }[f]

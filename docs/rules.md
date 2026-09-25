@@ -78,7 +78,7 @@ The first step that applies decides.
 | C9 | **Known shop.** As defined in §3. "Shop I use regularly" and "seller I have bought from before" both map here; see Q9 for a stricter reading of "regularly". A customer with no purchase history yet (no approved purchase in history on any card, none in this run) makes C9 `unknown` (reason code `no_purchase_history`), not a fail: "You have no purchase history yet, so I can't tell whether you've used this shop - approve once and I'll remember it." The customer's yes on that ask is remembered for the shop, whatever the items. | Decline | Uncertainty setting (no purchase history yet) |
 | C10 | **Nothing extra.** Cart contains only what was asked; add-ons (protection plans, subscriptions, accessories) fail. Explanation says what to remove. | Decline | — |
 | C11 | **Uncertainty setting.** Apply the customer's choice when any rule is `unknown`. Default `ask`. | — | — |
-| C12 | **Other restrictions** (expected in hidden scenarios): per-item limit and quantity; country or currency; time of day / weekday; delivery date. Same pass/fail/unknown logic. | Decline | Uncertainty setting |
+| C12 | **Other restrictions** (expected in hidden scenarios): per-item limit and quantity; shop country or city ("in Munich": `merchant.merchant_city`); currency; time of day / weekday; delivery date. Same pass/fail/unknown logic. | Decline | Uncertainty setting |
 
 ## 6. Money and time
 

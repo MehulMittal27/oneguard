@@ -170,5 +170,6 @@ Fly, `performance-2x` (2 dedicated CPUs) with 4 GB in lhr, image `oneguard:9a1a6
   (docs/decisions.md): Fly secret `ONEGUARD_SOFT_SIGNALS=keywords`, same image.
 - Superseded 2026-09-25 (docs/decisions.md): keywords missed two live injections, so Laya is
   back on `performance-2x` with `ONEGUARD_SIGNAL_BUDGET_MS=1500`, above both P95s above; the
-  slowest purchases (P99 1.7-1.8 s) keep the keyword answer.
+  slowest purchases (P99 1.7-1.8 s) keep the keyword answer. The budget is 975 ms since SCEN0124
+  (engine P50 ~1.96 s with 1500 ms; docs/decisions.md): purchases past it keep the keyword answer.
 

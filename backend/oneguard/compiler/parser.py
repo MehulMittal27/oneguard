@@ -15,8 +15,10 @@ from decimal import Decimal
 
 from oneguard.compiler.draft import (
     ALCOHOL_FIELD,
+    CITY_FIELD,
+    CITY_NAMES,
     COUNT_FIELD,
-    COUNTRY_NAMES,
+    COUNTRY_FIELD,
     EVENING_HOURS,
     HOUR_FIELD,
     KNOWN_SHOP_FIELD,
@@ -581,11 +583,76 @@ def _shops(reading: _Reading, text: str) -> None:
     if m and not any(s.field == "merchant.merchant_category" for s in reading.specs):
         reading.specs.append(RuleSpec(field="merchant.merchant_category", operator="=", value="groceries",
                                       words=m.group(0), source="inferred"))
-    for m in re.finditer(r"\b(?:shops?|sellers?|stores?)\s+in\s+(?P<c>[A-Z][a-z]+)", text):
-        country = COUNTRY_WORDS.get(m.group("c").lower())
-        if country and country in COUNTRY_NAMES:
-            reading.specs.append(RuleSpec(field="merchant.merchant_country", operator="=", value=country,
-                                          words=m.group(0)))
+    reading.specs += places(text, reading.specs)
+
+
+# "in Munich", "shops in Switzerland": where the shop is, a check on the event's trusted
+# merchant_city / merchant_country. Only names the catalogue holds (draft.CITY_NAMES and
+# the countries of draft.COUNTRY_NAMES), capitalised as a place is; "the UK" / "the US" only with "the" and in
+# capitals ("in US dollars" is a currency).
+_COUNTRY_PLACES: dict[str, str] = {
+    "switzerland": "CH", "germany": "DE", "france": "FR", "italy": "IT", "austria": "AT",
+    "netherlands": "NL", "holland": "NL", "united kingdom": "GB", "great britain": "GB", "britain": "GB",
+    "uk": "GB", "united states": "US", "usa": "US", "us": "US",
+}
+_PLACE = re.compile(
+    r"\b(?P<not>not\s+)?in\s+(?P<the>the\s+)?(?P<place>"
+    + "|".join(re.escape(n) for n in sorted({*CITY_NAMES, *_COUNTRY_PLACES}, key=len, reverse=True))
+    + r")(?![\w-])",
+    re.IGNORECASE,
+)
+# Only a negation that governs the place itself: "no shops in Italy", "never in Germany".
+# "a hotel with no breakfast in Munich" still wants Munich.
+_PLACE_NEGATED = re.compile(
+    r"\b(?:(?:no|never)\s+(?:shops?|stores?|sellers?|merchants?|retailers?|hotels?)|never|except)\s*$", re.IGNORECASE)
+_DELIVERY = re.compile(r"\b(?:deliver\w*|ship\w*|send|sent|live|living|based)\s+(?:\w+\s+){0,3}$", re.IGNORECASE)
+
+
+def place_of(name: str) -> tuple[str, str] | None:
+    """A place name -> (field, value): ("merchant.merchant_city", "Munich") or
+    ("merchant.merchant_country", "CH"); None for a place the catalogue does not hold."""
+    key = " ".join(name.lower().split())
+    if key in CITY_NAMES:
+        return CITY_FIELD, CITY_NAMES[key]
+    if key in _COUNTRY_PLACES:
+        return COUNTRY_FIELD, _COUNTRY_PLACES[key]
+    return None
+
+
+def places(text: str, specs: list[RuleSpec]) -> list[RuleSpec]:
+    """Each "in <city or country>" the shop must be in: ``merchant.merchant_city`` (the
+    catalogue's spelling) or ``merchant.merchant_country`` (ISO alpha-2), ``=``, or ``!=``
+    for "not in", "no shops in", "never in"; source exact. Where the customer receives the
+    order ("delivered in Zurich") is not the shop's place. A rule already read (the
+    "German retailer" adjective) is not repeated. Both compiler paths take places from
+    here, so they read the same."""
+    out: list[RuleSpec] = []
+    for m in _PLACE.finditer(text):
+        name = m.group("place")
+        if not name[0].isupper() or (len(name) <= 3 and not (name.isupper() and m.group("the"))):
+            continue  # "in bern", "in us", "in US dollars": not written as a place name
+        found = place_of(name)
+        if found is None or _DELIVERY.search(text[: m.start()]):
+            continue
+        field, value = found
+        op = "!=" if m.group("not") or _PLACE_NEGATED.search(text[: m.start()]) else "="
+        words = m.group(0)
+        if any(s.field == field and s.value == value and s.operator == op for s in [*specs, *out]):
+            continue
+        out.append(RuleSpec(field=field, operator=op, value=value, words=words))
+    return out
+
+
+def covered_by_place(words: str, specs: list[RuleSpec]) -> bool:
+    """An unverifiable phrase that only names a place a rule now checks ("in Munich", "a
+    hotel in Munich"): the model's reading of it, dropped for the place rule."""
+    rest = words
+    for s in specs:
+        if s.field in (CITY_FIELD, COUNTRY_FIELD):
+            rest = re.sub(re.escape(s.words), " ", rest, flags=re.IGNORECASE)
+    if rest == words:
+        return False
+    return not re.sub(r"\b(?:a|an|the|hotels?|shops?|stores?|sellers?|only|stay)\b|\W", "", rest, flags=re.IGNORECASE)
 
 
 # --- Uncertainty (C11) ---------------------------------------------------------------
@@ -723,11 +790,12 @@ _MONTHS = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
 
 def _stay(reading: _Reading, text: str) -> None:
     """A booking's place and dates ("a hotel in Munich for 3 nights from 10 September to
-    13 September"): no field holds them, so each is an unverifiable rule the customer
-    confirms. The nights also size the per-order cap (``stay_cap``)."""
+    13 September"): a place the catalogue holds is a city check (``places``); a place it
+    does not, and the dates, are each an unverifiable rule the customer confirms. The
+    nights also size the per-order cap (``stay_cap``)."""
     if not any(s.field == "items[].item_category" and "hotel" in s.value for s in reading.specs):
         return
-    if m := re.search(r"\bhotels?\s+in\s+(?P<city>[A-Z][\w-]+)", text):
+    if (m := re.search(r"\bhotels?\s+in\s+(?P<city>[A-Z][\w-]+)", text)) and place_of(m.group("city")) is None:
         said = f"in {m.group('city')}"
         reading.specs.append(RuleSpec(field="unverifiable", operator="=", value=f"a hotel {said}", words=said))
     nights = _NIGHTS.search(text)

@@ -114,7 +114,7 @@ class ItemFacts:               line_no, item_id, item_name, item_category, quant
 class Facts:                   authorization_id, source_authorization_id, timestamp (datetime, simulated),
                                local_weekday, local_hour, amount, currency, billing_amount_chf, items: list[ItemFacts],
                                merchant_id, merchant_name (untrusted), merchant_category, merchant_country,
-                               device_id, recent_attempt_count_10m, order_returnable, order_cancellable,
+                               merchant_city (None = unknown), device_id, recent_attempt_count_10m, order_returnable, order_cancellable,
                                delivery_by, related_authorization_id, related_status, return_window_days: FactValue[int],
                                authority_status, card_status_at_attempt, merchant_mcc,
                                merchant_recurring_capable: bool,

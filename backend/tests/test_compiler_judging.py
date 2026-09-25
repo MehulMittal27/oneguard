@@ -103,7 +103,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
         (CAT, "in", ("hotel",), None, None, None, "decline"),
         (CAT, "not_in", ("travel",), None, None, None, "decline"),      # "No flights, no insurance"
         ("order.order_cancellable", "=", "true", None, None, None, "decline"),  # "refundable rate only"
-        ("unverifiable", "=", "a hotel in Munich", None, None, None, "decline"),
+        ("merchant.merchant_city", "=", "Munich", None, None, None, "decline"),  # "a hotel in Munich"
         ("unverifiable", "=", "for 3 nights from 10 September to 13 September", None, None, None, "decline"),
         (BILL, "<=", 600, "CHF", "purchase", None, "decline"),  # 3 nights at CHF 200: the order cap
     ]},
@@ -357,7 +357,8 @@ def test_a_models_unverifiable_item_type_is_the_excluded_type(history):
         _raw(CAT, "not_in", "No flights, no insurance", value_list=["travel"]),
         _raw("unverifiable", "=", "no insurance", value_text="no insurance"),
     )), history, "", TODAY)
-    assert [(r.field, r.operator, r.value) for r in read.rules] == [(CAT, "not_in", ["travel"])]
+    assert [(r.field, r.operator, r.value) for r in read.rules] == [
+        (CAT, "not_in", ["travel"]), ("merchant.merchant_city", "=", "Munich")]  # the place: parser.places
 
 
 def test_a_per_item_amount_is_per_item_only_where_the_parser_reads_it_so(history):
@@ -377,7 +378,8 @@ def test_a_per_item_amount_is_per_item_only_where_the_parser_reads_it_so(history
     nights = _raw("items[].unit_price_chf", "<=", "at most CHF 200 per night", value_number=200, currency="CHF",
                   scope="purchase")
     read = read_with_llm(SERVED["SCEN0124"], Scripted(_response(nights)), history, "", TODAY)
-    assert [r.field for r in read.rules] == ["items[].unit_price_chf", BILL]  # and the stay's cap
+    assert [r.field for r in read.rules] == [  # the place and the stay's cap come from the parser
+        "items[].unit_price_chf", "merchant.merchant_city", BILL]
 
 
 COUNT_PHRASES = [
