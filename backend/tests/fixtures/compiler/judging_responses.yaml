@@ -11,12 +11,21 @@
 # products and their catalogue types (p4/requested-item): "no insurance" is now only the excluded
 # travel type, as the parser reads it. The other nine read the same under the new prompt (two
 # live runs each), so they are unchanged.
+# SCEN0117 re-recorded on 2026-09-25 (gpt-4.1, same settings) after the prompt learned
+# items[].contains_alcohol (p2/alcohol-exclusion): "No alcohol" is the alcohol rule, no longer a
+# restriction no data can check. The other nine compile the same under the new prompt (two live
+# runs each), except where they vary under the old prompt too (SCEN0101's requested_item) or add
+# nothing that decides (one SCEN0113 run in five adds "not Sat, Sun" beside "Mon-Fri"), so they
+# are unchanged.
 # SCEN0136 re-recorded on 2026-09-25 (gpt-4.1, same settings) after the prompt learned the last
 # price at each shop (p2/last-price-per-shop): "If a price changes, ask me" is now
 # authorization.billing_amount_chf "=" value_from last_price_at_shop, on_fail ask, no longer a
 # restriction no data can check. The other nine compile the same under the new prompt (two live runs
 # each; SCEN0124 seven): two SCEN0124 runs in seven also wrote "no insurance" as unverifiable, which
 # the LLM path now reads as the excluded travel type it already had, so they are unchanged.
+# After both prompts merged (2026-09-25, gpt-4.1, two live runs each; SCEN0101 fourteen) all ten
+# compile the same as recorded. SCEN0101 sometimes reads "for CHF 20 or less" as a per-item limit
+# (1 run in 4 on the alcohol prompt alone); the LLM path now follows the parser there (per order).
 - scenario: SCEN0101
   response:
     uncertainty_policy: ask
@@ -314,6 +323,18 @@
       words: from the shops I use
       source: exact
       on_fail: decline
+    - field: items[].contains_alcohol
+      operator: '='
+      value_number: null
+      value_text: 'false'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: No alcohol
+      source: exact
+      on_fail: decline
     - field: items[].item_category
       operator: not_in
       value_number: null
@@ -326,18 +347,6 @@
       scope: null
       period_days: null
       words: no gift cards, no cosmetics
-      source: exact
-      on_fail: decline
-    - field: unverifiable
-      operator: '='
-      value_number: null
-      value_text: no alcohol
-      value_list: null
-      value_from: literal
-      currency: null
-      scope: null
-      period_days: null
-      words: no alcohol
       source: exact
       on_fail: decline
     open_questions: []

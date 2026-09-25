@@ -262,7 +262,7 @@ def coverage(draft: ParsedDraft) -> set[str]:
 
 _KIND_NAMES = {
     "C1": "the per-order limit", "C2": "the period limit", "C3": "the item types",
-    "C4": "the excluded item types", "C5": "the requested item", "C6": "the size",
+    "C4": "the excluded item types", "C4-alcohol": "no alcohol", "C5": "the requested item", "C6": "the size",
     "C7": "the order terms", "C8": "the shop type", "C9": "shops you know", "C10": "nothing extra",
     "C11": "decline when uncertain", "U": "a restriction no data can check",
 }

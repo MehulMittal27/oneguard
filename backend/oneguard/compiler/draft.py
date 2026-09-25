@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from oneguard.engine.policy import COUNT_FIELD, LAST_PRICE_AT_SHOP
+from oneguard.engine.policy import ALCOHOL_FIELD, COUNT_FIELD, LAST_PRICE_AT_SHOP
 from oneguard.engine.types import Currency, Rule, RuleKind, RuleOperator
 
 # rules.md M1: fixed rates to CHF.
@@ -56,6 +56,7 @@ FIELDS: dict[str, tuple[ValueType, tuple[str, ...], RuleKind]] = {
     "cart.quantity": ("number", ("<", "<=", "=", ">=", ">"), "item"),
     COUNT_FIELD: ("number", ("<", "<="), "period"),  # purchases per period_days on this card
     "items[].item_category": ("list", ("in", "not_in"), "item"),
+    ALCOHOL_FIELD: ("text", ("=",), "item"),  # "false": no alcoholic drink on any cart line
     "items[].size_eu": ("number", ("=",), "item"),
     "items[].size_letter": ("text", ("=",), "item"),
     "order.return_window_days": ("number", (">=", ">"), "terms"),
@@ -211,6 +212,8 @@ def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
     elif f == "items[].item_category":
         cats = human_list(list(v))
         text = f"Only {cats}" if op == "in" else f"No {cats}"
+    elif f == ALCOHOL_FIELD:
+        text = "No alcohol"
     elif f == "items[].size_eu":
         text = f"Size {fmt_amount(v)}".replace(".50", ".5")
     elif f == "items[].size_letter":
@@ -268,6 +271,8 @@ def _base_id(spec: RuleSpec) -> str:
         return "C2" if spec.scope == "period" else "C1"
     if f == "items[].item_category":
         return "C3" if op == "in" else "C4"
+    if f == ALCOHOL_FIELD:
+        return "C4-alcohol"
     if f in ("items[].size_eu", "items[].size_letter"):
         return "C6"
     if f in ("order.return_window_days", "order.order_returnable", "order.order_cancellable"):
