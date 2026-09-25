@@ -1,7 +1,8 @@
 """Decisions no platform owns: the offline replay (D1, D2) and local step-up closing.
 
-The replay feeds data-pack events (built by ``api/routes_dev.py`` through
-``oneguard.replay.events``) to ``pipeline.decide_event`` with the same engine and ledger
+The replay feeds data-pack events, or a live run's stored events for a replay from record
+(both built by ``api/routes_dev.py`` through ``oneguard.replay.events``), to
+``pipeline.decide_event`` with the same engine and ledger
 as the live worker; only the event source differs (api-contract §1.2). Events are paced
 ``speed_ms`` apart, stamped with a fresh real-clock deadline, given the run's own
 ``context`` and stored in ``events_raw`` like live ones.
@@ -61,6 +62,27 @@ def live_ids(source_ids: list[str]) -> dict[str, str]:
     return {source: f"rp_{secrets.token_hex(6)}" for source in source_ids}
 
 
+@dataclass(frozen=True)
+class RecordRun:
+    """The live run a replay from record replays: ``runs.run_id``, the platform's run id
+    and when it started (real clock)."""
+
+    run_id: str
+    viseca_run_id: str | None
+    started_at: datetime
+
+
+def record_fields(record: RecordRun | None) -> dict[str, Any]:
+    """``ReplayStatus``'s source fields for a replay of ``record`` (None: of the pack)."""
+    if record is None:
+        return {"source": "pack"}
+    return {
+        "source": "record",
+        "record_run_id": record.viseca_run_id or record.run_id,
+        "record_started_at": record.started_at,
+    }
+
+
 @dataclass
 class ReplayState:
     run_id: str
@@ -80,6 +102,7 @@ class ReplayState:
     decided: list[RunDecision] = field(default_factory=list)
     task: asyncio.Task[None] | None = None
     ctx: PipelineContext | None = None
+    record: RecordRun | None = None
 
     def status(self) -> api.ReplayStatus:
         return api.ReplayStatus(
@@ -95,6 +118,7 @@ class ReplayState:
             customer_id=self.customer_id,
             mandate_id=self.policy.mandate_id,
             policy_source=self.policy_source,
+            **record_fields(self.record),
         )
 
 
@@ -155,8 +179,10 @@ class OfflineRunner:
         signals_enabled: bool,
         speed_ms: int | None,
         policy_source: Literal["card", "revoked", "scenario"] | None = None,
+        record: RecordRun | None = None,
     ) -> api.ReplayStatus:
-        """Stop the running replay (its pending step-ups keep their windows) and start anew."""
+        """Stop the running replay (its pending step-ups keep their windows) and start anew.
+        ``record``: the live run whose stored events ``events`` are (a replay from record)."""
         await self._stop_replay()
         state = ReplayState(
             run_id=f"replay-{secrets.token_hex(6)}",
@@ -168,6 +194,7 @@ class OfflineRunner:
             events=events,
             speed_ms=DEFAULT_SPEED_MS if speed_ms is None else speed_ms,
             started_at=self._now(),
+            record=record,
         )
         state.next_at = state.started_at
         await asyncio.to_thread(self._save_run, state)
@@ -289,6 +316,7 @@ class OfflineRunner:
                     finished_at=self._now() if done or error else None,
                     worker_last_poll_at=None,
                     last_error=error,
+                    record_run_id=state.record.run_id if state.record else None,
                 )
             )
 

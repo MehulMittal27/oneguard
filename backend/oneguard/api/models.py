@@ -357,11 +357,14 @@ class ReplayStatus(ApiModel):
     the replay decides by; ``policy_source``: ``card`` when that is the card's active policy,
     ``revoked`` when it is the card's last policy, revoked (every purchase declines),
     ``scenario`` when the card never had one and the scenario's instruction was compiled for
-    this replay only."""
+    this replay only. ``source``: what it replays, the local pack's purchases or a live
+    run's stored events (a replay from record); for the latter ``record_run_id`` (the
+    platform's run id) and ``record_started_at`` (real clock) name that run."""
 
-    _omit_if_none = frozenset(
-        {"ledger_run_id", "started_at", "decided", "customer_id", "customer_name", "mandate_id", "policy_source"}
-    )
+    _omit_if_none = frozenset({
+        "ledger_run_id", "started_at", "decided", "customer_id", "customer_name", "mandate_id", "policy_source",
+        "record_run_id", "record_started_at",
+    })
 
     scenario_id: str
     card_id: str
@@ -376,6 +379,9 @@ class ReplayStatus(ApiModel):
     customer_name: str | None = None
     mandate_id: str | None = None
     policy_source: Literal["card", "revoked", "scenario"] | None = None
+    source: Literal["pack", "record"] = "pack"
+    record_run_id: str | None = None
+    record_started_at: Timestamp | None = None
 
 
 class LiveRun(ApiModel):
@@ -429,7 +435,9 @@ class Scenario(ApiModel):
 
 class ScenarioSummary(ApiModel):
     """D9: one scenario of the store's catalogue with the customer and card it runs on
-    (null until something names its card) and its purchase count (``event_count``)."""
+    (null until something names its card) and its purchase count (``event_count``).
+    ``replay_source``: what D2 replays for it, the local pack's purchases, the stored
+    events of its newest live run (``record``), or nothing yet (null: not run yet)."""
 
     scenario_id: str
     name: str
@@ -438,6 +446,7 @@ class ScenarioSummary(ApiModel):
     customer_id: str | None
     customer_name: str | None
     card_id: str | None
+    replay_source: Literal["pack", "record"] | None
 
 
 class LedgerSnapshotEntry(ApiModel):

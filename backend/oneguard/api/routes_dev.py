@@ -5,7 +5,9 @@ rule 3): which customer and card a scenario runs on, and its events. D1/D2 repla
 data pack offline through the same engine and ledger as live runs; D3/D4 start and
 follow a Viseca run; D5 switches the models off or on; D6 shows the ledger itself.
 
-D2 replays only what the local pack has purchases for. D3 accepts any scenario in the
+D2 replays the local pack's purchases for a pack scenario; any other catalogued scenario
+it replays from record (the stored events of its newest live run, never a platform call),
+or refuses as not run yet. D3 accepts any scenario in the
 store's catalogue, which the worker syncs from ``/v1/reference-data`` at start, so the
 scenarios Viseca serves (a judging pack the local ``data/`` lacks) can be run on any
 card in the store; a scenario whose card is known (the pack's, or one the platform named:
@@ -33,7 +35,7 @@ from sqlalchemy.orm import Session
 from oneguard.api import models as api
 from oneguard.api import policies, queries
 from oneguard.api.errors import ApiError, not_found
-from oneguard.api.offline import live_ids
+from oneguard.api.offline import RecordRun, live_ids, record_fields
 from oneguard.api.routes_customer import (
     reissue_passport,
     reply,
@@ -45,7 +47,7 @@ from oneguard.engine.ledger import StoreLedger
 from oneguard.engine.ledger_base import LedgerEntry
 from oneguard.engine.types import CompiledDraft, Policy
 from oneguard.passport import devices as device_store
-from oneguard.replay.events import Pack, build_events
+from oneguard.replay.events import Pack, build_events, recorded_events
 from oneguard.store.db import session
 from oneguard.store.schema import Run, ScenarioCatalogue
 from oneguard.store.seed import ENV_VAR
@@ -142,6 +144,21 @@ async def _replay_named(s: Services, status: api.ReplayStatus) -> api.ReplayStat
     return status.model_copy(update={"customer_id": customer_id, "customer_name": names.get(customer_id)})
 
 
+async def _instruction(s: Services, scenario_id: str) -> str:
+    """The scenario's cardholder instruction: the pack's, else the served catalogue's."""
+    if scenario_id in pack().scenarios:
+        return pack().scenarios[scenario_id]["cardholder_instruction"]
+    row = await s.db(_catalogue_row, s.db_engine, scenario_id)
+    if row is None:
+        raise not_found(f"No scenario {scenario_id}.")
+    return row.cardholder_instruction
+
+
+def _catalogue_row(db: Engine, scenario_id: str) -> ScenarioCatalogue | None:
+    with session(db) as s:
+        return s.get(ScenarioCatalogue, scenario_id)
+
+
 async def _replay_policy(s: Services, scenario_id: str, card_id: str) -> tuple[Policy, str, ReplaySource]:
     """The card's own policy (the customer's words and checks): its active one, else the
     one it had last, revoked, under which every purchase declines at step 1. Only a card
@@ -153,7 +170,7 @@ async def _replay_policy(s: Services, scenario_id: str, card_id: str) -> tuple[P
         rules, flags = policies.load_rules(row.rules, row.checks)
         policy = policies.policy_of(row.mandate_id, row.status, row.instruction, rules, flags, row.uncertainty_policy)
         return policy, row.viseca_mandate_id or REPLAY_MANDATE, "card" if row.status == "active" else "revoked"
-    instruction = pack().scenarios[scenario_id]["cardholder_instruction"]
+    instruction = await _instruction(s, scenario_id)
     compile_instruction = s.functions["compile_instruction"]
     try:
         draft: CompiledDraft = await asyncio.wait_for(
@@ -173,16 +190,48 @@ async def _replay_policy(s: Services, scenario_id: str, card_id: str) -> tuple[P
     return policy, REPLAY_MANDATE, "scenario"
 
 
+async def _record(s: Services, scenario_id: str, card_id: str) -> tuple[str, RecordRun]:
+    """D2 for a scenario the pack has no purchases for: (customer id, the live run to
+    replay from record). 404 unknown scenario or not run yet, 422 another card."""
+    if not await s.db(_catalogued, s.db_engine, scenario_id):
+        raise not_found(f"No scenario {scenario_id}.")
+    row = await s.db(queries.record_run, s.db_engine, scenario_id)
+    if row is None:
+        raise not_found(f"Scenario {scenario_id} has not run yet: no stored events to replay.")
+    if row.card_id != card_id:
+        raise ApiError(422, "validation", f"Scenario {scenario_id} ran on card {row.card_id}, not {card_id}.")
+    customer_id = await s.db(queries.card_customer, s.db_engine, card_id)
+    if customer_id is None:
+        raise not_found(f"No card {card_id}.")
+    return customer_id, RecordRun(row.run_id, row.viseca_run_id, row.started_at)
+
+
 @router.post("/replay/restart", response_model=api.ReplayStatus)
 async def replay_restart(body: api.ReplayRestartRequest, request: Request) -> JSONResponse:
-    """D2: replay a scenario's purchases offline, ``speed_ms`` apart."""
+    """D2: replay a scenario's purchases offline, ``speed_ms`` apart.
+
+    A scenario of the local pack replays the pack's purchases. Any other catalogued
+    scenario replays from record: the stored events (``events_raw``) of its newest live
+    run, verbatim but for fresh ids, through the current engine and policy. Nothing is
+    fetched from or posted to the platform: step-ups are answered on the phone (C8,
+    closed locally) or expire (Q2)."""
     s = services(request)
-    customer_id, card_id = _scenario(body.scenario_id, body.card_id)
+    record: RecordRun | None = None
+    if body.scenario_id in pack().scenarios:
+        customer_id, card_id = _scenario(body.scenario_id, body.card_id)
+    else:
+        card_id = body.card_id
+        customer_id, record = await _record(s, body.scenario_id, card_id)
     policy, platform_mandate, source = await _replay_policy(s, body.scenario_id, card_id)
-    sources = [row["authorization_id"] for row in pack().attempts_for(body.scenario_id)]
-    events = build_events(
-        pack(), body.scenario_id, mandate_id=platform_mandate, live_id=live_ids(sources).__getitem__
-    )
+    if record is None:
+        sources = [row["authorization_id"] for row in pack().attempts_for(body.scenario_id)]
+        events = build_events(
+            pack(), body.scenario_id, mandate_id=platform_mandate, live_id=live_ids(sources).__getitem__
+        )
+    else:
+        stored = await s.db(queries.stored_events, s.db_engine, record.run_id)
+        ids = live_ids([e["authorization"]["authorization_id"] for e in stored])
+        events = recorded_events(stored, mandate_id=platform_mandate, live_id=ids.__getitem__)
     models = s.replay_models()
     status = await s.offline.restart(
         scenario_id=body.scenario_id,
@@ -195,6 +244,7 @@ async def replay_restart(body: api.ReplayRestartRequest, request: Request) -> JS
         provider=s.decision_provider(models),
         signals_enabled=models,
         speed_ms=body.speed_ms,
+        record=record,
     )
     return reply(await _replay_named(s, status))
 
@@ -412,6 +462,7 @@ async def current_run(request: Request) -> JSONResponse:
         decided=stored.decided,
         mandate_id=stored.mandate_id,
         policy_source=await _stored_replay_source(s, stored),
+        **record_fields(await _stored_record(s, stored.record_run_id)),
     )
     return reply(await _replay_named(s, status))
 
@@ -427,6 +478,12 @@ async def _stored_replay_source(s: Services, row: Run) -> ReplaySource | None:
         return None
     revoked = mandate.status != "active" and (mandate.revoked_at is None or mandate.revoked_at <= row.started_at)
     return "revoked" if revoked else "card"
+
+
+async def _stored_record(s: Services, run_id: str | None) -> RecordRun | None:
+    """The live run a stored replay replayed from record, while the store still has it."""
+    row = await s.db(queries.run_row, s.db_engine, run_id) if run_id else None
+    return RecordRun(row.run_id, row.viseca_run_id, row.started_at) if row is not None else None
 
 
 @router.get("/runs/{run_id}", response_model=api.LiveRun)
@@ -500,6 +557,7 @@ async def scenario_summaries(request: Request) -> JSONResponse:
     catalogue = await s.db(queries.scenario_catalogue, s.db_engine)
     bound = {b.scenario_id: (customer, b.card_id) for customer, bs in (await s.bindings()).items() for b in bs}
     names = await s.db(queries.customer_names, s.db_engine, [c for c, _ in bound.values()])
+    recorded = await s.db(queries.recorded_scenarios, s.db_engine)
     rows = []
     for row in catalogue:
         customer_id, card_id = bound.get(row.scenario_id, (None, None))
@@ -512,10 +570,18 @@ async def scenario_summaries(request: Request) -> JSONResponse:
                 customer_id=customer_id,
                 customer_name=names.get(customer_id, customer_id) if customer_id else None,
                 card_id=card_id,
+                replay_source=_replay_source(row.scenario_id, recorded),
             )
         )
     rows.sort(key=lambda r: (r.customer_id is None, r.customer_name or "", r.customer_id or "", r.scenario_id))
     return reply(api.ScenarioSummariesResponse(scenarios=rows))
+
+
+def _replay_source(scenario_id: str, recorded: set[str]) -> str | None:
+    """What D2 replays for the scenario (``ScenarioSummary.replay_source``)."""
+    if scenario_id in pack().scenarios:
+        return "pack"
+    return "record" if scenario_id in recorded else None
 
 
 # D5 -------------------------------------------------------------------------------------

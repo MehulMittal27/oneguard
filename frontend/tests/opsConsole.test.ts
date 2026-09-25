@@ -16,13 +16,17 @@ import {
   healthChips,
   judgingRunBlocked,
   judgingRunGuard,
+  lastRunLine,
   liveRunIds,
   outcomeBadge,
   hasReceipt,
   passportSummary,
   readVerification,
+  replayGuard,
   runDecisions,
+  runTitle,
   scenarioOptionLabel,
+  scenarioSignIn,
   signInLine,
   wouldApproveIf,
 } from '../src/lib/opsConsole.ts'
@@ -408,4 +412,75 @@ test('the health table shows every key of /healthz, nested keys joined with dots
     ],
   )
   assert.deepEqual(flattenHealth(null), [])
+})
+
+function summary(fields: Partial<ScenarioSummary>): ScenarioSummary {
+  return {
+    scenario_id: 'SCEN0101',
+    name: 'Groceries',
+    event_count: 3,
+    instruction: 'Buy groceries.',
+    customer_id: 'CU1217',
+    customer_name: 'Omar Chen',
+    card_id: 'CA1331',
+    ...fields,
+  }
+}
+
+test('the sign-in line follows the selected scenario; the last run is its own line', () => {
+  assert.equal(scenarioSignIn(summary({})), 'Sign in as Omar Chen (CU1217, card CA1331)')
+  assert.equal(scenarioSignIn(summary({ customer_name: null })), 'Sign in as CU1217 (CU1217, card CA1331)')
+  assert.equal(scenarioSignIn(summary({ customer_id: null, customer_name: null, card_id: null })), null)
+  assert.equal(scenarioSignIn(null), null)
+
+  const replay = consoleRun({
+    kind: 'replay',
+    run: {
+      scenario_id: 'SCEN0000', card_id: 'CA0001', delivered: 1, total: 1, running: false, next_at: null,
+      ledger_run_id: 'replay-a', customer_id: 'CU0001', customer_name: 'Sofia Keller',
+    },
+  })!
+  assert.equal(lastRunLine(replay), 'Last run: Replay · SCEN0000 · Sofia Keller (CU0001, card CA0001) · done')
+  assert.equal(lastRunLine({ ...replay, customerId: null, customerName: null }), 'Last run: Replay · SCEN0000 · card CA0001 · done')
+})
+
+test('a replay from record is marked as one, and names the live run it replays', () => {
+  const fromRecord = consoleRun({
+    kind: 'replay',
+    run: {
+      scenario_id: 'SCEN0101', card_id: 'CA1331', delivered: 1, total: 3, running: true, next_at: null,
+      ledger_run_id: 'replay-b', customer_id: 'CU1217', customer_name: 'Omar Chen',
+      source: 'record', record_run_id: 'run_42', record_started_at: '2026-09-25T10:00:00Z',
+    },
+  })!
+  assert.deepEqual(fromRecord.fromRecord, { runId: 'run_42', startedAt: '2026-09-25T10:00:00Z' })
+  assert.equal(fromRecord.policy, null) // an older backend: no policy source
+  const withPolicy = consoleRun({
+    kind: 'replay',
+    run: {
+      scenario_id: 'SCEN0101', card_id: 'CA1331', delivered: 0, total: 3, running: true, next_at: null,
+      source: 'record', record_run_id: 'run_42', policy_source: 'card', mandate_id: 'mnd_1',
+    },
+  })!
+  assert.deepEqual([runTitle(withPolicy), withPolicy.policy], ['Replay from record', "the card's active policy"])
+  assert.equal(runTitle(fromRecord), 'Replay from record')
+  assert.equal(lastRunLine(fromRecord), 'Last run: Replay from record · SCEN0101 · Omar Chen (CU1217, card CA1331) · running')
+
+  const pack = consoleRun({
+    kind: 'replay',
+    run: { scenario_id: 'SCEN0000', card_id: 'CA0001', delivered: 0, total: 1, running: true, next_at: null, source: 'pack' },
+  })!
+  assert.equal(pack.fromRecord, null)
+  assert.equal(runTitle(pack), 'Replay')
+  assert.equal(runTitle({ kind: 'live', fromRecord: null }), 'Judging run')
+})
+
+test('D2 replays the pack, a served scenario from record, or says it has not run yet', () => {
+  assert.deepEqual(replayGuard(summary({ replay_source: 'pack' })), { blocked: null, note: null })
+  assert.deepEqual(replayGuard(summary({})), { blocked: null, note: null }) // an older backend: D2 says
+  assert.deepEqual(replayGuard(null), { blocked: null, note: null })
+  assert.equal(replayGuard(summary({ replay_source: null })).blocked, 'Not run yet: no stored events to replay.')
+  const record = replayGuard(summary({ replay_source: 'record' }))
+  assert.equal(record.blocked, null)
+  assert.match(record.note ?? '', /^Replay from record: .*Nothing is sent to the platform\.$/)
 })
