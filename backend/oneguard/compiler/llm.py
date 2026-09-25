@@ -44,6 +44,7 @@ from oneguard.compiler.parser import (
     each_is_per_purchase,
     evening_window,
     excluded_item_categories,
+    is_generic_item,
     is_product_question,
     per_item_amount,
     period_cap,
@@ -572,6 +573,9 @@ def read_with_llm(
                     for split in _split_exclusions(raw, instruction)]
 
     requested = (out["requested_item"] or "").strip() or None
+    generic = is_generic_item(requested)
+    if generic:  # "ordinary grocery item" names no product: no requested item, as the parser reads it
+        requested = None
     specs: list[RuleSpec] = []
     # The product question is the parser's (below), asked for the requested item only.
     questions = [q.strip() for q in out["open_questions"]
@@ -582,6 +586,11 @@ def read_with_llm(
             specs.append(spec)
         if question:
             questions.append(question)
+    if generic:
+        # "one" counted the generic item only, and the parser reads no count there; a count of
+        # two or more stays and, with no requested item, counts the cart, as the parser's does.
+        specs = [s for s in specs if not (s.field in ("cart.quantity", "items[].quantity")
+                                          and s.operator in ("=", "<=") and s.value == 1)]
     # An hour the customer did not write in digits is inferred: the parser's evening window,
     # never the model's own guess, so both paths read "weeknight dinners" the same.
     specs = [s for s in specs if s.field != HOUR_FIELD or re.search(r"\d", s.words)]

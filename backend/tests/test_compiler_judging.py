@@ -202,9 +202,9 @@ def test_the_recorded_response_ships_llm(entry, history):
     scenario, instruction = entry["scenario"], SERVED[entry["scenario"]]
     draft = compile_instruction(instruction, history, "", Scripted(entry["response"]), today=TODAY)
     assert draft.compiler == "llm"
-    # The parser's one-item reading; SCEN0101's model also names "ordinary grocery item" (one),
-    # where the parser reads only the groceries type (the requested_item variance noted in the file).
-    assert draft.single_item is (scenario == "SCEN0101" or EXPECTED[scenario].get("single", False))
+    # The parser's one-item reading; SCEN0101's model also names "ordinary grocery item", which
+    # names no product, so the LLM path drops it as the parser does (test_generic_requested_item).
+    assert draft.single_item is EXPECTED[scenario].get("single", False)
     floor = parse(instruction, history, "", TODAY)
     shipped = floor.model_copy(update={"rules": draft.rules, "requested_item": draft.requested_item,
                                        "nothing_extra": draft.nothing_extra,
