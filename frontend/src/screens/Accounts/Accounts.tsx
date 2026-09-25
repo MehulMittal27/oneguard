@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { getAccounts } from '../../api/accounts'
 import type { Account } from '../../api/types'
+import { BottomSheet } from '../../components/BottomSheet'
 import { BackChevronIcon, PlusIcon } from '../../components/icons/lucide'
 import { NetworkState } from '../../components/NetworkState'
 import { limitsFromMandate } from '../../lib/spend'
@@ -52,6 +53,8 @@ export function Accounts({
   const [accountsStatus, setAccountsStatus] = useState<Status>('loading')
   const [accounts, setAccounts] = useState<Account[]>([])
   const [attempt, setAttempt] = useState(0)
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null)
+  const [accountPickerOpen, setAccountPickerOpen] = useState(false)
 
   useEffect(() => {
     if (!signedInAs) return
@@ -60,6 +63,7 @@ export function Accounts({
       .then((result) => {
         if (cancelled) return
         setAccounts(result)
+        setSelectedAccountId((selected) => selected ?? result[0]?.account_id ?? null)
         setAccountsStatus('ready')
       })
       .catch(() => {
@@ -86,7 +90,9 @@ export function Accounts({
       <div>
         <h1 className="font-display text-[30px] font-bold text-ink">Accounts</h1>
         <p className="text-[14px] leading-[1.4] text-ink-muted">
-          Policies belong to a card, not to you as a whole. Each card is guarded on its own.
+          {accounts.length > 1
+            ? 'Choose an account, then a card. Policies belong to a card.'
+            : 'Policies belong to a card, not to you as a whole. Each card is guarded on its own.'}
         </p>
       </div>
 
@@ -114,129 +120,129 @@ export function Accounts({
         </NetworkState>
       )}
 
-      {status === 'ready' &&
-        accounts.map((account) => (
-          <div key={account.account_id} className="rounded-card bg-surface p-5">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="font-display text-[19px] font-bold text-ink">
-                  {humanise(account.account_purpose)}
-                </p>
-                {/* "N of M cards guarded" is the fact this screen exists to
-                    tell: a policy protects one card, so an account is only
-                    partly covered until every card on it has one. */}
+      {status === 'ready' && selectedAccountId && (() => {
+        const selectedAccount = accounts.find((account) => account.account_id === selectedAccountId) ?? accounts[0]
+        if (!selectedAccount) return null
+        const selectedIndex = accounts.findIndex((account) => account.account_id === selectedAccount.account_id)
+        const guardedAccountCount = accounts.filter((account) =>
+          account.cards.some((card) => policiesByCard[card.card_id]?.status === 'active'),
+        ).length
+        const otherUnprotected = accounts.find((account) =>
+          account.account_id !== selectedAccount.account_id &&
+          !account.cards.some((card) => policiesByCard[card.card_id]?.status === 'active'),
+        )
+        return (
+          <>
+            {accounts.length > 1 && (
+              <button
+                type="button"
+                onClick={() => setAccountPickerOpen(true)}
+                className="flex min-h-[72px] w-full flex-col items-start justify-center gap-1 rounded-card border border-hairline bg-surface px-5 py-4 text-left"
+              >
+                <span className="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">Account · {selectedIndex + 1} of {accounts.length}</span>
+                <span className="flex w-full items-center justify-between gap-3">
+                  <span className="truncate text-[15px] font-medium text-ink">{humanise(selectedAccount.account_purpose)} · {selectedAccount.account_type.replace(/_/g, ' ')} · {selectedAccount.account_id}</span>
+                  <span className="shrink-0 text-[13px] font-semibold text-ink-muted underline underline-offset-2">Change</span>
+                </span>
+              </button>
+            )}
+
+            <div className="rounded-card bg-surface p-5">
+              <div className="flex w-full items-start justify-between gap-3">
+                <div className="min-w-0">
+                <p className="font-display text-[19px] font-bold text-ink">{humanise(selectedAccount.account_purpose)}</p>
                 <p className="mt-0.5 text-[13px] text-ink-muted">
-                  {humanise(account.account_type)} · {account.account_id} ·{' '}
-                  {account.cards.filter((c) => policiesByCard[c.card_id]?.status === 'active').length}{' '}
-                  of {account.cards.length} {account.cards.length === 1 ? 'card' : 'cards'} guarded
+                  {humanise(selectedAccount.account_type)} · {selectedAccount.account_id} ·{' '}
+                  {selectedAccount.cards.filter((card) => policiesByCard[card.card_id]?.status === 'active').length} of {selectedAccount.cards.length} {selectedAccount.cards.length === 1 ? 'card' : 'cards'} guarded
                 </p>
+                </div>
+                {accounts.length > 1 && selectedAccount.status === 'active' && (
+                  <span className="shrink-0 rounded-pill bg-approved-tint px-2.5 py-1 text-[12px] font-semibold text-approved">Active</span>
+                )}
               </div>
-              <span className="shrink-0 rounded-pill bg-approved-tint px-2.5 py-1 text-[12px] font-semibold text-approved">
-                Active
-              </span>
+
+              <div className="mt-4 flex flex-col gap-2">
+                <p className="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">Cards on this account</p>
+                {selectedAccount.cards.map((card) => {
+                  const mandate = policiesByCard[card.card_id]
+                  const isActive = mandate?.status === 'active'
+                  const isRevoked = mandate?.status === 'revoked'
+                  const limitCount = mandate
+                    ? [limitsFromMandate(mandate).perOrder, limitsFromMandate(mandate).period].filter(Boolean).length
+                    : 0
+                  return (
+                    <button
+                      key={card.card_id}
+                      type="button"
+                      onClick={() => (isActive || isRevoked ? onViewCard(card.card_id) : onAddPolicy(card.card_id))}
+                      className={`flex min-h-[72px] items-center gap-3 rounded-[18px] p-3 text-left ${isActive ? 'border-2 border-ink' : 'border-2 border-dashed border-border-dashed'}`}
+                    >
+                      <CardChip guarded={isActive} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[15px] font-semibold text-balance text-ink">{humanise(card.card_purpose)} · {card.card_id}</span>
+                        <span className="block text-[13px] leading-[1.35] text-ink-muted">
+                          {isActive
+                            ? `${humanise(card.card_type)} · ${limitCount} ${limitCount === 1 ? 'limit' : 'limits'}`
+                            : isRevoked
+                              ? 'Policy revoked.'
+                              : 'No policy is set for this card.'}
+                        </span>
+                      </span>
+                      {isActive ? (
+                        <span className="flex shrink-0 items-center gap-1">
+                          <span className="rounded-pill bg-approved-tint px-2.5 py-1 text-[12px] font-semibold text-approved">Policy active</span>
+                          <span className="rotate-180 text-ink-muted"><BackChevronIcon size={18} strokeWidth={2} /></span>
+                        </span>
+                      ) : (
+                        <span className="flex shrink-0 items-center gap-1.5">
+                          <span className="rounded-pill bg-surface-expired px-2.5 py-1 text-[12px] font-semibold text-ink-muted">{isRevoked ? 'Policy revoked' : 'No policy'}</span>
+                          {!isRevoked && <span className="flex items-center gap-1 text-[13px] font-semibold text-ink"><PlusIcon size={14} strokeWidth={2.4} /> Add</span>}
+                        </span>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
             </div>
 
-            <div className="mt-4 flex flex-col gap-2">
-              <p className="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
-                Cards on this account
+            {otherUnprotected && (
+              <p className="rounded-row bg-surface-active px-5 py-4 text-[13px] leading-[1.45] text-ink-soft">
+                Your other account, {humanise(otherUnprotected.account_purpose)} ({otherUnprotected.account_id}), has no policy. Switch account above to add one.
               </p>
-              {account.cards.map((card) => {
-                // A revoked mandate still exists in state (D-044) — route
-                // to Card detail either way so its revoked/checks history
-                // is reachable, not straight to "add a policy".
-                const mandate = policiesByCard[card.card_id]
-                const isActive = mandate?.status === 'active'
-                const isRevoked = mandate?.status === 'revoked'
-                const limitCount = mandate
-                  ? [limitsFromMandate(mandate).perOrder, limitsFromMandate(mandate).period].filter(
-                      Boolean,
-                    ).length
-                  : 0
-                return (
-                  <button
-                    key={card.card_id}
-                    type="button"
-                    onClick={() => (isActive ? onViewCard(card.card_id) : onAddPolicy(card.card_id))}
-                    className={`flex min-h-[72px] items-center gap-3 rounded-[18px] p-3 text-left ${
-                      isActive
-                        ? 'border-2 border-ink'
-                        : 'border-2 border-dashed border-border-dashed'
-                    }`}
-                  >
-                    <CardChip guarded={isActive} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-[15px] font-semibold text-balance text-ink">
-                        {humanise(card.card_purpose)} · {card.card_id}
-                      </span>
-                      <span className="block text-[13px] leading-[1.35] text-ink-muted">
-                        {isActive
-                          ? `${humanise(card.card_type)} · ${limitCount} ${limitCount === 1 ? 'limit' : 'limits'}`
-                          : isRevoked
-                            ? 'Policy revoked. The agent can’t spend here.'
-                            : 'The agent can’t spend here.'}
-                      </span>
-                    </span>
-                    {isActive ? (
-                      <span className="flex shrink-0 items-center gap-1">
-                        <span className="rounded-pill bg-approved-tint px-2.5 py-1 text-[12px] font-semibold text-approved">
-                          Policy active
-                        </span>
-                        {/* A real drill-in to Card detail — the rotated back
-                            chevron reads correctly as "view more" here. */}
-                        <span className="rotate-180 text-ink-muted">
-                          <BackChevronIcon size={18} strokeWidth={2} />
-                        </span>
-                      </span>
-                    ) : (
-                      // Neither a no-policy nor a revoked card is a detail view
-                      // to browse — both need a new policy next, so both say
-                      // that instead of a chevron (D-051, D-052). One row, one
-                      // pill, one way forward: a revoked card used to show its
-                      // status and nothing to do about it, so writing a new
-                      // policy meant going through Card detail first.
-                      <span className="flex shrink-0 items-center gap-1.5">
-                        <span
-                          className={`rounded-pill px-2.5 py-1 text-[12px] font-semibold ${
-                            isRevoked
-                              ? // Gray, not stopped-red (D-052) — a revoked policy
-                                // isn't a declined purchase, it's just not active.
-                                'bg-surface-expired text-ink-muted'
-                              : 'bg-asked-tint text-asked'
-                          }`}
-                        >
-                          {isRevoked ? 'Policy revoked' : 'No policy'}
-                        </span>
-                        <span className="flex items-center gap-1 text-[13px] font-semibold text-ink">
-                          <PlusIcon size={14} strokeWidth={2.4} />
-                          Add
-                        </span>
-                      </span>
-                    )}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        ))}
+            )}
+            {accounts.length > 1 && <p className="text-center text-[13px] text-ink-muted">{guardedAccountCount} of {accounts.length} accounts have a guarded card.</p>}
 
-      {/* A card with no policy is not "unprotected", it is shut. Without this the
-          dashed rows read as a setup step someone forgot. */}
-      {status === 'ready' && (
-        <div className="flex flex-col gap-1 rounded-row bg-surface-active px-5 py-4">
-          <p className="text-[14px] font-semibold text-ink">
-            A card without a policy is closed to the agent
-          </p>
-          <p className="text-[13px] leading-[1.45] text-ink-soft">
-            Nothing your agent proposes can be paid from it until you write and confirm a policy
-            for that card.
-          </p>
-        </div>
-      )}
-
-      <p className="text-[13px] text-ink-muted">
-        Bank limits on your accounts and cards are separate from your own spending policy — your
-        policy is always the stricter of the two.
-      </p>
+            {accountPickerOpen && (
+              <BottomSheet
+                title="Choose an account"
+                onClose={() => setAccountPickerOpen(false)}
+                footer={<button type="button" onClick={() => setAccountPickerOpen(false)} className="h-14 w-full rounded-row bg-ink text-[16px] font-semibold text-on-ink">Done</button>}
+              >
+                <div className="flex flex-col gap-2">
+                  {accounts.map((account) => {
+                    const guarded = account.cards.filter((card) => policiesByCard[card.card_id]?.status === 'active').length
+                    const selected = account.account_id === selectedAccount.account_id
+                    return (
+                      <button
+                        key={account.account_id}
+                        type="button"
+                        aria-pressed={selected}
+                        onClick={() => setSelectedAccountId(account.account_id)}
+                        className={`flex min-h-16 flex-col items-start justify-center rounded-row border-2 px-4 py-3 text-left ${selected ? 'border-ink bg-surface-sunken' : 'border-hairline bg-surface'}`}
+                      >
+                        <span className="text-[15px] font-semibold text-ink">{humanise(account.account_purpose)}</span>
+                        <span className="text-[13px] text-ink-muted">{humanise(account.account_type)} · {account.account_id}</span>
+                        <span className="text-[12px] text-ink-muted">{guarded} of {account.cards.length} {account.cards.length === 1 ? 'card' : 'cards'} guarded{guarded === 0 ? ' · agent blocked' : ''}</span>
+                      </button>
+                    )
+                  })}
+                  <p className="py-2 text-[13px] leading-[1.45] text-ink-muted">Each card has its own policy. Switching accounts changes what you see here, not what your agent may do.</p>
+                </div>
+              </BottomSheet>
+            )}
+          </>
+        )
+      })()}
     </div>
   )
 }

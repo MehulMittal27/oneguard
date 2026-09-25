@@ -13,17 +13,9 @@ export function NewPolicyReading({
     <NewPolicyShell
       step={1}
       stepLabel="Describe"
-      title="Tell us what your agent may buy"
+      title="What may your agent do?"
       onCancel={onCancel}
-      footer={
-        <button
-          type="button"
-          onClick={onCancel}
-          className="min-h-11 text-[15px] font-semibold text-ink-muted"
-        >
-          Cancel
-        </button>
-      }
+      footer={null}
     >
       <div
         className="flex flex-col items-center gap-3 rounded-card bg-surface p-8 text-center"

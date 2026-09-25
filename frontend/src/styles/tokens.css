@@ -8,7 +8,7 @@
  * Viseca "one" app screenshots (home/analytics, a card screen, a 3-D Secure
  * confirmation) so this UI reads as the challenge partner's app: white surfaces
  * throughout, near-black as the one ink/primary colour for text and buttons, and
- * one sparing blue accent. That replaces this file's earlier warm-cream ground,
+ * one sparing orange accent. That replaces this file's earlier warm-cream ground,
  * navy ink and purple accent. Token NAMES are unchanged, so this was a
  * values-only swap; the two structural consequences (a white overview hero and a
  * tab bar with no pill) live in the components, not here.
@@ -16,8 +16,7 @@
  * This file is the source of truth for the values — nothing external is fetched
  * or mirrored.
  *
- * The blue (#2f6fed family) is a visual estimate from those screenshots, not a
- * confirmed Viseca brand hex — replace it if the real one becomes available.
+ * The orange cord accent follows the supplied mobile UI artifact (#E0561B / #F2A73B).
  */
 :root {
   /* Color */
@@ -65,8 +64,8 @@
   --leash-fill-on-ink: #f2f5f6;
   --leash-limit: #2f6fed;
   --leash-limit-on-ink: #6fa8ff;
-  --cord-accent: #2f6fed;
-  --cord-accent-on-ink: #6fa8ff;
+  --cord-accent: #e0561b;
+  --cord-accent-on-ink: #f2a73b;
   /* Dedicated to CountdownBar — kept separate from asked-track/asked-dot
      (the "uncertain" decision-color family) so retuning the ticking-clock
      color never implies a change to the uncertain/asked semantic. */
@@ -99,11 +98,11 @@
   --corner-meter: 7px;
   --corner-quote: 10px;
   --corner-tile: 12px;
-  --corner-button: 14px;
-  --corner-row: 16px;
-  --corner-card: 20px;
-  --corner-hero: 24px;
-  --corner-sheet: 28px;
+  --corner-button: 8px;
+  --corner-row: 10px;
+  --corner-card: 12px;
+  --corner-hero: 14px;
+  --corner-sheet: 16px;
   --corner-pill: 999px;
 
   /* Type faces (DESIGN.md §Typography). The recalibrated Ink and signal theme

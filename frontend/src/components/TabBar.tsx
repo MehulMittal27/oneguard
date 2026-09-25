@@ -48,7 +48,7 @@ export function TabBar({
             */}
             <span className="flex h-[30px] w-14 items-center justify-center">
               <span className="relative inline-flex">
-                <Icon size={22} strokeWidth={1.8} filled={isActive} />
+              <Icon size={22} strokeWidth={isActive ? 2.6 : 1.8} />
                 {id === 'approvals' && approvalsCount > 0 && (
                   <span
                     aria-hidden="true"

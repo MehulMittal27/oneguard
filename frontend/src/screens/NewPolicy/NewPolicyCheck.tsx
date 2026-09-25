@@ -23,7 +23,6 @@ const UNKNOWN_EXAMPLE_OUTCOME = { label: 'Checked', className: 'text-ink-muted' 
 
 /** DESIGN.md #7: step-2 review — checks, uncertainty choice, dry run, confirm. */
 export function NewPolicyCheck({
-  cardId,
   draft,
   uncertaintyPolicy,
   onChangeUncertaintyPolicy,
@@ -33,7 +32,6 @@ export function NewPolicyCheck({
   confirming,
   error,
 }: {
-  cardId: string
   draft: PolicyDraft
   uncertaintyPolicy: 'ask' | 'decline'
   onChangeUncertaintyPolicy: (value: 'ask' | 'decline') => void
@@ -52,9 +50,8 @@ export function NewPolicyCheck({
   return (
     <NewPolicyShell
       step={2}
-      stepLabel="Review"
-      title="Here's what I understood"
-      subtitle={`For card ${cardId} only`}
+      stepLabel="Check"
+      title="Check what your agent may do"
       onCancel={onCancel}
       footer={
         <>
@@ -95,7 +92,7 @@ export function NewPolicyCheck({
           role="status"
           className="rounded-row border border-asked-border bg-asked-tint px-4 py-3 text-[13px] text-asked-ink"
         >
-          AI reading unavailable — rule-based reading used
+          AI reading unavailable — rule-based reading used.
         </div>
       )}
 
@@ -182,7 +179,10 @@ export function NewPolicyCheck({
 
       <section className="rounded-hero border border-hairline bg-surface p-5">
         <p className="text-[11px] font-semibold tracking-[0.08em] text-cord-accent uppercase">
-          Dry run on this card&apos;s history
+          Dry run on your history
+        </p>
+        <p className="mt-1 text-[13px] text-ink-muted">
+          Tried on your last {dryRun.sample_size} agent {dryRun.sample_size === 1 ? 'purchase' : 'purchases'} on this card.
         </p>
         <div className="mt-3 grid grid-cols-3 gap-3 text-center">
           <div>

@@ -1,7 +1,4 @@
-import { useState } from 'react'
-import type { Card, FormInput } from '../../api/types'
-import { CardPicker } from '../../components/CardPicker'
-import { NetworkState } from '../../components/NetworkState'
+import type { FormInput } from '../../api/types'
 import { NewPolicyForm } from './NewPolicyForm'
 import { NewPolicyShell } from './NewPolicyShell'
 
@@ -37,9 +34,6 @@ function AiSwitchVisual({ on }: { on: boolean }) {
  * my words with AI" switch rather than navigating to a different screen.
  */
 export function NewPolicyDescribe({
-  cardId,
-  cards,
-  onSelectCard,
   instruction,
   onChangeInstruction,
   form,
@@ -50,15 +44,7 @@ export function NewPolicyDescribe({
   onSubmitForm,
   onCancel,
   formError,
-  accountStatus,
-  onRetryAccounts,
 }: {
-  cardId: string
-  // Every card on the same account (D-050) — a picker only makes sense
-  // when there's more than one; an empty or single-item list falls back to
-  // today's static "only this card" display.
-  cards: Card[]
-  onSelectCard: (cardId: string) => void
   instruction: string
   onChangeInstruction: (value: string) => void
   form: FormInput
@@ -69,17 +55,12 @@ export function NewPolicyDescribe({
   onSubmitForm: () => void
   onCancel: () => void
   formError: boolean
-  accountStatus: 'loading' | 'error' | 'ready'
-  onRetryAccounts: () => void
 }) {
-  const [pickingCard, setPickingCard] = useState(false)
-
   return (
     <NewPolicyShell
       step={1}
       stepLabel="Describe"
-      title="Tell us what your agent may buy"
-      subtitle={`For card ${cardId} only`}
+      title="What may your agent do?"
       onCancel={onCancel}
       footer={
         aiOn ? (
@@ -126,33 +107,6 @@ export function NewPolicyDescribe({
         )
       }
     >
-      <section className="flex flex-col gap-3">
-        <p className="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
-          Applies to
-        </p>
-        {accountStatus === 'loading' ? (
-          <NetworkState kind="loading" label="cards" />
-        ) : accountStatus === 'error' ? (
-          <NetworkState kind="error" label="cards" onRetry={onRetryAccounts} />
-        ) : cards.length > 1 ? (
-          <button
-            type="button"
-            onClick={() => setPickingCard(true)}
-            className="flex min-h-11 items-center justify-between rounded-row border border-border-quiet bg-surface-sunken px-4 py-3 text-left"
-          >
-            <span className="text-[15px] font-medium text-ink">Card {cardId}</span>
-            <span className="text-[13px] font-semibold text-ink-muted underline underline-offset-2">
-              Change
-            </span>
-          </button>
-        ) : (
-          <div className="flex min-h-11 items-center justify-between rounded-row border border-border-quiet bg-surface-sunken px-4 py-3">
-            <span className="text-[15px] font-medium text-ink">Card {cardId}</span>
-            <span className="text-[13px] text-ink-muted">Only this card</span>
-          </div>
-        )}
-      </section>
-
       <button
         type="button"
         role="switch"
@@ -163,35 +117,38 @@ export function NewPolicyDescribe({
         <span>
           <span className="block text-[15px] font-semibold text-ink">Read my words with AI</span>
           <span className="mt-1 block text-[13px] text-ink-muted">
-            Takes a few seconds. If it takes too long, we stop and save nothing.
+            {aiOn
+              ? 'Write a sentence. AI turns it into checks on our server.'
+              : "Off: you fill in a form. It's instant and needs no AI."}
           </span>
         </span>
         <AiSwitchVisual on={aiOn} />
       </button>
 
+      {!aiOn && (
+        <p className="text-[13px] leading-[1.45] text-ink-soft">
+          Every field below becomes one of your rules, exactly as you enter it. Turn AI on to describe it in your own words instead.
+        </p>
+      )}
+
       {aiOn ? (
-        <label className="flex flex-col gap-1.5">
-          <span className="text-[13px] font-medium text-ink-soft">Your words</span>
+        <label className="flex flex-col gap-2">
+          <span className="text-[11px] font-semibold tracking-[0.09em] text-ink-muted uppercase">Your words</span>
           <textarea
             value={instruction}
             onChange={(e) => onChangeInstruction(e.target.value)}
             rows={6}
             placeholder="Buy groceries for me, up to CHF 120 per order…"
-            className="rounded-card border border-border-quiet bg-surface-sunken p-4 text-[15px] text-ink"
+            className="h-[150px] resize-none rounded-card border-2 border-ink bg-surface p-3.5 text-[15px] leading-[1.5] text-ink"
           />
+          <p className="text-[13px] leading-[1.45] text-ink-soft">
+            Takes a few seconds. If it takes too long, we stop and save nothing. Prefer instant? Turn it off and fill in a form.
+          </p>
         </label>
       ) : (
         <NewPolicyForm form={form} onChange={onChangeForm} />
       )}
 
-      {pickingCard && (
-        <CardPicker
-          cards={cards}
-          selectedCardId={cardId}
-          onSelect={onSelectCard}
-          onClose={() => setPickingCard(false)}
-        />
-      )}
     </NewPolicyShell>
   )
 }

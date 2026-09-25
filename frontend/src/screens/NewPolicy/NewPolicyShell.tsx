@@ -12,6 +12,7 @@ export function NewPolicyShell({
   title,
   subtitle,
   onCancel,
+  backLabel = 'Cancel',
   footer,
   children,
 }: {
@@ -20,6 +21,7 @@ export function NewPolicyShell({
   title: string
   subtitle?: string
   onCancel: () => void
+  backLabel?: string
   footer: ReactNode
   children: ReactNode
 }) {
@@ -32,7 +34,7 @@ export function NewPolicyShell({
           className="flex min-h-11 items-center gap-1 text-[15px] font-semibold text-ink-muted"
         >
           <BackChevronIcon size={20} strokeWidth={2} />
-          Cancel
+          {backLabel}
         </button>
 
         <div className="mt-3 flex gap-2" role="progressbar" aria-valuenow={step} aria-valuemin={1} aria-valuemax={3}>

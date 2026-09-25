@@ -1,15 +1,21 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { getAccounts } from '../../api/accounts'
 import { revokePolicy } from '../../api/policy'
+import type { Account } from '../../api/types'
 import { DecisionMark } from '../../components/DecisionMark'
 import { BackChevronIcon, CheckIcon, HelpCircleIcon } from '../../components/icons/lucide'
-import { OrderCapLeashMeter, PeriodLeashMeter } from '../../components/LeashMeter'
 import { NetworkState } from '../../components/NetworkState'
 import { RevokeSheet } from '../../components/RevokeSheet'
-import { formatShortDate } from '../../lib/datetime'
-import { limitsFromMandate, spendFromMandate } from '../../lib/spend'
 import { usePolicy } from '../../state/PolicyContext'
 import { useDecisions } from '../../state/DecisionsContext'
+import { useCustomer } from '../../state/CustomerContext'
 import { DecisionDetail } from '../DecisionDetail/DecisionDetail'
+import type { FilterId } from '../Activity/Activity'
+
+function humanise(value: string): string {
+  const text = value.replace(/_/g, ' ')
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
 
 /** DESIGN.md #6, "Card activity" — reached from Accounts, or cross-tab from a decision's "Policy" link. */
 export function CardDetail({
@@ -17,12 +23,14 @@ export function CardDetail({
   onBack,
   onGoToApprovals,
   onAddPolicy,
+  onOpenActivity,
   onGoHome,
 }: {
   cardId: string
   onBack: () => void
   onGoToApprovals: () => void
   onAddPolicy: (cardId: string) => void
+  onOpenActivity: (filter: FilterId) => void
   onGoHome: () => void
 }) {
   const {
@@ -32,8 +40,26 @@ export function CardDetail({
     revokePolicyForCard,
   } = usePolicy()
   const { decisions, status: decisionsStatus, retry: retryDecisions } = useDecisions()
+  const { signedInAs } = useCustomer()
   const [revoking, setRevoking] = useState(false)
   const [viewingId, setViewingId] = useState<string | null>(null)
+  const [account, setAccount] = useState<Account | null>(null)
+
+  useEffect(() => {
+    if (!signedInAs) return
+    let cancelled = false
+    getAccounts(signedInAs.customer_id)
+      .then((accounts) => {
+        if (cancelled) return
+        setAccount(accounts.find((candidate) => candidate.cards.some((card) => card.card_id === cardId)) ?? null)
+      })
+      .catch(() => {
+        if (!cancelled) setAccount(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [cardId, signedInAs])
 
   const mandate = policiesByCard[cardId]
   // Normally unreachable — every entry point only links here for a card
@@ -68,15 +94,13 @@ export function CardDetail({
   // A revoked mandate stays in state instead of being deleted (D-044), so
   // this screen can still show what it used to say.
   const isRevoked = mandate.status === 'revoked'
+  const cardInfo = account?.cards.find((card) => card.card_id === cardId)
 
   const cardDecisions = decisions
     .filter((d) => d.card_id === cardId)
     .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))
-  const { perOrder, period } = limitsFromMandate(mandate)
   // Absent until the backend sends it (see types.ts) — an empty list, never a guess.
   const confirmations = mandate.usage?.confirmations ?? []
-  // Ledger-first: `usage` when the engine sent it, the client sum only in mock mode.
-  const spend = period ? spendFromMandate(mandate, decisions, cardId, period.days) : null
 
   // A still-pending uncertain purchase is actionable, not just viewable —
   // route straight to where it can actually be answered.
@@ -114,17 +138,16 @@ export function CardDetail({
       </button>
 
       <div>
-        <h1 className="font-display text-[30px] font-bold text-ink">Card {cardId}</h1>
+        <h1 className="font-display text-[30px] font-bold text-ink">
+          {cardInfo ? humanise(cardInfo.card_purpose) : `Card ${cardId}`}
+        </h1>
+        <p className="text-[13px] text-ink-muted">
+          {cardId}{account ? ` · ${humanise(account.account_purpose)} account` : ''}
+        </p>
       </div>
 
       <div className="rounded-card bg-surface p-5">
         <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="font-display text-[17px] font-bold text-ink">Spending policy</p>
-            <p className="mt-0.5 text-[13px] text-ink-muted">
-              Created {formatShortDate(mandate.confirmed_at)}
-            </p>
-          </div>
           <span
             className={`shrink-0 rounded-pill px-3 py-1 text-[13px] font-medium ${
               isRevoked ? 'bg-stopped-tint text-stopped' : 'bg-approved-tint text-approved'
@@ -166,23 +189,17 @@ export function CardDetail({
               <p className="text-[15px] text-ink-soft">{check.text}</p>
             </div>
           ))}
-        </div>
-
-        {/* A revoked policy has no live limit to meter spend against. */}
-        {!isRevoked && (
-          <div className="mt-5">
-            {period ? (
-              <PeriodLeashMeter
-                limitChf={period.limitChf}
-                spentChf={spend?.spentChf ?? 0}
-                pendingChf={spend?.pendingChf ?? 0}
-                days={period.days}
-              />
-            ) : perOrder ? (
-              <OrderCapLeashMeter capChf={perOrder} decisions={cardDecisions} />
-            ) : null}
+          <div className="flex items-start gap-2">
+            <span className="text-approved"><CheckIcon size={18} strokeWidth={2.4} /></span>
+            <p className="text-[15px] text-ink-soft">
+              {mandate.uncertainty_policy === 'decline'
+                ? 'When unsure: stops the purchase.'
+                : mandate.uncertainty_policy === 'approve'
+                  ? 'When unsure: approves the purchase.'
+                  : 'When unsure: asks you, never guesses.'}
+            </p>
           </div>
-        )}
+        </div>
 
         {isRevoked ? (
           <button
@@ -199,9 +216,9 @@ export function CardDetail({
                 arrives *after* a revoke, and Appendix A keeps revoke off anything
                 in flight. */}
             <p className="mt-4 text-[13px] leading-[1.45] text-ink-muted">
-              A policy can only be tightened or revoked — loosening it means writing a new one.
-              After you revoke, anything your agent proposes next is declined; a purchase already
-              waiting for your answer is unaffected until the platform confirms it.
+              You can remove this policy at any time. Revoking declines purchases received after
+              the platform confirms the change. Anything already waiting for your answer is
+              unaffected.
             </p>
             <button
               type="button"
@@ -245,7 +262,10 @@ export function CardDetail({
       )}
 
       <div>
-        <p className="mb-3 font-display text-[20px] font-bold text-ink">Card activity</p>
+        <div className="mb-3 flex items-center justify-between">
+          <p className="font-display text-[20px] font-bold text-ink">Card activity</p>
+          <button type="button" onClick={() => onOpenActivity('all')} className="min-h-11 text-[13px] font-semibold text-ink-muted underline underline-offset-2">All activity</button>
+        </div>
         {decisionsStatus === 'loading' ? (
           <NetworkState kind="loading" label="card activity" />
         ) : decisionsStatus === 'error' ? (
@@ -260,6 +280,7 @@ export function CardDetail({
               <DecisionMark
                 key={decision.authorization_id}
                 decision={decision}
+                timestamp="day-time"
                 onClick={() => selectDecision(decision)}
               />
             ))}
