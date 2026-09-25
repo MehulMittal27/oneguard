@@ -189,6 +189,10 @@ def next_weekday(after: date, weekday: str) -> date:
 
 
 # --- Wording -------------------------------------------------------------------------
+FROM_PERIOD_LIMIT = "the period limit"
+"""``RuleSpec.value_from`` of a per-order cap derived from a period limit (``parser.period_cap``)."""
+
+
 def _limit_text(spec: RuleSpec, subject: str, tail: str) -> str:
     chf = to_chf(spec.value, spec.currency)
     bound = {"<=": "at or below", "<": "under", "=": "exactly"}[spec.operator]
@@ -217,6 +221,8 @@ def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
     if f == "authorization.billing_amount_chf" and v == LAST_PRICE_AT_SHOP:
         bound = {"=": "the same as", "<=": "at or below", "<": "under"}[op]
         text = f"Total {bound} your last payment at the same shop"
+    elif f == "authorization.billing_amount_chf" and spec.value_from == FROM_PERIOD_LIMIT:
+        text = _limit_text(spec, "Each payment", "")
     elif f == "authorization.billing_amount_chf" and spec.scope == "period":
         text = _limit_text(spec, "Total", f" across any {spec.period_days or 7} days")
     elif f == "authorization.billing_amount_chf":

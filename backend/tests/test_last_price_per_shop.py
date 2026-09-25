@@ -165,7 +165,8 @@ def _provider(path: str):
 @pytest.mark.parametrize("path", ["fallback", "llm"])
 def test_scen0136_compiles_the_price_clause_to_the_last_price_at_each_shop(path):
     """"If a price changes, ask me": C1-same on the reference, asking; no restriction no data
-    can check stands for it; the question for a per-payment limit stays (the reference is no cap)."""
+    can check stands for it. The reference is no cap; the monthly limit is (parser.period_cap), so
+    there is no question for a per-payment limit."""
     draft = compile_instruction(SERVED["SCEN0136"], _history(), CARD, _provider(path), today=date(2026, 8, 1))
     assert draft.compiler == path
     rule = next(r for r in draft.rules if r.id == "C1-same")
@@ -173,8 +174,12 @@ def test_scen0136_compiles_the_price_clause_to_the_last_price_at_each_shop(path)
         BILL, "=", LAST_PRICE_AT_SHOP, "CHF", "purchase", "ask")
     assert rule.text == "Total the same as your last payment at the same shop; ask me if it changed"
     assert not [r for r in draft.rules if r.field == "unverifiable" and "price" in str(r.value)]
-    assert draft.open_questions == ["No amount stated: what is the most one purchase may cost?"]
-    assert not lint_accepted(draft.rules, [r.id for r in draft.rules]).ok  # still needs a per-order cap
+    assert draft.open_questions == []
+    cap = next(r for r in draft.rules if r.id == "C1")
+    assert (cap.operator, cap.value, cap.scope, cap.text) == ("<", 80, "purchase",
+                                                            "Each payment under CHF 80 (from your monthly limit)")
+    assert lint_accepted(draft.rules, [r.id for r in draft.rules]).ok
+    assert not lint_accepted(draft.rules, [r.id for r in draft.rules if r.id != "C1"]).ok  # the reference is none
 
 
 @pytest.mark.parametrize("path", ["fallback", "llm"])

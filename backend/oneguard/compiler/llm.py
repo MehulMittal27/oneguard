@@ -46,6 +46,7 @@ from oneguard.compiler.parser import (
     excluded_item_categories,
     is_product_question,
     per_item_amount,
+    period_cap,
     places,
     price_change_clause,
     product_categories,
@@ -221,7 +222,7 @@ EXAMPLES: list[tuple[str, dict[str, Any]]] = [
                               value_from="last_price_at_shop", currency="CHF", scope="purchase",
                               source="inferred", on_fail="ask"),
             ],
-            "open_questions": ["No amount stated: what is the most one purchase may cost?"],
+            "open_questions": [],
         },
     ),
     (
@@ -393,6 +394,8 @@ Rules:
   The order limit for the stated nights (nights x the price per night) is added for you: write
   no rule and no question about it. A place the shop data holds ("in Munich", "in Switzerland")
   becomes a check on the shop's city or country for you.
+- A limit per period ("per month", "a week") with no per-order limit is also the most one
+  payment may cost; that per-order rule is added for you: write no rule and no question about it.
 - "If a price changes, ask me" with no single price stated (several subscriptions) ->
   authorization.billing_amount_chf "=", value_from "last_price_at_shop", value_number null,
   currency "CHF", scope "purchase", source "inferred", on_fail "ask": each payment is compared
@@ -590,6 +593,11 @@ def read_with_llm(
     # A per-night price times the stated nights is the order cap: the parser's, never the
     # model's arithmetic, and it settles the model's question about the order limit.
     if cap := stay_cap(" ".join(instruction.split()), specs):
+        specs += cap
+        questions = [q for q in questions if not ORDER_LIMIT_QUESTION.search(q)]
+    # A period limit with no per-order limit is the per-order cap as well: the parser's, and it
+    # settles the model's question about what one purchase may cost.
+    if cap := period_cap(specs):
         specs += cap
         questions = [q for q in questions if not ORDER_LIMIT_QUESTION.search(q)]
     if requested and not any(s.field == "items[].item_category" and s.operator == "in" for s in specs):

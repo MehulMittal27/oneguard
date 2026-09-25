@@ -22,6 +22,8 @@
    rule kept), on both paths: SCEN0124 compiles with no open question and C2 accepts it.
 9. "I need new hiking boots" is one requested item (single_item), on both paths: SCEN0130's
    first pair approves and the next steps up with already_fulfilled (A8).
+10. A period limit with no per-order limit is the per-order cap as well (inferred, the period
+   rule kept), on both paths: SCEN0136 compiles with no open question and C2 accepts it.
 """
 
 from __future__ import annotations
@@ -53,10 +55,9 @@ ALCOHOL = "items[].contains_alcohol"
 HOUR = "authorization.local_hour"
 WEEK = ["mon", "tue", "wed", "thu", "fri"]
 
-# Open questions a correct reading keeps, and why (no per-order limit is stated; T5).
-QUESTION_WHY = {
-    "SCEN0136": "only a monthly total is stated: what is the most one payment may cost?",
-}
+# Open questions a correct reading keeps, and why (no per-order limit is stated; T5). None of the
+# 10: SCEN0136's monthly limit is its per-payment cap as well (parser.period_cap).
+QUESTION_WHY: dict[str, str] = {}
 
 # (field, operator, value, currency, scope, period_days, on_fail) per served scenario.
 EXPECTED: dict[str, dict[str, Any]] = {
@@ -125,6 +126,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
     ]},
     "SCEN0136": {"rules": [
         (BILL, "<", 80, "CHF", "period", 30, "decline"),
+        (BILL, "<", 80, "CHF", "purchase", None, "decline"),             # each payment, from the monthly limit
         (CAT, "in", ("subscriptions",), None, None, None, "decline"),
         (KNOWN, "=", "true", None, None, None, "decline"),               # "current subscriptions", "no new services"
         ("unverifiable", "=", "no premium tiers", None, None, None, "decline"),
@@ -640,4 +642,45 @@ def test_the_models_order_limit_question_is_settled_by_the_cap(history):
 def test_the_cap_is_the_per_night_price_times_the_stated_nights(instruction, cap, history):
     draft = parse(instruction, history, "", TODAY)
     caps = [(r.operator, r.value, r.currency) for r in draft.rules if r.field == BILL and r.scope == "purchase"]
+    assert caps == ([cap] if cap else [])
+
+
+def test_scen0136_has_the_payment_cap_and_no_question_on_both_paths(history):
+    """"Total per month must stay under CHF 80": one payment of CHF 80 or more breaks it on its
+    own, so each payment is under CHF 80 too (inferred, the monthly rule kept), and the
+    customer is no longer asked what one payment may cost."""
+    from oneguard.compiler import lint_accepted_ids
+
+    instruction = SERVED["SCEN0136"]
+    response = next(e["response"] for e in RECORDED if e["scenario"] == "SCEN0136")
+    for draft in (parse(instruction, history, "", TODAY),
+                  compile_instruction(instruction, history, "", Scripted(response), today=TODAY)):
+        cap = [r for r in draft.rules if r.field == BILL and r.scope == "purchase" and r.value == 80]
+        assert [(r.id, r.operator, r.source, r.text) for r in cap] == [
+            ("C1", "<", "inferred", "Each payment under CHF 80 (from your monthly limit)")]
+        assert any(r.field == BILL and r.scope == "period" and r.period_days == 30 for r in draft.rules)  # kept
+        assert draft.open_questions == []
+        assert lint_accepted_ids(draft.rules, [r.id for r in draft.rules]) == ([], [])  # C2 accepts it
+
+
+def test_the_models_payment_question_is_settled_by_the_period_cap(history):
+    month = _raw(BILL, "<", "Total per month must stay under CHF 80", value_number=80, currency="CHF",
+                 scope="period", period_days=30)
+    asked = _response(month) | {"open_questions": [
+        "No amount stated: what is the most one purchase may cost?", "Which services are current?"]}
+    read = read_with_llm(SERVED["SCEN0136"], Scripted(asked), history, "", TODAY)
+    assert read.open_questions == ["Which services are current?"]
+    assert sorted((r.scope, r.value) for r in read.rules if r.field == BILL) == [("period", 80), ("purchase", 80)]
+
+
+@pytest.mark.parametrize(("instruction", "cap"), [
+    ("Never spend more than CHF 250 in any 7-day window", ("<=", 250, "CHF", "Each payment at or below CHF 250 (from your weekly limit)")),
+    ("Books up to EUR 100 a month", ("<=", 100, "EUR", "Each payment at or below CHF 95 (EUR 100 at 0.95) (from your monthly limit)")),
+    ("Groceries, at most CHF 300 a week and CHF 1000 a month", ("<=", 300, "CHF", "Each payment at or below CHF 300 (from your weekly limit)")),
+    ("Groceries, max CHF 100 per order and CHF 250 a week", ("<=", 100, "CHF", "Total at or below CHF 100 per order")),
+    ("Buy two concert tickets, max CHF 90 each, CHF 400 a month", None),  # counted items keep their question
+], ids=["weekly", "euro", "tightest", "stated-cap-wins", "counted-items"])
+def test_the_payment_cap_is_the_tightest_period_limit(instruction, cap, history):
+    draft = parse(instruction, history, "", TODAY)
+    caps = [(r.operator, r.value, r.currency, r.text) for r in draft.rules if r.field == BILL and r.scope == "purchase"]
     assert caps == ([cap] if cap else [])
