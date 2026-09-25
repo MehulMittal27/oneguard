@@ -320,6 +320,9 @@ CURATION = {
         "counterfactual": "Would approve at CHF 400 or less.",
         # Slot-filled from the numbers alone — nothing to rewrite.
         "explanation_source": "template",
+        # What the agent was told, and the receipt that signs it (docs/passport.md).
+        "would_approve_if": [{"field": "authorization.billing_amount_chf", "operator": "<=", "value": 400}],
+        "receipt_id": "rc_34458465286f766409c0e75c",
     },
     "AU0039": {
         "decision": "stopped",
@@ -368,6 +371,8 @@ OPTIONAL_KEYS = (
     "explanation_source",
     "resolved_by",
     "confirmable",
+    "would_approve_if",
+    "receipt_id",
 )
 
 

@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { getDecisions } from '../api/decisions'
 import { resolveApproval } from '../api/approvals'
+import { useDevice } from './DeviceContext'
 import type { Decision } from '../api/types'
 import { DECISIONS_POLL_SECONDS } from '../config'
 import { useCustomer } from './CustomerContext'
@@ -26,6 +27,7 @@ function DecisionsProviderInner({
   )
   const [attempt, setAttempt] = useState(0)
   const { refreshPolicies } = usePolicy()
+  const { withDevice } = useDevice()
 
   // Read once on sign-in, then kept current on a timer: the agent proposes
   // purchases while the customer has the app open, so decisions arrive during
@@ -92,7 +94,9 @@ function DecisionsProviderInner({
   // (D-041): the customer's own words distinguish an automatic outcome from
   // one they answered themselves.
   async function resolve(authorizationId: string, answer: 'approve' | 'decline') {
-    await resolveApproval(authorizationId, answer)
+    // Signed by this device, enrolled on the purchase's card (contract §3.10).
+    const cardId = decisions.find((d) => d.authorization_id === authorizationId)?.card_id ?? ''
+    await withDevice(cardId, () => resolveApproval(cardId, authorizationId, answer))
     setDecisions((current) =>
       current.map((d) =>
         d.authorization_id === authorizationId

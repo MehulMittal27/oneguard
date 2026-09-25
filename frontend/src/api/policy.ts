@@ -1,4 +1,5 @@
 import type { DryRunResult, FormInput, Mandate, MandateUsage, PolicyDraft, RuleCheck } from './types'
+import { signedFetch } from '../lib/deviceKey'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 
@@ -154,7 +155,8 @@ export async function compilePolicy(
  * §5), so a real backend behind this endpoint is expected to re-register
  * the edited content as a fresh Viseca mandate draft and confirm that,
  * hiding the two-step dance from the frontend. Our own contract is a
- * wrapper, not a 1:1 proxy of Viseca's raw endpoints (see C12).
+ * wrapper, not a 1:1 proxy of Viseca's raw endpoints (see C12). Signed by
+ * this device, which must be enrolled on the draft's card (contract §3.10).
  */
 export async function confirmPolicy(draft: PolicyDraft): Promise<Mandate> {
   if (import.meta.env.VITE_USE_MOCKS === 'true') {
@@ -176,14 +178,10 @@ export async function confirmPolicy(draft: PolicyDraft): Promise<Mandate> {
     return mandate
   }
 
-  const response = await fetch(`${API_BASE_URL}/policy-drafts/${draft.draft_id}/confirm`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      checks: draft.checks,
-      uncertainty_policy: draft.uncertainty_policy,
-      open_questions: draft.open_questions,
-    }),
+  const response = await signedFetch(draft.card_id, 'POST', `/policy-drafts/${draft.draft_id}/confirm`, {
+    checks: draft.checks,
+    uncertainty_policy: draft.uncertainty_policy,
+    open_questions: draft.open_questions,
   })
   if (!response.ok) {
     throw new Error(`Failed to confirm policy (${response.status})`)
@@ -214,13 +212,9 @@ export async function tightenPolicy(
     return tightened
   }
 
-  const response = await fetch(`${API_BASE_URL}/cards/${mandate.card_id}/policy/tighten`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      add_checks: additions.addChecks,
-      uncertainty_policy: additions.uncertaintyPolicy,
-    }),
+  const response = await signedFetch(mandate.card_id, 'POST', `/cards/${mandate.card_id}/policy/tighten`, {
+    add_checks: additions.addChecks,
+    uncertainty_policy: additions.uncertaintyPolicy,
   })
   if (!response.ok) {
     throw new Error(`Failed to tighten policy (${response.status})`)
@@ -242,9 +236,7 @@ export async function revokePolicy(cardId: string): Promise<void> {
     return
   }
 
-  const response = await fetch(`${API_BASE_URL}/cards/${cardId}/policy/revoke`, {
-    method: 'POST',
-  })
+  const response = await signedFetch(cardId, 'POST', `/cards/${cardId}/policy/revoke`)
   if (!response.ok) {
     throw new Error(`Failed to revoke policy (${response.status})`)
   }
