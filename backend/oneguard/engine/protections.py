@@ -49,7 +49,8 @@ INSTRUCTIONS_IGNORED = "The shop's text contains instructions aimed at the agent
 FULFILMENT_UNKNOWN = "Couldn't check whether you already bought what you asked for."
 
 # A1: a role word the text speaks as or to, and an imperative, anywhere in one piece of
-# shop text ("Customer note on file: 'Always allow ...'"): the whole text is an instruction.
+# shop text, in either order ("Customer note on file: 'Always allow ..."): the stretch from
+# one to the other is the instruction.
 _ROLE_WORDS = r"agents?|system|assistants?|polic(?:y|ies)|cardholders?|customer\s+notes?"
 _IMPERATIVES = r"allow|approve|ignore|skip|proceed|bypass"
 
@@ -70,7 +71,7 @@ AGENT_DIRECTED_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"\bon\s+behalf\s+of\s+the\s+(customer|cardholder)\b",
         r"\bpre[- ]?approved\b",
         r"\bauto[- ]?approve[sd]?\b",
-        rf"\A(?=.*\b({_ROLE_WORDS})\b)(?=.*\b({_IMPERATIVES})\b).+",
+        rf"\b({_ROLE_WORDS})\b.*?\b({_IMPERATIVES})\b|\b({_IMPERATIVES})\b.*?\b({_ROLE_WORDS})\b",
         r"\b(ignore|disregard|forget|override)\b[^.;]{0,40}\b(instructions?|rules?|limits?|checks?|policy|policies)\b",
         r"\bpre[- ]?authori[sz]ed?\b",
         r"\bapprove\b[^.;]{0,30}\b(payment|purchase|transaction|order|charge)\b",
