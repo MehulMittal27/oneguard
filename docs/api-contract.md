@@ -133,19 +133,22 @@ whose policy the customer typed in other words cannot run it. With `policy: 'sce
 `cardholder_instruction` from the store's catalogue (synced from the served pack, after the `/v1/bootstrap` re-read
 above), verbatim, drafts it as C1 does (stored in `policy_drafts`; the C1 rate limit does not apply), confirms every
 check the draft proposes with its uncertainty setting and open questions as C2 does and as `make demo-live` confirms
-them, creates and confirms it at the platform, and stores it as the card's active policy. The card's previous active
-policy becomes `superseded` (not revoked by the customer; a `note` names the run and the policy that replaced it,
+them, creates and confirms it at the platform, and starts the run under it (announced to the worker, which decides
+the run's purchases under it from memory until it is stored). Only once the platform has accepted the run is it stored
+as the card's active policy (all of it under the policy lock, so no change of the customer's comes in between). The
+card's previous active policy becomes `superseded` (not revoked by the customer; a `note` names the run and the policy that replaced it,
 docs/database.md), its passport gets a final version, and the new policy's passport starts at version 1 with reason
 `operator_run` (docs/passport.md). No device signature: an operator-started judging run registers the scenario's
 instruction without the customer's confirmation, the same exception as `make demo-live` (docs/decisions.md). A card
-with no policy gets the scenario's the same way. Then the run starts under the new platform mandate as above (announced
-to the worker, and moved to the card the platform picks). `LiveRun.platform_mandate` says `registered_for_run: true`,
+with no policy gets the scenario's the same way. The run then goes on as above (moved to the card the platform picks). `LiveRun.platform_mandate` says `registered_for_run: true`,
 names the policy it replaced (`replaced_mandate_id`, and its `previous_viseca_mandate_id`), `status_before: null`,
 `reregistered: false`; the console's run header says "policy: the scenario's instruction, registered for this run". A
 refusal while registering changes nothing (503, as C2). A refusal of the run itself (409 `instruction_mismatch`, for one)
-is 503 `upstream_unavailable` whose detail carries the platform's `platform_status`, `platform_code` and
-`platform_message` verbatim; its message says the card's policy was already replaced and stays so. Without the option
-a card whose policy is not the scenario's words gets that refusal the same way, and nothing changes.
+is undone: the new platform mandate is revoked (`DELETE`, best effort; a refusal of that is kept in `worker_events`),
+the card keeps the policy it had, active (or none), and its passport, re-issued, stays as it was; D3 answers 503
+`upstream_unavailable` "The payment platform did not accept the new run; nothing was changed." whose detail carries the
+platform's `platform_status`, `platform_code` and `platform_message` verbatim. Without the option a card whose policy is
+not the scenario's words gets that refusal the same way, and nothing changes.
 D3 accepts any scenario in the store's `scenario_catalogue`, which the worker syncs from Viseca's
 `/v1/reference-data` at start and again when the served pack changes (docs/judging-pack.md, architecture.md Runtime):
 404 for an unknown scenario or card, 422 when the scenario's card is known and is another. D3 and D8 first have the

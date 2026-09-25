@@ -18,10 +18,10 @@ from typing import Any
 
 import httpx
 
-from oneguard.api import queries
 from oneguard.engine.facts import ZURICH
 from oneguard.passport.ids import passport_id_for
 from oneguard.pipeline import _no_active_policy_detail
+from oneguard.store import worker_events
 from oneguard.store.db import session
 from oneguard.store.schema import Mandate
 from tests.fake_viseca import INSTRUCTION_MISMATCH, FakeViseca, judging_pack
@@ -139,33 +139,89 @@ def test_a_card_with_another_policy_runs_the_scenarios_instruction_in_its_place(
     asyncio.run(scenario())
 
 
-def test_a_mismatch_the_platform_still_answers_is_passed_on_verbatim(db_url: str) -> None:  # noqa: F811
+REFUSED = {
+    "platform_status": 409,
+    "platform_code": "instruction_mismatch",
+    "platform_message": INSTRUCTION_MISMATCH,
+}
+NOTHING_CHANGED = "The payment platform did not accept the new run; nothing was changed."
+
+
+def refuse_the_run(fake: FakeViseca) -> None:
     """The platform serves another instruction than the store has (changed since the last
-    sync): D3 registered the stored one, the run is refused, and the operator reads the
-    platform's own words and that the card's policy was already replaced."""
+    sync): D3 registers the stored one, and the platform refuses the run."""
+    fake.instruction_of = lambda _scenario_id: SCEN0000 + " Thanks."  # type: ignore[method-assign]
+
+
+def test_a_refused_run_is_undone_and_the_card_keeps_its_policy(db_url: str) -> None:  # noqa: F811
+    """D3 registered the scenario's policy and the platform refused the run: the new platform
+    mandate is revoked, the card's own policy stays active with its passport, and the
+    operator reads the platform's own words and "nothing was changed"."""
 
     async def scenario() -> None:
         fake = FakeViseca(fast(check_instruction=True))
         async with running(db_url, fake=fake, **REAL_COMPILER) as run:
             typed = await confirm_form(run)
-            fake.instruction_of = lambda _scenario_id: SCEN0000 + " Thanks."  # type: ignore[method-assign]
+            (typed_tm,) = fake.mandates
+            before = (await run.get("/api/cards/CA0001/passport")).json()
+            refuse_the_run(fake)
+
             r = await start(run, policy="scenario")
             assert r.status_code == 503
-            error = r.json()["error"]
-            assert error["detail"] == {
-                "platform_status": 409,
-                "platform_code": "instruction_mismatch",
-                "platform_message": INSTRUCTION_MISMATCH,
-            }
-            now = await run.services.db(queries.latest_mandate, run.services.db_engine, "CA0001")
-            assert now is not None and now.instruction == SCEN0000 and now.status == "active"
-            assert error["message"] == (
-                "The payment platform did not accept the new run. The card's policy was already replaced "
-                f"by the scenario's instruction ({now.mandate_id}) and stays so."
-            )
-            assert stored(run, typed["mandate_id"]).status == "superseded"
+            assert r.json()["error"] == {"code": "upstream_unavailable", "message": NOTHING_CHANGED, "detail": REFUSED}
             assert not fake.runs
             assert run.services.worker is not None and not run.services.worker.status().runs
+
+            # the scenario's mandate was registered, then revoked at the platform
+            (new_tm,) = [tm for tm in fake.mandates if tm != typed_tm]
+            assert fake.mandates[new_tm]["instruction"] == SCEN0000
+            assert fake.mandates[new_tm]["status"] == "revoked"
+
+            # the card's own policy is active, unchanged, and nothing else was stored
+            policy = (await run.get("/api/cards/CA0001/policy")).json()["mandate"]
+            assert (policy["mandate_id"], policy["status"]) == (typed["mandate_id"], "active")
+            assert (stored(run, typed["mandate_id"]).note, stored(run, typed["mandate_id"]).revoked_at) == (None, None)
+            with session(run.services.db_engine) as s:
+                assert [m.mandate_id for m in s.query(Mandate).where(Mandate.card_id == "CA0001")] == [typed["mandate_id"]]
+            bound = run.services.worker._policies[typed_tm]
+            assert (bound.mandate_id, bound.status) == (typed["mandate_id"], "active")
+
+            # its passport, re-issued, is the one it had: still valid, no new version
+            after = (await run.get("/api/cards/CA0001/passport")).json()
+            assert (after["passport_id"], after["version"]) == (before["passport_id"], before["version"])
+            assert after["document"]["revoked_at"] is None
+
+            # the platform's other word is passed on the same way; the card's policy decides as before
+            r = await start(run)
+            assert r.status_code == 503 and r.json()["error"]["message"] == NOTHING_CHANGED
+
+    asyncio.run(scenario())
+
+
+def test_a_refused_run_on_a_card_with_no_policy_leaves_it_with_none(db_url: str) -> None:  # noqa: F811
+    async def scenario() -> None:
+        fake = FakeViseca(fast(check_instruction=True))
+        async with running(db_url, fake=fake, **REAL_COMPILER) as run:
+            refuse_the_run(fake)
+            assert run.faulty is not None
+            run.faulty.fail[("DELETE", "/v1/mandates")] = 503  # the revocation is refused too
+            r = await start(run, policy="scenario")
+            assert r.status_code == 503
+            assert r.json()["error"] == {"code": "upstream_unavailable", "message": NOTHING_CHANGED, "detail": REFUSED}
+            assert (await run.get("/api/cards/CA0001/policy")).json()["mandate"] is None
+            assert (await run.get("/api/cards/CA0001/passport")).status_code == 404
+            (new_tm,) = fake.mandates
+            assert fake.mandates[new_tm]["status"] == "active"  # the DELETE did not get through ...
+
+            # ... and both refusals are kept, newest first
+            def refusals() -> list[tuple[str | None, int | None, str | None, str | None]] | None:
+                rows = worker_events.latest(run.services.db_engine, "platform_refusal", limit=10)
+                return [(e.action, e.status, e.code, e.mandate_id) for e in rows] if len(rows) >= 2 else None
+
+            assert await until(refusals) == [
+                ("delete_mandate", 503, "unavailable", new_tm),
+                ("create_run", 409, "instruction_mismatch", new_tm),
+            ]
 
     asyncio.run(scenario())
 
@@ -192,6 +248,15 @@ def test_a_card_with_no_policy_gets_the_scenarios_and_a_served_one_is_used_verba
             assert (policy["mandate_id"], policy["instruction"]) == (live["mandate_id"], served)
             passport = (await run.get("/api/cards/CA9001/passport")).json()
             assert [v["reason"] for v in passport["versions"]] == ["operator_run"]
+
+            # the served scenario's run is followed to the end and decided under that policy
+            async def done() -> bool:
+                return (await run.get(f"/api/dev/runs/{live['run_id']}")).json()["state"] == "done"
+
+            await until(done)
+            (decision,) = await run.decisions("CU9001")
+            assert decision["run_id"] == live["ledger_run_id"]
+            assert "no_active_policy" not in decision["reason_codes"]
 
     asyncio.run(scenario())
 

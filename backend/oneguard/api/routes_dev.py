@@ -25,7 +25,7 @@ import secrets
 from collections import defaultdict
 from datetime import datetime, timedelta
 from functools import cache
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -43,13 +43,14 @@ from oneguard.api.errors import (
 from oneguard.api.offline import RecordRun, live_ids, record_fields
 from oneguard.api.operator import require_operator
 from oneguard.api.routes_customer import (
-    confirm_stored_draft,
     new_draft,
     register_at_platform,
+    register_draft,
     reissue_passport,
     reply,
     revoke_at_platform,
     services,
+    store_confirmed,
 )
 from oneguard.api.services import ScenarioBinding, Services
 from oneguard.engine.ledger import StoreLedger
@@ -292,9 +293,10 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
     instead: the platform refuses a run whose mandate's instruction is not the scenario's
     exactly (409 ``instruction_mismatch``), so D3 drafts the served cardholder instruction
     verbatim as C1 does, confirms every check it proposes as C2 does (an operator run: no
-    device signature, docs/decisions.md), and that policy replaces the card's active one,
-    which is ``superseded`` with a note naming the run (``_scenario_policy``). A platform
-    refusal of the run answers 503 with the platform's status, code and message.
+    device signature, docs/decisions.md), registers it and starts the run under it; only
+    then does it replace the card's active policy, which is ``superseded`` with a note
+    naming the run (``_scenario_run``). A platform refusal of the run answers 503 with the
+    platform's status, code and message, and nothing was changed.
     """
     if not runs_allowed():
         raise ApiError(409, "runs_disabled", RUNS_DISABLED_MESSAGE)
@@ -302,9 +304,8 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
     if not body.force:
         await _refuse_while_running(s, body.scenario_id)
     customer_id = await _live_scenario(s, body.scenario_id, body.card_id)
-    scenario_policy = body.policy == "scenario"
     row = None
-    if not scenario_policy:
+    if body.policy != "scenario":
         row = await s.db(queries.latest_mandate, s.db_engine, body.card_id)
         if row is None or row.status != "active" or not row.viseca_mandate_id:
             raise ApiError(409, "validation", "The card needs an active policy confirmed at Viseca first.")
@@ -312,18 +313,11 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
         raise ApiError(503, "upstream_unavailable", "The payment platform is not connected.")
     await s.worker.refresh_bootstrap("run start")
     if row is None:
-        row, platform = await _scenario_policy(s, body.scenario_id, body.card_id, customer_id)
+        row, platform, started = await _scenario_run(s, body.scenario_id, body.card_id, customer_id)
     else:
         row, platform = await _platform_mandate(s, row)
+        started = await _start_run(s, body.scenario_id, row)
     assert row.viseca_mandate_id is not None
-    s.worker.expect_run(row.viseca_mandate_id, body.scenario_id)
-    try:
-        started = await s.platform(s.client.create_run(body.scenario_id, row.viseca_mandate_id))
-    except BaseException as exc:
-        s.worker.forget_run(row.viseca_mandate_id, body.scenario_id)
-        if isinstance(exc, VisecaError):
-            raise _run_refused(exc, row if scenario_policy else None) from None
-        raise
     run_id = str(started["run_id"])
     total = first_value(started, "generated_event_count", "total", "total_events", "event_count")
     s.live_started[run_id] = s.now()
@@ -347,64 +341,100 @@ async def create_run(body: api.CreateRunRequest, request: Request) -> JSONRespon
     )
 
 
-def _run_refused(exc: VisecaError, replaced_by: Mandate | None) -> ApiError:
-    """D3: the platform did not start the run. 503 ``upstream_unavailable`` with the
-    platform's ``platform_status``, ``platform_code`` and, when it answered,
-    ``platform_message`` verbatim (the console shows it as is). ``replaced_by``: the
-    scenario's policy D3 already made the card's active one, which stays."""
-    log.warning("Viseca new run failed: %s", exc)
-    message = "The payment platform did not accept the new run"
-    if replaced_by is None:
-        message += "; nothing was changed."
-    else:
-        message += (
-            f". The card's policy was already replaced by the scenario's instruction "
-            f"({replaced_by.mandate_id}) and stays so."
-        )
-    return upstream_unavailable(message, platform_detail(exc))
+async def _start_run(s: Services, scenario_id: str, row: Mandate) -> dict[str, Any]:
+    """``POST /v1/scenario-runs`` under ``row``'s platform mandate, announced to the worker
+    first (``expect_run``). A platform refusal is a 503 ``upstream_unavailable`` whose detail
+    carries the platform's ``platform_status``, ``platform_code`` and, when it answered,
+    ``platform_message`` verbatim (the console shows it as is)."""
+    assert s.worker is not None and s.client is not None and row.viseca_mandate_id is not None
+    tm = row.viseca_mandate_id
+    s.worker.expect_run(tm, scenario_id)
+    try:
+        return await s.platform(s.client.create_run(scenario_id, tm))
+    except BaseException as exc:
+        s.worker.forget_run(tm, scenario_id)
+        if isinstance(exc, VisecaError):
+            log.warning("Viseca new run failed: %s", exc)
+            raise upstream_unavailable(
+                "The payment platform did not accept the new run; nothing was changed.", platform_detail(exc)
+            ) from None
+        raise
 
 
-async def _scenario_policy(
+async def _scenario_run(
     s: Services, scenario_id: str, card_id: str, customer_id: str
-) -> tuple[Mandate, api.PlatformMandate]:
+) -> tuple[Mandate, api.PlatformMandate, dict[str, Any]]:
     """D3 ``policy: "scenario"``: the served catalogue's cardholder instruction, verbatim,
     drafted (C1's ``new_draft``) and confirmed with every check it proposes, its uncertainty
-    setting and open questions (C2's ``confirm_stored_draft``, as ``make demo-live``
-    confirms them), registered at the platform, stored as the card's active policy. The
-    card's earlier policy is ``superseded`` with a note naming this run; both passports are
-    re-issued (the new one's first version says ``operator_run``). A refusal at the
-    platform changes nothing here (503, as C2)."""
+    setting and open questions (C2's ``register_draft``, as ``make demo-live`` confirms
+    them) at the platform, then the run started under it (``_start_run``).
+
+    Only once the platform has accepted the run is the policy stored as the card's active
+    one (``store_confirmed``): the card's earlier policy is ``superseded`` with a note naming
+    this run, and the new policy's passport starts with ``operator_run``. Until then the
+    worker decides the run's purchases under it from memory (``bind_policy``). A refused
+    registration changes nothing (503, as C2); a refused run is undone
+    (``_undo_registration``): the new platform mandate is revoked, and the card keeps the
+    policy it had (or none), with its passport. The whole of it holds ``s.policy_lock``, so
+    no policy change of the customer's comes in between."""
     catalogued = await s.db(_catalogue_row, s.db_engine, scenario_id)
     if catalogued is None:
         raise not_found(f"No scenario {scenario_id}.")
+    assert s.worker is not None
     draft = await new_draft(s, card_id, customer_id, instruction=catalogued.cardholder_instruction)
+    operator_run = f"the operator's judging run of {scenario_id}"
     async with s.policy_lock:
         stored = await s.db(queries.draft, s.db_engine, draft.draft_id)
         assert stored is not None
         previous = await s.db(queries.latest_mandate, s.db_engine, card_id)
         if previous is not None and previous.status != "active":
             previous = None
-        mandate = await confirm_stored_draft(
+        registered = await register_draft(
             s,
             stored,
             [c.id for c in draft.checks],
             draft.uncertainty_policy,
-            operator_run=f"the operator's judging run of {scenario_id}",
+            note=f"Registered for {operator_run}, without the customer's confirmation.",
         )
-    assert mandate.viseca_mandate_id is not None
+        new = registered.mandate
+        assert new.viseca_mandate_id is not None
+        s.worker.bind_policy(new.viseca_mandate_id, policies.mandate_policy(new))
+        try:
+            started = await _start_run(s, scenario_id, new)
+        except Exception:
+            await _undo_registration(s, new, scenario_id)
+            raise
+        mandate = await store_confirmed(s, stored, registered, operator_run=operator_run)
     log.warning(
         "judging run of %s: card %s now runs the scenario's instruction as %s (%s at the platform), replacing %s",
         scenario_id, card_id, mandate.mandate_id, mandate.viseca_mandate_id,
         previous.mandate_id if previous else "no policy",
     )  # fmt: skip
-    return mandate, api.PlatformMandate(
-        status_before=None,
-        reregistered=False,
-        viseca_mandate_id=mandate.viseca_mandate_id,
-        previous_viseca_mandate_id=previous.viseca_mandate_id if previous else None,
-        registered_for_run=True,
-        replaced_mandate_id=previous.mandate_id if previous else None,
+    return (
+        mandate,
+        api.PlatformMandate(
+            status_before=None,
+            reregistered=False,
+            viseca_mandate_id=new.viseca_mandate_id,
+            previous_viseca_mandate_id=previous.viseca_mandate_id if previous else None,
+            registered_for_run=True,
+            replaced_mandate_id=previous.mandate_id if previous else None,
+        ),
+        started,
     )
+
+
+async def _undo_registration(s: Services, new: Mandate, scenario_id: str) -> None:
+    """The platform refused the run D3 registered the scenario's policy for: revoke that
+    platform mandate (DELETE, best effort; a refusal is kept in ``worker_events`` by the
+    client and logged) and re-issue the card's passport. The policy was never stored, so
+    the card keeps the policy it had, active, or none."""
+    log.warning(
+        "judging run of %s refused: the scenario's policy %s (%s at the platform) is revoked there; card %s keeps its policy",
+        scenario_id, new.mandate_id, new.viseca_mandate_id, new.card_id,
+    )  # fmt: skip
+    await revoke_at_platform(s, new, strict=False)
+    await reissue_passport(s, new.card_id)
 
 
 async def _platform_mandate(s: Services, row: Mandate) -> tuple[Mandate, api.PlatformMandate]:

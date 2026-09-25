@@ -13,6 +13,7 @@ import logging
 import math
 import secrets
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Request, Response
@@ -443,24 +444,28 @@ async def confirm_draft(draft_id: str, body: api.ConfirmDraftRequest, request: R
         return reply(await _with_usage(s, mandate))
 
 
-async def confirm_stored_draft(
-    s: Services,
-    row: PolicyDraft,
-    chosen: list[str],
-    uncertainty: str,
-    *,
-    operator_run: str | None = None,
-) -> Mandate:
-    """C2 once the draft is known and its signature checked: lint the accepted checks
-    (``chosen`` ids), create and confirm the policy at Viseca, store it as the card's
-    active policy, end the card's earlier one, re-issue the passport. The caller holds
-    ``s.policy_lock``.
+async def confirm_stored_draft(s: Services, row: PolicyDraft, chosen: list[str], uncertainty: str) -> Mandate:
+    """C2 once the draft is known and its signature checked: register the accepted checks
+    at Viseca (``register_draft``), then store them as the card's active policy
+    (``store_confirmed``). The caller holds ``s.policy_lock``."""
+    registered = await register_draft(s, row, chosen, uncertainty)
+    return await store_confirmed(s, row, registered)
 
-    ``operator_run`` (D3 ``policy: "scenario"``) names the operator's judging run that
-    registers this policy without the customer's device-signed confirmation: the earlier
-    policy is ``superseded`` (not revoked by the customer) with a note naming the run, the
-    new one a note that the customer did not confirm it, and its passport's first version
-    says ``operator_run``."""
+
+@dataclass(frozen=True)
+class Registered:
+    """A draft confirmed at Viseca and not yet stored: the policy (an unsaved ``Mandate``
+    row, its id already chosen) and the platform's draft id."""
+
+    mandate: Mandate
+    viseca_draft_id: str | None
+
+
+async def register_draft(
+    s: Services, row: PolicyDraft, chosen: list[str], uncertainty: str, *, note: str | None = None
+) -> Registered:
+    """Lint the accepted checks (``chosen`` ids) and create and confirm the policy at
+    Viseca; nothing is stored here. ``note``: the new policy's ``Mandate.note``."""
     if not row.checks:
         raise ApiError(
             409, "lint_failed", f"Not confirmed: {policies.NO_CHECKS_REASON}.", {"missing": ["per_order_limit"]}
@@ -491,8 +496,6 @@ async def confirm_stored_draft(
             uncertainty,
             list(row.open_questions),
         )
-
-    now = s.now()
     mandate = Mandate(
         mandate_id=f"md_{secrets.token_hex(8)}",
         viseca_mandate_id=viseca_mandate_id,
@@ -504,13 +507,30 @@ async def confirm_stored_draft(
         uncertainty_policy=uncertainty,
         open_questions=list(row.open_questions),
         status="active",
-        confirmed_at=now,
+        confirmed_at=s.now(),
         revoked_at=None,
-        note=None if operator_run is None else f"Registered for {operator_run}, without the customer's confirmation.",
+        note=note,
     )
+    return Registered(mandate, viseca_draft_id)
+
+
+async def store_confirmed(
+    s: Services, row: PolicyDraft, registered: Registered, *, operator_run: str | None = None
+) -> Mandate:
+    """Store a registered policy as the card's active one, end the card's earlier one
+    (revoked here and at Viseca), re-issue the passport. The caller holds ``s.policy_lock``.
+
+    ``operator_run`` (D3 ``policy: "scenario"``) names the operator's judging run that
+    registered this policy without the customer's device-signed confirmation: the earlier
+    policy is ``superseded`` (not revoked by the customer) with a note naming the run, and
+    the new policy's passport's first version says ``operator_run``."""
+    mandate = registered.mandate
     ended = "revoked" if operator_run is None else "superseded"
     ended_note = None if operator_run is None else f"Replaced by {mandate.mandate_id} for {operator_run}."
-    replaced = await s.db(queries.confirm_draft, s.db_engine, row.draft_id, mandate, viseca_draft_id, now, ended, ended_note)
+    replaced = await s.db(
+        queries.confirm_draft, s.db_engine, row.draft_id, mandate, registered.viseca_draft_id,
+        mandate.confirmed_at, ended, ended_note,
+    )  # fmt: skip
     for old in replaced:
         s.bind_mandate(old)
         await revoke_at_platform(s, old, strict=False)
