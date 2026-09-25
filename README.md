@@ -1,6 +1,75 @@
 # OneGuard
 
-OneGuard — a wallet control layer that decides whether an AI shopping agent may complete a purchase: approve, decline, or ask the customer. Deterministic rules decide; models only explain, extract, or flag.
+**Agents may propose. OneGuard decides.**
+
+AI agents will soon shop with your card. They can be tricked: a fake shop, a hidden
+subscription, instructions buried in a product page. A spending limit only sees the price.
+OneGuard is the leash: you write your rules in plain words, and every purchase the agent
+proposes is **approved**, **stopped with a reason**, or **sent to your phone** to decide.
+No AI makes the decision; your rules do.
+
+**Live app:** https://oneguard.fly.dev · **Operator console:** https://oneguard.fly.dev/ops ·
+**Every check explained:** [POLICY-GUIDE.md](POLICY-GUIDE.md)
+
+## The value in numbers
+
+**Of 45 test purchases, 33 needed to be stopped or needed a question. A plain spending
+limit catches 6 of them. OneGuard catches all 33 and still lets the 8 ordinary purchases
+straight through.**
+
+| Setup | Problem purchases stopped or asked | Money that goes through unchecked |
+|---|---|---:|
+| No control | 🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴 0 of 33 | CHF 7,458.68 |
+| Plain spending limit | 🟢🟢🔴🔴🔴🔴🔴🔴🔴🔴 6 of 33 | CHF 5,732.68 |
+| **OneGuard** | 🟢🟢🟢🟢🟢🟢🟢🟢🟢🟢 **33 of 33** | **CHF 0** |
+
+```mermaid
+pie showData title The 45 test purchases
+    "Approved" : 8
+    "Stopped (broke a rule)" : 20
+    "Asked the customer" : 13
+    "Depends on an earlier answer" : 4
+```
+
+### What a spending limit misses, and OneGuard catches
+
+| Risk | Purchases | CHF |
+|---|---:|---:|
+| 🔴 A shop never used before, or a fake shop with a look-alike name | 6 | 1,448.28 |
+| 🔴 The same item bought a second time | 6 | 1,798.40 |
+| 🔴 The wrong item, or extras nobody asked for | 5 | 712.00 |
+| 🔴 Returns not allowed, too short, or not stated | 3 | 478.00 |
+| 🔴 The same order twice, or one order split in two | 2 | 354.00 |
+| 🔴 Signs that someone else is using the card | 2 | 260.00 |
+| 🔴 The wrong kind of shop | 1 | 189.00 |
+| 🔴 A hidden monthly subscription | 1 | 194.00 |
+| 🔴 Hidden instructions in the shop's text trying to trick the agent | 1 | 299.00 |
+
+### Proof
+
+| | |
+|---|---|
+| ⚡ Speed | **4.5 ms** per decision (up to ~2 s when the optional AI check runs); always inside Viseca's 8 s deadline |
+| 🧮 No AI decides | **45 of 45** identical results with every AI model switched off |
+| 🌐 Tested live | **10 scenarios**, 111 purchases on Viseca's sandbox |
+| ✅ Tested in code | **4,000+** automated tests |
+| 🔏 Verifiable | every decision leaves a signed receipt anyone can check at `/verify` |
+
+Results are judged against each customer's own instruction, using our answer key for the 45
+public test purchases (`docs/acceptance-oracle.yaml`); Viseca publishes none. "Plain
+spending limit" blocks only amounts over the customer's per-order limit.
+
+## What the customer gets
+
+- **Rules in plain words.** "Buy the monitor I chose, up to CHF 400, from shops I know."
+  OneGuard turns it into checks and shows how they would have treated your past purchases
+  before you confirm.
+- **A reason for every decision.** "Declined CHF 340: PixelHarbour is 1 letter away from
+  PixelHarbor, a shop you know." Plus what would make it a yes.
+- **You stay in control.** Unclear purchases come to your phone for 2 minutes; rules can
+  only be made stricter; revoke stops everything.
+
+---
 
 ## How it works
 
