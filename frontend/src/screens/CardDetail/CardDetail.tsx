@@ -218,7 +218,7 @@ export function CardDetail({
       </div>
 
       {/* The signed policy, and the devices allowed to change it (docs/passport.md). */}
-      <PassportSection cardId={cardId} policyVersion={mandate.passport?.version} />
+      <PassportSection key={cardId} cardId={cardId} policyVersion={mandate.passport?.version} />
 
       {/*
         Answers the customer gave once that the engine now remembers, so it stops

@@ -22,6 +22,7 @@ import {
   lastRunLine,
   liveRunIds,
   passportSummary,
+  phoneCustomer,
   readVerification,
   replayGuard,
   runDecisions,
@@ -250,6 +251,9 @@ export default function OpsConsole() {
   const panel = known ? runPanel(run ?? null, runWaiting, selectedScenarioId) : undefined
   const rows = panel === undefined ? null : panel ? runRows : []
   const waiting = panel ? runWaiting : 0
+  // The embedded phone: the shown run's customer, else the selected scenario's
+  // (never a finished run's customer under another scenario's sign-in line).
+  const phone = phoneCustomer(panel?.run, selected)
 
   // The card's passport, once per run --------------------------------------------------
   const [passport, setPassport] = useState<{ key: string; line: PassportLine } | null>(null)
@@ -351,8 +355,6 @@ export default function OpsConsole() {
     setJudgingRefusal(null)
   }, [])
   const [showPhone, setShowPhone] = useState(true)
-  const phoneCustomer = panel ? customerId : (selected?.customer_id ?? null)
-  const phoneName = panel ? panel.run.customerName : (selected?.customer_name ?? null)
   const offline = healthFailed || runFailed
   // D3 needs a served scenario (D8) and the worker polling (/healthz); the button and
   // the dialog both say why not, and both repeat a finished run already on record.
@@ -441,8 +443,8 @@ export default function OpsConsole() {
 
         {showPhone && panel !== undefined && (
           <CustomerPhone
-            customerId={phoneCustomer}
-            customerLabel={phoneCustomer ? `${phoneName ?? phoneCustomer} (${phoneCustomer})` : null}
+            customerId={phone.customerId}
+            customerLabel={phone.customerId ? `${phone.customerName ?? phone.customerId} (${phone.customerId})` : null}
           />
         )}
       </main>

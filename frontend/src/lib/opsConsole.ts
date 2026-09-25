@@ -258,6 +258,34 @@ export function scenarioSignIn(scenario: ScenarioSummary | null): string | null 
   return signInLine(scenario.customer_name ?? scenario.customer_id, scenario.customer_id, scenario.card_id)
 }
 
+export interface PhoneCustomer {
+  customerId: string | null
+  customerName: string | null
+}
+
+/**
+ * Whom the embedded phone is signed in as: the customer of the run the panel
+ * shows (`runPanel`: a run in progress, or a finished one while its scenario is
+ * selected), else the selected scenario's customer, so the phone never keeps a
+ * finished run's customer under another scenario's "Sign in as" line.
+ */
+export function phoneCustomer(
+  shown: Pick<ConsoleRun, 'customerId' | 'customerName'> | null | undefined,
+  selected: ScenarioSummary | null,
+): PhoneCustomer {
+  if (shown?.customerId) return { customerId: shown.customerId, customerName: shown.customerName }
+  return { customerId: selected?.customer_id ?? null, customerName: selected?.customer_name ?? null }
+}
+
+/**
+ * The embedded phone's URL (api-contract §6 item 20). The iframe is keyed on it,
+ * so another customer is a new iframe and a fresh app: nothing of the previous
+ * customer's cards (passport, devices, this device's role) can stay on screen.
+ */
+export function phoneEmbedSrc(customerId: string | null): string {
+  return customerId ? `/?customer=${encodeURIComponent(customerId)}&embed=1` : '/?embed=1'
+}
+
 export interface ReplayGuard {
   // Why D2 cannot replay the scenario, or null.
   blocked: string | null

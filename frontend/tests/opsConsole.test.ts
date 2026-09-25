@@ -21,6 +21,8 @@ import {
   outcomeBadge,
   hasReceipt,
   passportSummary,
+  phoneCustomer,
+  phoneEmbedSrc,
   platformMandateNote,
   readVerification,
   replayGuard,
@@ -553,4 +555,40 @@ test('D2 replays the pack, a served scenario from record, or says it has not run
   const record = replayGuard(summary({ replay_source: 'record' }))
   assert.equal(record.blocked, null)
   assert.match(record.note ?? '', /^Replay from record: .*Nothing is sent to the platform\.$/)
+})
+
+test('the embedded phone shows the run panel’s customer, else the selected scenario’s, never a finished run’s under another', () => {
+  const oliverRun = (running: boolean) =>
+    consoleRun({
+      kind: 'replay',
+      run: {
+        scenario_id: 'SCEN0004', card_id: 'CA0039', delivered: 11, total: 11, running, next_at: null,
+        ledger_run_id: 'replay-o', customer_id: 'CU0019', customer_name: 'Oliver Graf',
+      },
+    })!
+  const oliver = summary({ scenario_id: 'SCEN0004', customer_id: 'CU0019', customer_name: 'Oliver Graf', card_id: 'CA0039' })
+  const livia = summary({ scenario_id: 'SCEN0136', customer_id: 'CU1475', customer_name: 'Livia Bachmann', card_id: 'CA1738' })
+  const phone = (run: ReturnType<typeof oliverRun> | null, waiting: number, selected: ScenarioSummary | null) =>
+    phoneCustomer(runPanel(run, waiting, selected?.scenario_id ?? null)?.run, selected).customerId
+
+  // Oliver's run finished, Livia's scenario selected: Livia, not Oliver's passport under her name.
+  assert.equal(phone(oliverRun(false), 0, livia), 'CU1475')
+  // The finished run's own scenario selected: Oliver.
+  assert.equal(phone(oliverRun(false), 0, oliver), 'CU0019')
+  // A run in progress, or with step-ups waiting, keeps its customer on the phone to answer them.
+  assert.equal(phone(oliverRun(true), 0, livia), 'CU0019')
+  assert.equal(phone(oliverRun(false), 2, livia), 'CU0019')
+  // No run; a scenario with no customer shows the picker.
+  assert.equal(phone(null, 0, livia), 'CU1475')
+  assert.equal(phone(null, 0, summary({ customer_id: null, customer_name: null })), null)
+  assert.deepEqual(phoneCustomer(null, livia), { customerId: 'CU1475', customerName: 'Livia Bachmann' })
+})
+
+test('the embedded phone is keyed on its URL: another customer is a new iframe', () => {
+  assert.equal(phoneEmbedSrc('CU0019'), '/?customer=CU0019&embed=1')
+  assert.equal(phoneEmbedSrc(null), '/?embed=1')
+  assert.notEqual(phoneEmbedSrc('CU0019'), phoneEmbedSrc('CU1475'))
+  const phone = readFileSync(new URL('../src/ops/CustomerPhone.tsx', import.meta.url), 'utf8')
+  assert.match(phone, /const embedSrc = phoneEmbedSrc\(customerId\)/)
+  assert.match(phone, /key=\{embedSrc\}\s+title="Customer phone"\s+src=\{embedSrc\}/)
 })

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { getDevices, thisDevice } from '../api/passport'
 import type { Device } from '../api/types'
+import { settle, viewFor, type CardRead } from '../lib/cardRead'
 import { isController } from '../lib/passportDevices'
 import { useDevice } from '../state/DeviceContext'
 import { BackChevronIcon, DeviceIcon } from './icons/lucide'
@@ -12,12 +13,16 @@ const POLL_MS = 5000
  * item 22): every pending device on the customer's cards this browser controls,
  * each opening its card, where the controller approves or removes it. Only the
  * controller sees it: another device could not approve anyway. Hidden when none
- * waits; a failed read keeps what was shown (it is a hint, not a state).
+ * waits; a failed read keeps what was shown (it is a hint, not a state). What
+ * is shown is held with the cards it was read for, so another customer's cards
+ * never show the previous one's waiting devices.
  */
 export function PendingDevicesCard({ cardIds, onOpenCard }: { cardIds: string[]; onOpenCard: (cardId: string) => void }) {
   const { version } = useDevice()
-  const [pending, setPending] = useState<Device[]>([])
   const key = cardIds.join(',')
+  const [held, setHeld] = useState<CardRead<Device[]> | null>(null)
+  const view = viewFor(held, key)
+  const pending = view.status === 'ready' ? view.value : []
 
   useEffect(() => {
     const cards = key ? key.split(',') : []
@@ -31,9 +36,11 @@ export function PendingDevicesCard({ cardIds, onOpenCard }: { cardIds: string[];
             return isController(list, await thisDevice(card, list)) ? list : []
           }),
         )
-        if (!cancelled) setPending(lists.flat().filter((d) => d.status === 'pending'))
+        const waiting = lists.flat().filter((d) => d.status === 'pending')
+        if (!cancelled) setHeld((current) => settle(current, { cardId: key, status: 'ready', value: waiting }, key))
       } catch {
-        // Keep what is shown; the next poll tries again.
+        // Keep what is shown for these cards; the next poll tries again.
+        if (!cancelled) setHeld((current) => settle(current, { cardId: key, status: 'error' }, key))
       }
     }
     void read()
