@@ -151,6 +151,7 @@ DEVICE = {
     "enrolled_by_device_id": None,
     "removed_at": None,
     "last_seen_at": "2026-09-24T10:05:00Z",
+    "role": "controller",
 }
 SIGNED = {"document": {"type": "oneguard.receipt/1"}, "signature": "c2ln", "key_id": "ogk_1"}
 RESOLVED_DECISION = {

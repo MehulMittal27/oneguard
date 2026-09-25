@@ -69,10 +69,11 @@ on the card, before anything is read for the change or applied.
 | P3 | GET | `/api/cards/{card_id}/passport/qr.svg` | — | `image/svg+xml`: a QR code of `<ONEGUARD_PUBLIC_URL>/verify?passport=<passport_id>&v=<version>` (default `https://oneguard.fly.dev`) | 404 as P2 |
 | P4 | GET | `/api/authorizations/{authorization_id}/receipt` | — | `Receipt` (signed on the spot when the background sweep has not reached the decision yet) | 404 |
 | P5 | POST | `/api/verify` | `{ document, signature, key_id }` **or** `{ passport_id, version? }` **or** `{ receipt_id }` | `VerifyResult` | 404 unknown stored id · 422 not exactly one form |
-| P6 | GET | `/api/cards/{card_id}/devices` | — | `{ devices: Device[] }` enrolled first, then pending, then removed | 404 card |
-| P7 | POST | `/api/cards/{card_id}/devices` | `{ public_key_jwk, label? }` (P-256 public JWK) | `{ device_id, status }`: `enrolled` for the card's first device, else `pending`; the same key again returns the same device | 404 card · 422 not a P-256 key |
-| P8 | POST | `/api/cards/{card_id}/devices/{device_id}/approve` | — (signed, §3.10) | `Device` (enrolled, `enrolled_by_device_id` the signer); a new passport version | 401 · 404 · 409 `device_state` (not pending) |
-| P9 | POST | `/api/cards/{card_id}/devices/{device_id}/remove` | — (signed, §3.10) | `Device` (removed); a new passport version when it was enrolled | 401 · 404 · 409 `last_device` (the card's only enrolled device) · 409 `device_state` (already removed) |
+| P6 | GET | `/api/cards/{card_id}/devices` | — | `{ devices: Device[] }` enrolled first, then pending, then removed; each enrolled one with its `role` | 404 card |
+| P7 | POST | `/api/cards/{card_id}/devices` | `{ public_key_jwk, label? }` (P-256 public JWK) | `{ device_id, status }`: `enrolled` for the card's first device (its controller), else `pending`; the same key again returns the same device | 404 card · 422 not a P-256 key |
+| P8 | POST | `/api/cards/{card_id}/devices/{device_id}/approve` | — (signed by the controller, §3.10) | `Device` (enrolled, role `approved`, `enrolled_by_device_id` the signer); a new passport version | 401 · 403 `not_controller` · 404 · 409 `device_state` (not pending) |
+| P9 | POST | `/api/cards/{card_id}/devices/{device_id}/remove` | — (signed by the controller, §3.10) | `Device` (removed); a new passport version when it was enrolled | 401 · 403 `not_controller` · 404 · 409 `last_device` (the card's only enrolled device) · 409 `device_state` (already removed, or the controller itself while another device is enrolled: transfer first) |
+| P10 | POST | `/api/cards/{card_id}/devices/{device_id}/transfer` | — (signed by the controller, §3.10) | `Device` (role `controller`); the signer stays enrolled as `approved`; a new passport version (reason `controller`) | 401 · 403 `not_controller` · 404 · 409 `device_state` (not enrolled, or already the controller) |
 | — | GET | `/verify` | query `passport` + `v`, or `receipt` | the app's HTML; the page calls P5 (where the P3 QR code points) | |
 
 Operator-only: `POST /api/dev/devices/reset/{card_id}` → `{ card_id, removed }`: every device on
@@ -277,12 +278,13 @@ LedgerSnapshot { card_id, mandate_id, entries: [{ authorization_id, occurred_at,
 PublicKey    { key_id, algorithm: 'ed25519', public_key_pem, active: boolean }
 Passport     { passport_id, version, document, signature, key_id,
                versions: [{ version, issued_at, reason }] }   // reason: confirmed, backfill, tightened,
-                                                             // devices, confirmation, revoked, updated
+                                                             // devices, controller, confirmation, revoked, updated
 Receipt      { receipt_id, document, signature, key_id,
                history: [{ document, signature, key_id, signed_at }] }   // earlier signatures (before the answer)
 Device       { device_id, card_id, label,                    // label: the customer's own text
                status: 'pending'|'enrolled'|'removed', enrolled_at: string|null,
-               enrolled_by_device_id: string|null, removed_at: string|null, last_seen_at }
+               enrolled_by_device_id: string|null, removed_at: string|null, last_seen_at,
+               role: 'controller'|'approved'|null }           // enrolled only: the one controller, or approved
 VerifyResult { valid: boolean, document_type: 'passport'|'receipt'|null, key_id: string|null,
                issued_at: string|null,                       // passport issued_at; receipt decided_at
                reason: string, document?: object|null,       // the document checked (the stored one for an id)
@@ -499,7 +501,8 @@ All errors: `{ error: { code: string, message: string, detail?: object } }`. Cod
 `not_awaiting_answer`, `window_closed`, `upstream_unavailable`, `compiler_timeout`,
 `internal`, `runs_disabled`, `run_active` (D3: an unfinished run is still followed),
 and (NEW, §3.10, §1.3) `device_signature_required`, `device_not_enrolled`,
-`signature_invalid`, `replay` (401), `last_device`, `device_state` (409), `forbidden` (403).
+`signature_invalid`, `replay` (401), `last_device`, `device_state` (409), `forbidden`,
+`not_controller` (403: P8–P10 signed by an enrolled device that is not the card's controller).
 `upstream_unavailable` (503: Viseca or the database unreachable or too slow) never changes a
 stored decision; the UI shows its offline state ("Nothing was approved while we were
 offline"). `internal` (500) is an unexpected server error.
@@ -519,7 +522,7 @@ The backend emits both this wording and `usage`.
 
 ### 3.10 Device-bound writes (NEW, docs/passport.md)
 
-C2, C4, C5, C8 and P8/P9 change what an agent may do with a card, so they are accepted only
+C2, C4, C5, C8 and P8–P10 change what an agent may do with a card, so they are accepted only
 from a device enrolled on that card (C2: the draft's card; C8: the purchase's card). The
 device holds a P-256 key pair it cannot export (WebCrypto `extractable: false`); OneGuard
 keeps its public JWK. Each such request carries:
@@ -536,7 +539,16 @@ Refused with `401`, nothing applied: `device_signature_required` (a header missi
 `signature_invalid` (the signature does not match this method, path, body, time and nonce),
 `replay` (`|now − ts| > 120 s`, or the nonce was used before; nonces are kept 10 min). The
 UI answers `device_not_enrolled` by opening the enrolment flow. C1 drafts and every GET stay
-open. The card's first device enrols without approval; later ones wait for an enrolled one.
+open. The card's first device enrols without approval and is its **controller**; later ones
+wait `pending` until the controller approves them, then are **approved** devices. Every enrolled
+device signs C2, C4, C5 and C8. Only the controller signs P8 (approve), P9 (remove) and P10
+(transfer: another enrolled device becomes the controller, the signer stays approved); an
+approved device gets `403 not_controller` and nothing changes. The controller cannot remove
+itself while another device is enrolled (it transfers first), so an enrolled card always has
+exactly one. The passport lists `controller_device_id` and each device's `role`, and is
+re-issued on every change of who may sign or manage. Devices from before controllers
+(`devices.controller_since` NULL) read the earliest enrolled device as the controller; a card
+with none enrolled has none.
 
 ---
 
@@ -603,7 +615,7 @@ fixtures to it.
 19. Operator console at `/ops` (desktop, operator only, never linked from the phone UI): a separate page of the same build (`src/ops/`), reading `/healthz`, D2, D3, D5, D7, D9, C6 (with `?operator=1`, §3.4) and C3's card, plus the passport endpoints (§1.3): the card's passport line (version, checks, devices, QR) is checked with P5, and each decision with a `receipt_id` has its receipt (P4) checked with P5. It follows D7: whatever run started last, from any source, is the one it shows. Its "Judging run (live)" (D3) is disabled, with the reason on the button and under it, while `/healthz` shows the worker off (`worker.configured` false) or not polling (`worker.state` other than `polling`), or has not answered. It never answers a step-up and never enrols, approves or removes a device; the customer does that on the phone. It wears Viseca's colours and type (Roboto via Google Fonts, system fallback); the embedded phone keeps its own. Its left column has three tabs: Overview (scenario, instruction, buttons, run header, the last 5 decisions), Decision log (the run's stream, filtered by outcome and shop, rows expandable, Export JSON of the visible rows) and Health (the `/healthz` body as a table, with a copy button).
 20. Phone UI deep links, both read once at load: `?customer=<customer_id>` signs in as that customer and skips the picker (session only, nothing stored; an unknown id shows the picker); `?embed=1` draws the phone UI without `DeviceFrame`'s bezel, for the console's embedded phone (an iframe of `/?customer=<id>&embed=1`, 390×844).
 21. Sign-in footer: "Powered by OneGuard" (small), the same line the console carries.
-22. Passport (§1.3, §3.10, docs/passport.md): `lib/deviceKey.ts` (a non-extractable P-256 key in IndexedDB, `signedFetch` for C2, C4, C5, C8, P8, P9; a `device_not_enrolled` answer opens enrolment); NewPolicy confirm enrols this device first (the card's first device silently, otherwise "This device isn't approved for this card yet"), and a card's first passport (`Mandate.passport.version == 1`, none before) gets step 3 "Your passport is issued" with the first-passport animation; CardDetail gains a Passport section (QR, version, devices with Approve / Remove, Verify; when no device controls the card, "Make this device the controller" enrols this browser through P7 as the card's first device, trust on first use, and re-reads the re-issued passport, while a card another device controls keeps "Add this device", the pending path; `lib/passportDevices.ts`); Home shows "Devices waiting for your approval"; DecisionDetail shows "What your agent was told" (`would_approve_if`, in words from `counterfactual`) and "Receipt · Verify"; a `/verify` page for the QR link. Mock fixtures gain a passport, two devices and a receipt.
+22. Passport (§1.3, §3.10, docs/passport.md): `lib/deviceKey.ts` (a non-extractable P-256 key in IndexedDB, `signedFetch` for C2, C4, C5, C8, P8, P9, P10; a `device_not_enrolled` answer opens enrolment); NewPolicy confirm enrols this device first (the card's first device silently, otherwise "This device isn't approved for this card yet"), and a card's first passport (`Mandate.passport.version == 1`, none before) gets step 3 "Your passport is issued" with the first-passport animation; CardDetail gains a Passport section (QR, version, devices with Approve / Remove, Verify; when no device controls the card, "Make this device the controller" enrols this browser through P7 as the card's first device, trust on first use, and re-reads the re-issued passport, while a card another device controls keeps "Add this device", the pending path; `lib/passportDevices.ts`). The section names the controller ("Controller · this device" or its label; badges Controller / Approved); only the controller sees Approve / Remove and, on each other enrolled device, "Make this the controller" (P10, asked once more before it is sent); an approved device reads that it can change the policy and answer requests while the controller manages devices, and a pending one "Waiting for approval from <controller label>" (the enrolment sheet too). Home shows "Devices waiting for your approval" on the controller only (polled every 5 s); DecisionDetail shows "What your agent was told" (`would_approve_if`, in words from `counterfactual`) and "Receipt · Verify"; a `/verify` page for the QR link. Mock fixtures gain a passport, two devices and a receipt.
 
 No customer endpoint changes. No screen removals. Tighten UI stays dormant.
 

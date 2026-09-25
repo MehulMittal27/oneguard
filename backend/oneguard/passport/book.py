@@ -32,6 +32,7 @@ from oneguard.api import policies
 from oneguard.api.queries import entry_of
 from oneguard.engine.ledger_base import LedgerEntry
 from oneguard.passport.canonical import timestamp
+from oneguard.passport.devices import controller_of
 from oneguard.passport.documents import (
     ISSUER,
     PASSPORT_TYPE,
@@ -123,14 +124,17 @@ class PassportBook:
             if latest is not None and latest.revoked_at is not None:
                 return 0  # a revoked passport is final: nothing it says changes again
             holder = s.get(Customer, mandate.customer_id)
+            rows = list(s.scalars(
+                select(Device)
+                .where(Device.card_id == mandate.card_id, Device.status == "enrolled")
+                .order_by(Device.enrolled_at, Device.device_id)
+            ))
+            controller = controller_of(rows)
             enrolled = [
                 {"device_id": d.device_id, "label": d.label, "enrolled_at": d.enrolled_at,
-                 "enrolled_by_device_id": d.enrolled_by_device_id}
-                for d in s.scalars(
-                    select(Device)
-                    .where(Device.card_id == mandate.card_id, Device.status == "enrolled")
-                    .order_by(Device.enrolled_at, Device.device_id)
-                )
+                 "enrolled_by_device_id": d.enrolled_by_device_id,
+                 "role": "controller" if controller is not None and d.device_id == controller.device_id else "approved"}
+                for d in rows
             ]  # fmt: skip
             confirmations = s.scalar(
                 select(func.count())
@@ -411,6 +415,9 @@ def _reason(before: dict[str, Any], after: dict[str, Any]) -> str:
         return "revoked"
     if before.get("checks") != after.get("checks") or before.get("uncertainty_policy") != after.get("uncertainty_policy"):
         return "tightened"
+    if (before.get("devices") and after.get("devices")
+            and before.get("controller_device_id") != after.get("controller_device_id")):
+        return "controller"  # handed over, or named for the first time (a passport from before controllers)
     if before.get("devices") != after.get("devices"):
         return "devices"
     if before.get("remembered_confirmations") != after.get("remembered_confirmations"):

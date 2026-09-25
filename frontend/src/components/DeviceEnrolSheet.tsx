@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { enrolThisDevice, thisDevice } from '../api/passport'
+import { enrolThisDevice, getDevices, thisDevice } from '../api/passport'
+import { controllerOf } from '../lib/passportDevices'
 import { getOrCreateDeviceKey } from '../lib/deviceKey'
 import { BottomSheet } from './BottomSheet'
 import { SpinnerIcon } from './icons/lucide'
@@ -10,8 +11,8 @@ const POLL_MS = 3000
 
 /**
  * Adding this browser to a card another device already controls
- * (`../../docs/passport.md` §4): name it once (`offer`), then wait while an
- * enrolled device approves it (`pending`). Polls the card's devices and
+ * (`../../docs/passport.md` §4): name it once (`offer`), then wait while the
+ * card's controller approves it (`pending`). Polls the card's devices and
  * finishes by itself the moment the approval lands.
  */
 export function DeviceEnrolSheet({
@@ -30,6 +31,8 @@ export function DeviceEnrolSheet({
   const [mode, setMode] = useState<EnrolMode>(initialMode)
   const [label, setLabel] = useState('')
   const [pendingLabel, setPendingLabel] = useState<string | null>(null)
+  // The controller's name (the customer's own text), once the card's devices are read.
+  const [controllerLabel, setControllerLabel] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState(false)
 
@@ -49,9 +52,11 @@ export function DeviceEnrolSheet({
     let cancelled = false
     async function check() {
       try {
-        const mine = await thisDevice(cardId)
+        const devices = await getDevices(cardId)
+        const mine = await thisDevice(cardId, devices)
         if (cancelled) return
         if (mine) setPendingLabel(mine.label)
+        setControllerLabel(controllerOf(devices)?.label ?? null)
         if (mine?.status === 'enrolled') {
           onChanged()
           onEnrolled()
@@ -111,7 +116,7 @@ export function DeviceEnrolSheet({
       >
         <p className="text-[15px] text-ink-soft">
           Card {cardId} is controlled from another device. Name this one — you can&apos;t change the
-          name later — then approve it from there.
+          name later — then approve it from the card&apos;s controller.
         </p>
         <label className="mt-4 block">
           <span className="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
@@ -148,7 +153,9 @@ export function DeviceEnrolSheet({
         </button>
       }
     >
-      <p className="text-[15px] text-ink-soft">This device isn&apos;t approved for card {cardId} yet.</p>
+      <p className="text-[15px] text-ink-soft">
+        {controllerLabel ? `Waiting for approval from ${controllerLabel}.` : `This device isn't approved for card ${cardId} yet.`}
+      </p>
       <div className="mt-4 flex items-center justify-between gap-3 rounded-row border border-asked-border bg-asked-tint px-4 py-3">
         {/* The customer's own name for the device — plain text. */}
         <span className="min-w-0 truncate text-[15px] font-semibold text-ink">{pendingLabel ?? label}</span>
@@ -157,7 +164,7 @@ export function DeviceEnrolSheet({
         </span>
       </div>
       <p className="mt-4 text-[13px] leading-[1.45] text-ink-muted">
-        On a device that already controls this card, open Card {cardId}, then Passport, and tap
+        On {controllerLabel ?? 'the device that controls this card'}, open Card {cardId}, then Passport, and tap
         Approve. This screen carries on by itself once it&apos;s approved.
       </p>
       <p className="mt-3 flex items-center gap-2 text-[13px] text-ink-muted" aria-live="polite">

@@ -566,7 +566,10 @@ class SoftSignalsState(ApiModel):
 
 
 class Device(ApiModel):
-    """A browser or phone that may control a card. ``label`` is the customer's own text."""
+    """A browser or phone that may control a card. ``label`` is the customer's own text.
+    ``role`` (enrolled devices only): ``controller``, the one device that approves, removes
+    and hands over control (the card's first, or the last one handed control), or
+    ``approved``; null while pending or once removed."""
 
     device_id: str
     card_id: str
@@ -576,6 +579,7 @@ class Device(ApiModel):
     enrolled_by_device_id: str | None
     removed_at: Timestamp | None
     last_seen_at: Timestamp
+    role: Literal["controller", "approved"] | None = None
 
 
 class DevicesResponse(ApiModel):
@@ -699,6 +703,7 @@ ErrorCode = Literal[
     "replay",
     "last_device",
     "device_state",
+    "not_controller",
     "forbidden",
 ]
 

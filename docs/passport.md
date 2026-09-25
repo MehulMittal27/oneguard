@@ -15,7 +15,8 @@ are byte-identical (`docs/replay-matrix.md`). Code: `backend/oneguard/passport/`
 | **Verify** | `POST /api/verify` (and the `/verify` page the passport's QR code opens): checks a document against OneGuard's public key | — | Anyone |
 | **Device binding** | Confirm, tighten, revoke, answering a step-up and approving or removing a device are accepted only when signed by a device enrolled on that card's passport | The customer's device | OneGuard, on every such request |
 
-- **Customer** holds the passport: sets the leash, approves devices, answers step-ups.
+- **Customer** holds the passport: sets the leash, approves devices (from the card's
+  controller device), answers step-ups.
 - **Agent** is its bearer: it may show the passport to a shop and it learns from every
   decline's `would_approve_if` what the customer would accept (posted to Viseca as an
   evidence row), never more.
@@ -107,8 +108,9 @@ Oliver Graf's card after enrolling the stage laptop (version 2; version 1 was th
   "remembered_confirmations": 0,
   "devices": [
     { "device_id": "f9e27513-6b45-4444-a463-a329eaf30d4a", "label": "Stage laptop",
-      "enrolled_at": "2026-09-25T00:30:09Z", "enrolled_by_device_id": null }
+      "enrolled_at": "2026-09-25T00:30:09Z", "enrolled_by_device_id": null, "role": "controller" }
   ],
+  "controller_device_id": "f9e27513-6b45-4444-a463-a329eaf30d4a",
   "issued_at": "2026-09-25T00:30:09Z",
   "expires_at": "2026-12-24T00:30:09Z",
   "revoked_at": null,
@@ -124,11 +126,15 @@ Oliver Graf's card after enrolling the stage laptop (version 2; version 1 was th
   `flag`. `flags` lists the policy flags that restrict something.
 - `remembered_confirmations`: step-ups the customer approved under this policy ("ask once,
   then remember"), which loosen later checks at the same shop.
-- `devices`: the card's enrolled devices when this version was issued.
+- `devices`: the card's enrolled devices when this version was issued, each with its `role`:
+  `controller` (exactly one while any device is enrolled) or `approved`.
+  `controller_device_id` names the controller (null with no device enrolled).
 - `expires_at`: `issued_at` + 90 days (mandates carry no expiry of their own).
 - Versions: `GET /api/cards/{card}/passport` lists `{version, issued_at, reason}`. Reasons:
   `confirmed` (C2), `backfill` (first start after the deploy), `tightened` (C4),
-  `devices` (a device enrolled, approved or removed), `confirmation` (a step-up approved),
+  `devices` (a device enrolled, approved or removed), `controller` (control handed to another
+  device, or named for the first time on a passport from before controllers),
+  `confirmation` (a step-up approved),
   `revoked` (C5, or a new policy on the card), `updated` (anything else). A version is
   issued only when the content changed; the older one gets `superseded_at`. A revoked
   passport never changes again.
@@ -218,27 +224,46 @@ rejects the body). AU0042, the re-quote at CHF 350, is approved.
   Otherwise `401` (`device_signature_required`, `device_not_enrolled`, `signature_invalid`,
   `replay`) and nothing is applied.
 - **Multi-device contract:**
-  1. The card's first device (none enrolled) is enrolled at once: trust on first use.
-  2. Any later device is `pending`: it can sign nothing until an enrolled device approves
-     it (`…/approve`, signed). Approving writes it into the passport (a new version) with
-     `enrolled_by_device_id`.
-  3. An enrolled device may remove a pending or enrolled one (`…/remove`, signed); the card
-     always keeps at least one enrolled device (`409 last_device`).
-  4. The same key enrolling again gets its existing device back; a removed device enrols
+  1. The card's first device (none enrolled) is enrolled at once and is the card's
+     **controller**: trust on first use.
+  2. Any later device is `pending`: it can sign nothing until the controller approves it
+     (`…/approve`, signed). Approving writes it into the passport (a new version) as an
+     **approved** device with `enrolled_by_device_id`.
+  3. Every enrolled device, controller or approved, confirms, tightens and revokes policies
+     and answers step-ups (C2, C4, C5, C8).
+  4. Only the controller manages devices: it approves, removes a pending or approved one
+     (`…/remove`), and hands control to another enrolled device (`…/transfer`); it then stays
+     enrolled as approved. Any other device gets `403 not_controller` and nothing changes. The
+     controller cannot remove itself while another device is enrolled (`409 device_state`:
+     transfer first); alone it is the card's last device (`409 last_device`). So an enrolled
+     card always has exactly one controller.
+  5. The same key enrolling again gets its existing device back; a removed device enrols
      again as new (pending).
-- **Recovery:** a customer who lost every device cannot approve a new one. The operator
+  6. The passport is re-issued on every change of who may sign or manage (reasons
+     `devices`, `controller`).
+- **Controllers from before this rule** (`devices.controller_since`, a nullable column
+  `init_db` adds in place): the controller is the enrolled device with the latest
+  `controller_since`, set on a card's first device and on each transfer. Rows written before
+  have it NULL, so the earliest enrolled device is the controller, and a card with no enrolled
+  device has none; nothing is rewritten. Each existing passport with devices gets one new
+  version (reason `controller`) naming it at the next sync; one without devices gets one
+  (reason `updated`) with `controller_device_id: null`.
+- **Recovery:** a customer who lost the controller cannot approve a new device (another
+  approved device still signs policies and answers, and cannot take control itself). The operator
   endpoint `POST /api/dev/devices/reset/{card}` (refused when `ONEGUARD_ENV=prod`) removes
   them all, so the next device enrols as the first. In a real rollout this is issuer-side
   recovery: the bank re-establishes the customer's identity, then resets.
 - **Operator terminal** (`python -m oneguard.passport.cli`, docs/demo-script.md step 3a):
   the terminal is a device too, with the same key as `make demo-live`; it enrols on cards
-  (`enrol`), lists (`devices`), approves or removes devices by label (`approve`, `remove`),
+  (`enrol`, first on the demo cards, so it is their controller), lists (`devices`, with each
+  role), approves or removes devices by label (`approve`, `remove`), hands control to another
+  enrolled device (`transfer`),
   confirms a saved C1 draft (`confirm`) and revokes (`revoke`), all signed. In production
   (no reset) it is how the operator keeps a way to approve the stage browser or a phone.
 - `make demo-live` signs its C2 with a key of its own per server
   (`~/.config/oneguard/device-<host>.pem`, override `ONEGUARD_DEVICE_KEY`), label
   "demo-live on <host>". On a card that already has an enrolled device it stops before
-  changing anything and asks for that device's approval.
+  changing anything and asks for the controller's approval.
 
 ### 4.1 The first passport
 

@@ -201,7 +201,7 @@ _DEVICE_BOUND = (
     re.compile(r"^/api/policy-drafts/(?P<draft>[^/]+)/confirm$"),
     re.compile(r"^/api/cards/(?P<card>[^/]+)/policy/(?:tighten|revoke)$"),
     re.compile(r"^/api/authorizations/(?P<live>[^/]+)/resolve$"),
-    re.compile(r"^/api/cards/(?P<card>[^/]+)/devices/[^/]+/(?:approve|remove)$"),
+    re.compile(r"^/api/cards/(?P<card>[^/]+)/devices/[^/]+/(?:approve|remove|transfer)$"),
 )
 
 

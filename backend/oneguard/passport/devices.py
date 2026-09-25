@@ -15,10 +15,14 @@ without the query, ``ts`` the header's integer. The signature may be raw ``r || 
 bytes, what WebCrypto makes) or DER. A request is accepted only when the device is
 ``enrolled`` on the card it acts on, ``|now - ts| <= 120 s`` and the nonce is new.
 
-Enrolment: the first device on a card (none enrolled) is enrolled at once; any later one
-waits ``pending`` until an enrolled device approves it. At least one enrolled device
-always remains. The operator reset (``/api/dev/devices/reset/{card}``, outside prod)
-removes them all: issuer-side recovery in a real rollout.
+Enrolment: the first device on a card (none enrolled) is enrolled at once and is the card's
+**controller**; any later one waits ``pending`` until the controller approves it, and is then
+an **approved** device. Every enrolled device signs policy changes (C2, C4, C5) and step-up
+answers (C8); only the controller approves or removes devices and hands control to another
+enrolled device (``transfer``); anyone else gets ``not_controller`` (403). The controller
+cannot remove itself (it transfers first), so an enrolled card always has one. At least one
+enrolled device always remains. The operator reset (``/api/dev/devices/reset/{card}``,
+outside prod) removes them all: issuer-side recovery in a real rollout.
 """
 
 from __future__ import annotations
@@ -62,6 +66,15 @@ class DeviceAuthError(Exception):
     def __init__(self, code: AuthCode, message: str) -> None:
         super().__init__(message)
         self.code = code
+        self.message = message
+
+
+class DeviceRoleError(Exception):
+    """A device change only the card's controller may make, asked by another device (403)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.code = "not_controller"
         self.message = message
 
 
@@ -126,6 +139,9 @@ def verify_signature(jwk: Mapping[str, Any], signature_b64: str, payload: bytes)
 # Devices -----------------------------------------------------------------------------------
 
 
+Role = Literal["controller", "approved"]
+
+
 @dataclass(frozen=True)
 class DeviceView:
     device_id: str
@@ -137,14 +153,45 @@ class DeviceView:
     enrolled_by_device_id: str | None
     removed_at: datetime | None
     last_seen_at: datetime
+    role: Role | None = None  # enrolled devices only
 
 
-def _view(row: Device) -> DeviceView:
+def controller_of(rows: list[Device]) -> Device | None:
+    """The card's controller among its device rows: the enrolled device that became it last
+    (``controller_since``); with none marked (rows from before controllers existed) the
+    earliest enrolled device; None when no device is enrolled."""
+    live = [r for r in rows if r.status == "enrolled"]
+    marked = [r for r in live if r.controller_since is not None]
+    if marked:
+        return max(marked, key=lambda r: (r.controller_since, r.device_id))
+    return min(live, key=lambda r: (r.enrolled_at or r.last_seen_at, r.device_id), default=None)
+
+
+def _role(row: Device, controller: Device | None) -> Role | None:
+    if row.status != "enrolled":
+        return None
+    return "controller" if controller is not None and row.device_id == controller.device_id else "approved"
+
+
+def _view(row: Device, controller: Device | None = None) -> DeviceView:
     return DeviceView(
         device_id=row.device_id, card_id=row.card_id, customer_id=row.customer_id, label=row.label,
         status=row.status, enrolled_at=row.enrolled_at, enrolled_by_device_id=row.enrolled_by_device_id,
-        removed_at=row.removed_at, last_seen_at=row.last_seen_at,
+        removed_at=row.removed_at, last_seen_at=row.last_seen_at, role=_role(row, controller),
     )  # fmt: skip
+
+
+def _card_rows(s: Any, card_id: str) -> list[Device]:
+    return list(s.scalars(select(Device).where(Device.card_id == card_id)))
+
+
+def _controller_signed(rows: list[Device], by_device_id: str, what: str) -> Device:
+    """The card's controller, which must be the signer; else ``not_controller``."""
+    controller = controller_of(rows)
+    if controller is None or controller.device_id != by_device_id:
+        name = f' ("{controller.label}")' if controller is not None else ""
+        raise DeviceRoleError(f"Only the device that controls this card{name} can {what}.")
+    return controller
 
 
 def clean_label(label: str | None) -> str:
@@ -160,8 +207,20 @@ def devices(db: Engine, card_ids: list[str]) -> list[DeviceView]:
     order = {"enrolled": 0, "pending": 1, "removed": 2}
     with session(db) as s:
         rows = list(s.scalars(select(Device).where(Device.card_id.in_(sorted(set(card_ids))))))
-    views = [_view(r) for r in rows]
+    by_card: dict[str, list[Device]] = {}
+    for r in rows:
+        by_card.setdefault(r.card_id, []).append(r)
+    controllers = {card: controller_of(card_rows) for card, card_rows in by_card.items()}
+    views = [_view(r, controllers[r.card_id]) for r in rows]
     return sorted(views, key=lambda d: (order.get(d.status, 3), d.enrolled_at or d.last_seen_at, d.device_id))
+
+
+def device(db: Engine, card_id: str, device_id: str) -> DeviceView:
+    """One device on the card with its role (KeyError when the card has no such device)."""
+    found = next((d for d in devices(db, [card_id]) if d.device_id == device_id), None)
+    if found is None:
+        raise KeyError(device_id)
+    return found
 
 
 def enrolled(db: Engine, card_id: str) -> list[DeviceView]:
@@ -172,15 +231,16 @@ def enrol(db: Engine, card_id: str, customer_id: str, jwk: Mapping[str, Any], la
     """Register a device key on a card: ``(device, changed)``.
 
     The same key on the same card returns its existing device (a removed one enrols
-    again as new). The card's first device is enrolled at once; others are pending.
+    again as new). The card's first device is enrolled at once as its controller; others
+    are pending until the controller approves them.
     """
     public = public_jwk(jwk)
     print_ = thumbprint(public)
     with session(db) as s:
-        rows = list(s.scalars(select(Device).where(Device.card_id == card_id)))
+        rows = _card_rows(s, card_id)
         for row in rows:
             if row.status != "removed" and thumbprint(row.public_key_jwk) == print_:
-                return _view(row), False
+                return _view(row, controller_of(rows)), False
         first = not any(r.status == "enrolled" for r in rows)
         row = Device(
             device_id=str(uuid.uuid4()),
@@ -193,48 +253,75 @@ def enrol(db: Engine, card_id: str, customer_id: str, jwk: Mapping[str, Any], la
             enrolled_by_device_id=None,
             removed_at=None,
             last_seen_at=now,
+            controller_since=now if first else None,
         )
         s.add(row)
         s.flush()
-        return _view(row), True
+        return _view(row, controller_of([*rows, row])), True
+
+
+def _target(rows: list[Device], device_id: str) -> Device:
+    row = next((r for r in rows if r.device_id == device_id), None)
+    if row is None:
+        raise KeyError(device_id)
+    return row
 
 
 def approve(db: Engine, card_id: str, device_id: str, by_device_id: str, now: datetime) -> DeviceView:
+    """The controller (``by_device_id``) lets a pending device sign for the card."""
     with session(db) as s:
-        row = s.get(Device, device_id)
-        if row is None or row.card_id != card_id:
-            raise KeyError(device_id)
+        rows = _card_rows(s, card_id)
+        row = _target(rows, device_id)
+        controller = _controller_signed(rows, by_device_id, "approve devices")
         if row.status != "pending":
             raise DeviceStateError("device_state", f"This device is {row.status}, not waiting for approval.")
         row.status = "enrolled"
         row.enrolled_at = now
         row.enrolled_by_device_id = by_device_id
         s.flush()
-        return _view(row)
+        return _view(row, controller)
 
 
-def remove(db: Engine, card_id: str, device_id: str, now: datetime) -> DeviceView:
-    """Remove a pending or enrolled device; the card's last enrolled device stays (409)."""
+def remove(db: Engine, card_id: str, device_id: str, by_device_id: str, now: datetime) -> DeviceView:
+    """The controller removes a pending or approved device. It cannot remove itself: with
+    other devices enrolled it transfers control first (409 ``device_state``); alone, it is
+    the card's last device (409 ``last_device``)."""
     with session(db) as s:
-        row = s.get(Device, device_id)
-        if row is None or row.card_id != card_id:
-            raise KeyError(device_id)
+        rows = _card_rows(s, card_id)
+        row = _target(rows, device_id)
+        controller = _controller_signed(rows, by_device_id, "remove devices")
         if row.status == "removed":
             raise DeviceStateError("device_state", "This device is already removed.")
-        if row.status == "enrolled":
-            others = s.scalars(
-                select(Device.device_id).where(
-                    Device.card_id == card_id, Device.status == "enrolled", Device.device_id != device_id
-                )
-            ).first()
-            if others is None:
+        if row.device_id == controller.device_id:
+            if any(r.status == "enrolled" and r.device_id != row.device_id for r in rows):
                 raise DeviceStateError(
-                    "last_device", "This is the only device that controls this card; approve another one first."
+                    "device_state", "This device controls the card; make another device the controller first."
                 )
+            raise DeviceStateError(
+                "last_device", "This is the only device that controls this card; approve another one first."
+            )
         row.status = "removed"
         row.removed_at = now
         s.flush()
-        return _view(row)
+        return _view(row, controller)
+
+
+def transfer(db: Engine, card_id: str, device_id: str, by_device_id: str, now: datetime) -> DeviceView:
+    """The controller hands control to another enrolled device, which becomes the controller;
+    the old controller stays enrolled as an approved device."""
+    with session(db) as s:
+        rows = _card_rows(s, card_id)
+        row = _target(rows, device_id)
+        controller = _controller_signed(rows, by_device_id, "hand over control")
+        if row.status != "enrolled":
+            raise DeviceStateError("device_state", f"This device is {row.status}; approve it first.")
+        if row.device_id == controller.device_id:
+            raise DeviceStateError("device_state", "This device already controls the card.")
+        for other in rows:
+            other.controller_since = None
+        row.controller_since = now
+        s.flush()
+        return _view(row, row)
 
 
 def reset(db: Engine, card_id: str, now: datetime) -> int:
@@ -244,6 +331,7 @@ def reset(db: Engine, card_id: str, now: datetime) -> int:
         for row in rows:
             row.status = "removed"
             row.removed_at = now
+            row.controller_since = None
         return len(rows)
 
 

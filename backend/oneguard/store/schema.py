@@ -473,8 +473,12 @@ class SigningKey(Base):
 class Device(Base):
     """A browser or phone that controls a card: its P-256 public key, never the private one.
 
-    ``status``: ``pending`` (waits for an enrolled device to approve it), ``enrolled``,
+    ``status``: ``pending`` (waits for the card's controller to approve it), ``enrolled``,
     ``removed``. ``enrolled_by_device_id`` is None for a card's first device.
+    ``controller_since``: when this device became the card's controller (its first device,
+    or a transfer); the enrolled device with the latest one is the controller. NULL on rows
+    written before controllers existed: then the earliest enrolled device is the controller
+    (``passport.devices.controller_of``).
     """
 
     __tablename__ = "devices"
@@ -490,6 +494,7 @@ class Device(Base):
     enrolled_by_device_id: Mapped[str | None]
     removed_at: Mapped[datetime | None]
     last_seen_at: Mapped[datetime]
+    controller_since: Mapped[datetime | None]
 
 
 class DeviceNonce(Base):

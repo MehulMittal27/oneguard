@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { getDevices } from '../api/passport'
+import { getDevices, thisDevice } from '../api/passport'
 import type { Device } from '../api/types'
+import { isController } from '../lib/passportDevices'
 import { useDevice } from '../state/DeviceContext'
 import { BackChevronIcon, DeviceIcon } from './icons/lucide'
 
@@ -8,8 +9,9 @@ const POLL_MS = 5000
 
 /**
  * Home's "Devices waiting for your approval" (`../../docs/api-contract.md` §6
- * item 22): every pending device on any of the customer's cards, each opening
- * its card, where an enrolled device approves or removes it. Hidden when none
+ * item 22): every pending device on the customer's cards this browser controls,
+ * each opening its card, where the controller approves or removes it. Only the
+ * controller sees it: another device could not approve anyway. Hidden when none
  * waits; a failed read keeps what was shown (it is a hint, not a state).
  */
 export function PendingDevicesCard({ cardIds, onOpenCard }: { cardIds: string[]; onOpenCard: (cardId: string) => void }) {
@@ -23,7 +25,12 @@ export function PendingDevicesCard({ cardIds, onOpenCard }: { cardIds: string[];
     let cancelled = false
     async function read() {
       try {
-        const lists = await Promise.all(cards.map((card) => getDevices(card)))
+        const lists = await Promise.all(
+          cards.map(async (card) => {
+            const list = await getDevices(card)
+            return isController(list, await thisDevice(card, list)) ? list : []
+          }),
+        )
         if (!cancelled) setPending(lists.flat().filter((d) => d.status === 'pending'))
       } catch {
         // Keep what is shown; the next poll tries again.

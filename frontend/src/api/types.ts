@@ -278,6 +278,9 @@ export interface Device {
   enrolled_by_device_id: string | null
   removed_at: string | null
   last_seen_at: string
+  // Enrolled devices only: the card's one controller (approves, removes, hands
+  // over control) or an approved device. Absent from a backend before controllers.
+  role?: 'controller' | 'approved' | null
 }
 
 export interface VerifyResult {
