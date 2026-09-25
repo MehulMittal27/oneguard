@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { DEEP_LINK } from '../lib/deepLink'
 
 /**
  * Presentational-only wrapper (D-065, refined D-066 through D-074) — no
@@ -62,6 +63,18 @@ import type { ReactNode } from 'react'
 export const OVERLAY_HOST_ID = 'device-screen'
 
 export function DeviceFrame({ children }: { children: ReactNode }) {
+  // `?embed=1` (lib/deepLink.ts): the operator console draws the bezel around
+  // its iframe, so the app fills that frame exactly, as on a real phone. The
+  // screen div keeps its transform and id, so overlays stay inside it.
+  if (DEEP_LINK.embed) {
+    return (
+      <div className="flex h-screen flex-col overflow-hidden bg-ground">
+        <div id={OVERLAY_HOST_ID} className="flex min-h-0 flex-1 flex-col overflow-hidden transform-gpu">
+          {children}
+        </div>
+      </div>
+    )
+  }
   return (
     <div className="flex min-h-screen justify-center bg-ground sm:items-center sm:bg-device-backdrop sm:p-10">
       <div className="relative flex h-screen w-full flex-col overflow-hidden sm:h-[min(844px,85vh)] sm:max-w-97.5 sm:rounded-[50px] sm:bg-device-bezel sm:p-7 sm:shadow-[0_30px_60px_-20px_rgba(0,0,0,0.45)]">

@@ -17,7 +17,8 @@ const backend = {
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   // `npm run dev` — keeps HMR while the app talks to the real engine.
-  server: { proxy: { '/api': backend } },
+  // `/healthz` too: the operator console (`/ops`) shows it.
+  server: { proxy: { '/api': backend, '/healthz': backend } },
   // `npm run preview` — the built bundle, still against a local backend.
-  preview: { proxy: { '/api': backend } },
+  preview: { proxy: { '/api': backend, '/healthz': backend } },
 })

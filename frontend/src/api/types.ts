@@ -226,8 +226,8 @@ export interface Decision {
   } | null
 }
 
-// Operator-only shapes (`../docs/api-contract.md` §1.1 D1–D6), for the `?demo=1`
-// strip. Field-for-field with the backend's `api/models.py`.
+// Operator-only shapes (`../docs/api-contract.md` §1.2 D1–D9), for the `?demo=1`
+// strip and the `/ops` console. Field-for-field with the backend's `api/models.py`.
 export interface ReplayStatus {
   scenario_id: string
   card_id: string
@@ -235,6 +235,14 @@ export interface ReplayStatus {
   total: number
   running: boolean
   next_at: string | null
+  // The run_id this replay's C6 decisions carry, its start (real clock), how
+  // many purchases it has decided and who holds the card. Absent from older
+  // backends.
+  ledger_run_id?: string
+  started_at?: string
+  decided?: number
+  customer_id?: string
+  customer_name?: string
 }
 
 // D5 read: whether the models run now, for live runs and for the offline replay.
@@ -256,6 +264,25 @@ export interface LiveRun {
   total: number
   worker_ok: boolean
   last_error: string | null
+  // Who holds card_id; the run_id its C6 decisions carry (run_id is the
+  // platform's); its start, real clock. Absent from older backends.
+  customer_id?: string
+  customer_name?: string
+  ledger_run_id?: string
+  started_at?: string
+}
+
+// D9: one scenario of the store's catalogue, for the console's picker. The
+// customer and card are null until something names the scenario's card.
+export interface ScenarioSummary {
+  scenario_id: string
+  name: string
+  event_count: number
+  // The cardholder instruction, verbatim.
+  instruction: string
+  customer_id: string | null
+  customer_name: string | null
+  card_id: string | null
 }
 
 export interface LedgerSnapshotEntry {
