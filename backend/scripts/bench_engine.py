@@ -14,8 +14,9 @@ Each stage is timed with ``time.perf_counter`` around the call; end to end is th
 (``add_ledger_results``, model copies, the API ``Decision``). Target: end-to-end P95 < 20 ms.
 
 ``--laya`` mode: loads Laya once with ``signals.warm()`` (reported as load time), then
-times only the soft signal: ``soft_signals`` per purchase (45) and the model call per
-item line (56), ``--reps`` times each. If Laya cannot load, the error is printed and
+times only the soft signal: ``soft_signals`` per purchase (45; the model reads only the
+lines ``signals._for_model`` keeps, the count is printed) and the model call per item
+line (56, every line), ``--reps`` times each. If Laya cannot load, the error is printed and
 the rows are skipped. ``--lines-only`` times only the model call per item line: a short
 run that leaves a shared-CPU machine's burst balance intact (docs/benchmark.md §3).
 """
@@ -223,7 +224,8 @@ def bench_laya(reps: int, lines_only: bool = False) -> int:
             start = time.perf_counter()
             signals.BACKEND.predict(text)
             per_line.append((time.perf_counter() - start) * 1000)
-    print(f"{len(facts)} purchases / {len(lines)} item lines × {reps} reps\n")
+    read = sum(len(signals._for_model(f)) for f in facts)
+    print(f"{len(facts)} purchases / {len(lines)} item lines ({read} read by the model per repetition) × {reps} reps\n")
     rows = [("soft_signals per purchase (laya)", per_event)] if per_event else []
     print(table([*rows, ("Laya agent_directed per item line", per_line)]))
     if lines_only:
