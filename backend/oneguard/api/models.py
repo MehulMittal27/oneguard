@@ -353,9 +353,15 @@ class Decision(ApiModel):
 class ReplayStatus(ApiModel):
     """D1, D2, D7. ``ledger_run_id``: the ``run_id`` this replay's C6 decisions carry;
     ``started_at``: when it started, real clock; ``decided``: purchases decided so far;
-    ``customer_id`` / ``customer_name``: who holds ``card_id``."""
+    ``customer_id`` / ``customer_name``: who holds ``card_id``; ``mandate_id``: the policy
+    the replay decides by; ``policy_source``: ``card`` when that is the card's active policy,
+    ``revoked`` when it is the card's last policy, revoked (every purchase declines),
+    ``scenario`` when the card never had one and the scenario's instruction was compiled for
+    this replay only."""
 
-    _omit_if_none = frozenset({"ledger_run_id", "started_at", "decided", "customer_id", "customer_name"})
+    _omit_if_none = frozenset(
+        {"ledger_run_id", "started_at", "decided", "customer_id", "customer_name", "mandate_id", "policy_source"}
+    )
 
     scenario_id: str
     card_id: str
@@ -368,6 +374,8 @@ class ReplayStatus(ApiModel):
     decided: int | None = Field(default=None, ge=0)
     customer_id: str | None = None
     customer_name: str | None = None
+    mandate_id: str | None = None
+    policy_source: Literal["card", "revoked", "scenario"] | None = None
 
 
 class LiveRun(ApiModel):

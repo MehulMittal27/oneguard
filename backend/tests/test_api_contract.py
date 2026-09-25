@@ -1745,8 +1745,9 @@ def test_d7_shows_the_newest_run_live_or_replay(db_url: str, monkeypatch: pytest
             assert (current["customer_id"], current["customer_name"], current["decided"]) == ("CU0001", "Alex Meier", 10)
             assert sum(d.get("run_id") == current["ledger_run_id"] for d in decisions) == 10
             assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", current["started_at"])
+            assert current["policy_source"] == "scenario"  # no policy on the card yet
 
-            await confirm_form(run)
+            mandate = await confirm_form(run)
             live = (await run.post("/api/dev/runs", json={"scenario_id": "SCEN0000", "card_id": "CA0001"})).json()
             current = (await run.get("/api/dev/runs/current")).json()
             assert current["run_id"] == live["run_id"]
@@ -1773,8 +1774,11 @@ def test_d7_shows_the_newest_run_live_or_replay(db_url: str, monkeypatch: pytest
                 "decided",
                 "customer_id",
                 "customer_name",
+                "mandate_id",
+                "policy_source",
             }
             assert (current["delivered"], current["decided"], current["total"], current["running"]) == (10, 10, 10, False)
+            assert (current["policy_source"], current["mandate_id"]) == ("card", mandate["mandate_id"])
 
             # read-only, whatever ONEGUARD_ALLOW_RUNS says
             monkeypatch.setenv("ONEGUARD_ALLOW_RUNS", "false")

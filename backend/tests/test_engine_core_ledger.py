@@ -571,13 +571,32 @@ def test_only_a_yes_carries_over(ledger, answer):
     assert ledger._confirmed_keys("live-2", T) == set()
 
 
-def test_watch_carries_to_the_next_live_session_on_the_card(ledger):
+def test_watch_carries_to_the_next_live_session_under_the_mandate(ledger):
     add_run(ledger, "live-1", day=0)
-    add_run(ledger, "live-2", mandate="TM_NEW", day=1)  # a new instruction doesn't clear an attack
+    add_run(ledger, "live-2", day=1)  # a new session doesn't clear an attack
     _ask_in(ledger, "live-1", None, trust="frozen")
     assert view(ledger, run_id="live-2").frozen is True
     _ask_in(ledger, "live-2", ("approve", "customer"))  # customer says yes in the new session
     assert view(ledger, run_id="live-2").frozen is False
+
+
+def test_a_new_policy_starts_clean(ledger):
+    """Watch, remembered answers and fulfilments are per mandate: the customer confirming a
+    new policy on the card (a new mandate) starts the next live session with none of them."""
+    add_run(ledger, "live-0", day=0)
+    add_run(ledger, "live-1", day=1)
+    add_run(ledger, "live-2", day=2)
+    add_run(ledger, "live-3", mandate="TM_NEW", day=3)
+    _ask_in(ledger, "live-0", ("approve", "customer"))
+    bought = entry("approve", 289.0, T - timedelta(hours=1), run_id="live-1")
+    ledger.record(bought)
+    ledger.mark_requested_item(bought.live_authorization_id, "27-inch monitor")
+    _ask_in(ledger, "live-1", None, trust="frozen")
+    same = view(ledger, run_id="live-2")
+    assert (same.frozen, same.confirmed_keys, [f.authorization_id for f in same.fulfilments]) == (
+        True, {"U1|GYM|I1", "U1|GYM|*"}, [bought.live_authorization_id])
+    fresh = view(ledger, run_id="live-3")
+    assert (fresh.frozen, fresh.confirmed_keys, fresh.fulfilments) == (False, set(), [])
 
 
 def test_yes_in_the_old_session_clears_it_for_the_next(ledger):

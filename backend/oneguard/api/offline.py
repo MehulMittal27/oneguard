@@ -71,6 +71,9 @@ class ReplayState:
     events: list[dict[str, Any]]
     speed_ms: int
     started_at: datetime
+    policy_source: Literal["card", "revoked", "scenario"] | None = None
+    """D2's: the card's active or revoked policy, or the scenario's compiled one; None: a
+    fixture (``make replay``)."""
     delivered: int = 0
     running: bool = True
     next_at: datetime | None = None
@@ -90,6 +93,8 @@ class ReplayState:
             started_at=self.started_at,
             decided=len(self.decided),
             customer_id=self.customer_id,
+            mandate_id=self.policy.mandate_id,
+            policy_source=self.policy_source,
         )
 
 
@@ -149,6 +154,7 @@ class OfflineRunner:
         provider: Provider | None,
         signals_enabled: bool,
         speed_ms: int | None,
+        policy_source: Literal["card", "revoked", "scenario"] | None = None,
     ) -> api.ReplayStatus:
         """Stop the running replay (its pending step-ups keep their windows) and start anew."""
         await self._stop_replay()
@@ -158,6 +164,7 @@ class OfflineRunner:
             card_id=card_id,
             customer_id=customer_id,
             policy=policy,
+            policy_source=policy_source,
             events=events,
             speed_ms=DEFAULT_SPEED_MS if speed_ms is None else speed_ms,
             started_at=self._now(),

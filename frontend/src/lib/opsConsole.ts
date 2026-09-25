@@ -1,6 +1,6 @@
 import type { Health } from '../api/ops'
 import type { CurrentRun } from '../api/operator'
-import type { Decision, LiveRun, ScenarioSummary } from '../api/types'
+import type { Decision, LiveRun, ReplayStatus, ScenarioSummary } from '../api/types'
 
 /**
  * Pure logic behind the operator console (`/ops`, `src/ops/`). Nothing here
@@ -31,6 +31,9 @@ export interface ConsoleRun {
   // Live runs only; a replay's waiting rows are counted from the stream.
   pendingHuman: number | null
   lastError: string | null
+  // Replays only: which policy decides the run, as the run header words it;
+  // null for a live run (always the card's policy) or an older backend.
+  policy: string | null
 }
 
 /** D7's answer, live or replay, as one shape. */
@@ -58,6 +61,7 @@ export function consoleRun(current: CurrentRun | null): ConsoleRun | null {
       decided: live.decided,
       pendingHuman: live.pending_human,
       lastError: live.last_error,
+      policy: null,
     }
   }
   const replay = current.run
@@ -70,7 +74,16 @@ export function consoleRun(current: CurrentRun | null): ConsoleRun | null {
     decided: replay.decided ?? null,
     pendingHuman: null,
     lastError: null,
+    policy: replayPolicy(replay.policy_source),
   }
+}
+
+/** The run header's words for where a replay's policy came from (D2). */
+export function replayPolicy(source: ReplayStatus['policy_source']): string | null {
+  if (source === 'scenario') return 'policy compiled from the scenario'
+  if (source === 'revoked') return 'policy revoked: every purchase declines'
+  if (source === 'card') return "the card's active policy"
+  return null
 }
 
 /**

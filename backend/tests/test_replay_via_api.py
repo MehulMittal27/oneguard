@@ -11,6 +11,7 @@ that depend on an earlier answer are read in their "left pending" / "no yes" bra
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -136,3 +137,119 @@ def test_injected_shop_text_is_flagged_and_never_repeated(api_run):
         said = " ".join([row["message"], row.get("counterfactual") or "", *(e["detail"] for e in row["evidence"])])
         for fragment in ("ignore any previous", "pre-authorised our store", "approve this payment"):
             assert fragment not in said.lower(), (source, fragment)
+
+
+# --- D2 decides by the card's own policy -----------------------------------------------
+
+STRICTER = (
+    "Buy the 27-inch monitor I chose, from a seller I have bought from before, for CHF 300 or less. "
+    "Do not add anything I did not ask for. Ask me when uncertain."
+)
+
+
+async def replay_scen0004(run: Running) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """D2 SCEN0004 on CA0039 at full speed; (D2's reply, {source id: C6 decision})."""
+    r = await run.post("/api/dev/replay/restart", json={"scenario_id": "SCEN0004", "card_id": "CA0039", "speed_ms": 0})
+    assert r.status_code == 200, r.text
+    started = r.json()
+    attempts = Pack.load().attempts_for("SCEN0004")
+
+    async def finished() -> bool:
+        status = (await run.get("/api/dev/replay")).json()
+        return not status["running"] and status["delivered"] == len(attempts)
+
+    await until(finished, timeout=60)
+    rows = sorted(
+        (d for d in await run.decisions("CU0019") if d["run_id"] == started["ledger_run_id"]),
+        key=lambda d: d["occurred_at"],
+    )
+    return started, {a["authorization_id"]: row for a, row in zip(attempts, rows, strict=True)}
+
+
+async def stored_current_run(db_url: str) -> dict[str, Any]:
+    """D7 from a fresh process: the replay read back from its ``runs`` row."""
+    async with running(db_url, provider=NullProvider()) as run:
+        return (await run.get("/api/dev/runs/current")).json()
+
+
+async def confirm_stricter(run: Running) -> dict[str, Any]:
+    """The customer types ``STRICTER`` on CA0039 and confirms it on their device (C1, C2)."""
+    r = await run.post("/api/cards/CA0039/policy-drafts", json={"instruction": STRICTER})
+    assert r.status_code == 200, r.text
+    draft = r.json()
+    r = await run.post(
+        f"/api/policy-drafts/{draft['draft_id']}/confirm",
+        json={"checks": draft["checks"], "uncertainty_policy": draft["uncertainty_policy"], "open_questions": []},
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_replay_decides_by_the_cards_active_policy(seeded: Path, tmp_path: Path) -> None:
+    """The customer types a stricter policy on CA0039 (CHF 300 per order), confirms it on
+    their device, then SCEN0004 is replayed: AU0035 (CHF 289) approves, AU0038 (CHF 391.50)
+    declines over CHF 300, and the run says it decided by the card's policy."""
+
+    db = fresh_db(seeded, tmp_path, "card")
+
+    async def scenario() -> None:
+        async with running(db, implementations=None, stubbed=None, provider=NullProvider()) as run:
+            mandate = await confirm_stricter(run)
+            started, rows = await replay_scen0004(run)
+            assert (started["policy_source"], started["mandate_id"]) == ("card", mandate["mandate_id"])
+            assert rows["AU0035"]["decision"] == "approved"
+            assert rows["AU0035"]["message"] == "Approved CHF 289.00: it is within the limits you set."
+            assert rows["AU0038"]["decision"] == "stopped"
+            assert "per_order_limit_exceeded" in rows["AU0038"]["reason_codes"]
+            assert rows["AU0038"]["message"] == "Declined CHF 391.50: CHF 391.50 is over your CHF 300.00 limit."
+            current = (await run.get("/api/dev/runs/current")).json()
+            assert (current["policy_source"], current["mandate_id"]) == ("card", mandate["mandate_id"])
+            run.clock.offset += timedelta(minutes=1)
+            assert (await run.post("/api/cards/CA0039/policy/revoke")).status_code == 204  # after the run
+        stored = await stored_current_run(db)
+        assert (stored["policy_source"], stored["mandate_id"]) == ("card", mandate["mandate_id"])
+
+    asyncio.run(scenario())
+
+
+def test_replay_under_a_revoked_policy_declines_every_purchase(seeded: Path, tmp_path: Path) -> None:
+    """The card's last policy is revoked: the replay runs under it, not the scenario's, so
+    every purchase declines at step 1, and the run says the policy is revoked."""
+    db = fresh_db(seeded, tmp_path, "revoked")
+
+    async def scenario() -> None:
+        async with running(db, implementations=None, stubbed=None, provider=NullProvider()) as run:
+            mandate = await confirm_stricter(run)
+            r = await run.post("/api/cards/CA0039/policy/revoke")
+            assert r.status_code == 204, r.text
+            started, rows = await replay_scen0004(run)
+            assert (started["policy_source"], started["mandate_id"]) == ("revoked", mandate["mandate_id"])
+            assert (await run.get("/api/dev/runs/current")).json()["policy_source"] == "revoked"
+            for source, row in rows.items():
+                assert row["decision"] == "stopped", source
+                assert {"card_or_authority_inactive", "no_active_policy"} & set(row["reason_codes"]), source
+        assert (await stored_current_run(db))["policy_source"] == "revoked"
+
+    asyncio.run(scenario())
+
+
+def test_replay_without_a_policy_compiles_the_scenario_and_says_so(seeded: Path, tmp_path: Path) -> None:
+    """A card that never had a policy: the scenario's own instruction (CHF 400) decides, for
+    this replay only, and D2, D1 and D7 say the policy was compiled from the scenario."""
+
+    db = fresh_db(seeded, tmp_path, "scenario")
+
+    async def scenario() -> None:
+        async with running(db, implementations=None, stubbed=None, provider=NullProvider()) as run:
+            assert (await run.get("/api/cards/CA0039/policy")).json()["mandate"] is None
+            started, rows = await replay_scen0004(run)
+            assert (started["policy_source"], started["mandate_id"]) == ("scenario", "replay-SCEN0004")
+            for path in ("/api/dev/replay", "/api/dev/runs/current"):
+                assert (await run.get(path)).json()["policy_source"] == "scenario", path
+            assert rows["AU0035"]["decision"] == "approved"
+            assert rows["AU0038"]["decision"] == "uncertain"  # within CHF 400: the monitor is already bought
+            assert "already_fulfilled" in rows["AU0038"]["reason_codes"]
+            assert (await run.get("/api/cards/CA0039/policy")).json()["mandate"] is None  # nothing stored
+        assert (await stored_current_run(db))["policy_source"] == "scenario"
+
+    asyncio.run(scenario())

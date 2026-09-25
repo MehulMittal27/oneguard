@@ -311,6 +311,12 @@ export interface ReplayStatus {
   decided?: number
   customer_id?: string
   customer_name?: string
+  // The policy the replay decides by: the card's active one ('card'), its last
+  // one, revoked, so every purchase declines ('revoked'), or, for a card that
+  // never had one, the scenario's instruction compiled for this replay only
+  // ('scenario'). Absent from older backends.
+  mandate_id?: string
+  policy_source?: 'card' | 'revoked' | 'scenario'
 }
 
 // D5 read: whether the models run now, for live runs and for the offline replay.

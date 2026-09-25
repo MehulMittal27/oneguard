@@ -63,6 +63,7 @@ export function RunHeader({
         <p className={`${TEXT_M} text-ink-muted`}>
           {run.customerName ?? run.customerId ?? 'Unknown customer'}
           {run.customerId && run.customerName ? ` (${run.customerId})` : ''} · card {run.cardId}
+          {run.policy ? ` · ${run.policy}` : ''}
         </p>
       </div>
 
