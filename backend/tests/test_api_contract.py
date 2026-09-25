@@ -37,6 +37,7 @@ from oneguard.api.policies import (
     FORM_INSTRUCTION,
     NO_CAP_QUESTION,
     NO_CHECKS_QUESTION,
+    load_rules,
     per_order_cap,
 )
 from oneguard.api.services import Services
@@ -52,6 +53,7 @@ from oneguard.engine.types import (
     RuleResult,
 )
 from oneguard.passport.signer import DeviceKey
+from oneguard.pipeline import policy_applied
 from oneguard.store import seed as seed_module
 from oneguard.store.db import make_engine, session
 from oneguard.store.schema import Decision, Mandate, PolicyDraft, Run, VisecaCall
@@ -1248,6 +1250,95 @@ def test_c2_relints_through_the_lint_accepted_interface(db_url: str) -> None:
 
     asyncio.run(scenario())
 
+
+def item_compiler(text: str, *_: Any, **__: Any) -> CompiledDraft:
+    """A monitor with a cap, the requested item and nothing extra (C1, C5, C10)."""
+    rule = Rule(id="C1", field="authorization.billing_amount_chf", operator="<=", value=400, currency="CHF",
+                scope="purchase", text="Total at or below CHF 400 per order", source="exact", kind="amount")
+    return CompiledDraft(instruction=text, rules=[rule], uncertainty_policy="ask", open_questions=[],
+                         dry_run=stubs.STUBS["dry_run"](None, None, "", ""), compiler="llm",
+                         requested_item="27-inch monitor", nothing_extra=True)
+
+def test_requested_item_and_nothing_extra_show_as_exact_checks(db_url: str) -> None:
+    """C5 / C10 flags show as checks on the draft and the mandate; the engine still reads
+    the flags only, C2 holds the checks like any exact check, and C4 adds nothing for them."""
+
+    async def scenario() -> None:
+        engine = {**TEST_ENGINE, "compile_instruction": item_compiler}
+        async with running(db_url, implementations=engine) as run:
+            draft = (await run.post("/api/cards/CA0001/policy-drafts", json={"instruction": "a monitor"})).json()
+            assert draft["checks"][1:] == [
+                {"id": "requested_item", "text": "Only the item you asked for: 27-inch monitor",
+                 "source": "exact", "uncertainty": None, "kind": "item"},
+                {"id": "nothing_extra", "text": "Nothing added that you didn't ask for",
+                 "source": "exact", "uncertainty": None, "kind": "item"},
+            ]  # fmt: skip
+
+            async def confirm(checks: list[dict[str, Any]]) -> httpx.Response:
+                return await run.post(
+                    f"/api/policy-drafts/{draft['draft_id']}/confirm",
+                    json={"checks": checks, "uncertainty_policy": "ask", "open_questions": []},
+                )
+
+            dropped = await confirm(draft["checks"][:2])
+            assert dropped.status_code == 409 and dropped.json()["error"] == {
+                "code": "lint_failed",
+                "message": "Not confirmed: you stated \"Nothing added that you didn't ask for\" and it was left out.",
+                "detail": {"missing": ["nothing_extra"]},
+            }
+            ok = await confirm(draft["checks"])
+            assert ok.status_code == 200, ok.text
+            mandate = ok.json()
+            assert mandate["checks"] == draft["checks"]
+
+            s = run.services
+            row = await s.db(queries.latest_mandate, s.db_engine, "CA0001")
+            rules, flags = load_rules(row.rules, row.checks)
+            assert [r.id for r in rules] == ["C1"]
+            assert flags["requested_item"] == "27-inch monitor" and flags["nothing_extra"] is True
+
+            same = await run.post("/api/cards/CA0001/policy/tighten", json={"add_checks": draft["checks"][1:]})
+            assert same.status_code == 409 and same.json()["error"]["code"] == "not_pure_addition"
+            ok = await run.post(
+                "/api/cards/CA0001/policy/tighten", json={"add_checks": draft["checks"], "uncertainty_policy": "decline"}
+            )
+            assert ok.status_code == 200, ok.text
+            assert ok.json()["checks"] == draft["checks"]
+
+    asyncio.run(scenario())
+
+
+def test_a_restored_policy_keeps_the_flags_and_decisions_show_their_checks(db_url: str) -> None:
+    """After a restart the worker rebinds our confirmed policy from the store: the flag-check
+    ids have no typed rule, so the rules stay C1 only and the flags come back; a decision
+    under that policy lists the flag checks under ``policy_applied``."""
+
+    async def scenario() -> None:
+        engine = {**TEST_ENGINE, "compile_instruction": item_compiler}
+        async with running(db_url, fake=FakeViseca(fast()), implementations=engine) as run:
+            draft = (await run.post("/api/cards/CA0001/policy-drafts", json={"instruction": "a monitor"})).json()
+            r = await run.post(
+                f"/api/policy-drafts/{draft['draft_id']}/confirm",
+                json={"checks": draft["checks"], "uncertainty_policy": "ask", "open_questions": []},
+            )
+            assert r.status_code == 200, r.text
+            (tm,) = run.fake.mandates
+            worker = run.services.worker
+            worker._policies.clear()
+            worker._restore_policy(tm)
+            policy = worker._policies[tm]
+            assert [r.id for r in policy.rules] == ["C1"]
+            assert policy.requested_item == "27-inch monitor" and policy.nothing_extra is True
+
+            event = {"mandate": {"mandate_id": tm}}
+            entry = type("Entry", (), {"mandate_id": policy.mandate_id})()
+            applied = policy_applied(event, entry, policy)  # type: ignore[arg-type]
+            assert applied is not None and applied.source == "confirmed"
+            assert [c.model_dump(mode="json", exclude_none=True) for c in applied.checks] == [
+                {k: v for k, v in c.items() if v is not None} for c in draft["checks"]
+            ]
+
+    asyncio.run(scenario())
 
 def test_an_exact_price_is_a_per_order_cap_and_a_floor_is_not() -> None:
     def amount(operator: str) -> Rule:

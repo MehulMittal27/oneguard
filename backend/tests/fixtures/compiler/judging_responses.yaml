@@ -11,6 +11,12 @@
 # products and their catalogue types (p4/requested-item): "no insurance" is now only the excluded
 # travel type, as the parser reads it. The other nine read the same under the new prompt (two
 # live runs each), so they are unchanged.
+# SCEN0117 re-recorded on 2026-09-25 (gpt-4.1, same settings) after the prompt learned
+# items[].contains_alcohol (p2/alcohol-exclusion): "No alcohol" is the alcohol rule, no longer a
+# restriction no data can check. The other nine compile the same under the new prompt (two live
+# runs each), except where they vary under the old prompt too (SCEN0101's requested_item) or add
+# nothing that decides (one SCEN0113 run in five adds "not Sat, Sun" beside "Mon-Fri"), so they
+# are unchanged.
 - scenario: SCEN0101
   response:
     uncertainty_policy: ask
@@ -308,6 +314,18 @@
       words: from the shops I use
       source: exact
       on_fail: decline
+    - field: items[].contains_alcohol
+      operator: '='
+      value_number: null
+      value_text: 'false'
+      value_list: null
+      value_from: literal
+      currency: null
+      scope: null
+      period_days: null
+      words: No alcohol
+      source: exact
+      on_fail: decline
     - field: items[].item_category
       operator: not_in
       value_number: null
@@ -320,18 +338,6 @@
       scope: null
       period_days: null
       words: no gift cards, no cosmetics
-      source: exact
-      on_fail: decline
-    - field: unverifiable
-      operator: '='
-      value_number: null
-      value_text: no alcohol
-      value_list: null
-      value_from: literal
-      currency: null
-      scope: null
-      period_days: null
-      words: no alcohol
       source: exact
       on_fail: decline
     open_questions: []

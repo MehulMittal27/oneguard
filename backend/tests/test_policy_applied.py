@@ -94,6 +94,21 @@ def test_a_confirmed_policy_is_confirmed():
     assert [c.text for c in applied.checks] == ["Only cosmetics"]
 
 
+def test_the_requested_item_and_nothing_extra_are_listed_after_the_rules():
+    """C5 / C10 are flags, not rules; the decision still shows them as the draft did."""
+    policy = Policy(mandate_id="M_OURS", status="active", instruction="a monitor", uncertainty_policy="ask",
+                    rules=[Rule(id="C1", field="authorization.billing_amount_chf", operator="<=", value=400,
+                                currency="CHF", scope="purchase", text="Total at or below CHF 400 per order",
+                                source="exact", kind="amount")],
+                    requested_item="27-inch monitor", nothing_extra=True)
+    applied = policy_applied(_event(), _entry("M_OURS"), policy)
+    assert applied is not None
+    assert [(c.id, c.text, c.source) for c in applied.checks] == [
+        ("C1", "Total at or below CHF 400 per order", "exact"),
+        ("requested_item", "Only the item you asked for: 27-inch monitor", "exact"),
+        ("nothing_extra", "Nothing added that you didn't ask for", "exact"),
+    ]
+
 def test_a_policy_without_rules_sends_nothing():
     empty = Policy(mandate_id="M_X", status="active", instruction="", rules=[], uncertainty_policy="ask")
     assert policy_applied(_event(), _entry("M_X"), empty) is None

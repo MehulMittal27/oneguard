@@ -46,6 +46,7 @@ SESSION_WATCH = "session_watch"
 _FAIL_CODE_BY_FIELD = {
     "authorization.billing_amount_chf": "per_order_limit_exceeded",
     "items[].item_category": "item_mismatch",
+    "items[].contains_alcohol": "item_mismatch",
     "items[].size_eu": "wrong_size",
     "items[].size_letter": "wrong_size",
     "order.return_window_days": "return_window_too_short",

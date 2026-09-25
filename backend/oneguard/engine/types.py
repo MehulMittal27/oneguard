@@ -82,7 +82,10 @@ class ItemFacts(_Model):
 
     ``item_name`` and ``item_details`` are untrusted shop text: facts come from them
     only through the FactValues. ``size_eu`` is decimal (43.5 is a real size and is not
-    43); ``size_letter`` is XS-XXXL for clothing (C6). The catalogue range comes from ``items`` and is
+    43); ``size_letter`` is XS-XXXL for clothing (C6). ``contains_alcohol`` is whether the
+    line is an alcoholic drink (C4 "no alcohol"): from the trusted category and an
+    allowlisted lexicon over the catalogue's and the shop's text, unknown when the text
+    names drinks without saying which. The catalogue range comes from ``items`` and is
     ``None`` when the ``item_id`` is not in the catalogue.
     """
 
@@ -101,6 +104,9 @@ class ItemFacts(_Model):
     )
     return_window_days: FactValue[int]
     recurring: FactValue[bool]
+    contains_alcohol: FactValue[bool] = Field(
+        default_factory=lambda: FactValue[bool](known=False, source="regex", detail="not extracted")
+    )
     unit_price_min_chf: float | None = None
     unit_price_typical_chf: float | None = None
     unit_price_max_chf: float | None = None
@@ -450,4 +456,10 @@ class HistoryIndex(Protocol):
 
     def item_price_range(self, item_id: str) -> tuple[float, float, float] | None:
         """(min, typical, max) CHF unit price from ``items``, ``None`` if unknown (W6)."""
+        ...
+
+    def catalogue_item_text(self, item_id: str) -> str | None:
+        """The catalogue's ``item_name`` and ``item_description`` for this item, ``None``
+        if the catalogue does not list it (C4 "no alcohol": what the item is, not what
+        the shop says it is)."""
         ...
