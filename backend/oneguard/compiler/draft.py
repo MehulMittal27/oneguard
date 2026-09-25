@@ -11,6 +11,7 @@ Vocabulary: docs/api-contract.md §3.3. Money: rules.md M1, M2, T4.
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any, Literal
@@ -118,6 +119,7 @@ class ParsedDraft(_Model):
     requires_known_shop: bool = False
     nothing_extra: bool = False
     shop_type: str | None = None
+    single_item: bool = False
     resolved: dict[str, str] = Field(default_factory=dict)  # rule id -> where its value came from
     asked_about: dict[str, str] = Field(default_factory=dict)  # rule id -> the words that allow on_fail ask
 
@@ -359,6 +361,23 @@ def to_rule(spec: RuleSpec, taken: set[str], requested_item: str | None = None) 
     )
 
 
+def names_one_item(instruction: str, requested_item: str | None) -> bool:
+    """The instruction asks for its requested item once: "the X I chose" (picked,
+    selected), "one X", "a X", "an X", with up to four words before the item's last word
+    ("the 27-inch monitor I chose", "a pair of trail shoes"). Both compiler paths set
+    ``single_item`` from here, on the customer's words; "my X", "new X" or a count of two
+    or more is not one item. Its first final approval fulfils the mandate (A8)."""
+    words = re.findall(r"[\w'-]+", (requested_item or "").lower())
+    if not words:
+        return False
+    text = " ".join(instruction.split())
+    head = re.escape(words[-1])
+    one = re.compile(rf"\b(?:a|an|one)\s+(?:[\w'-]+\s+){{0,4}}?{head}\b", re.IGNORECASE)
+    picked = re.compile(rf"\bthe\s+(?:[\w'-]+\s+){{0,4}}?{head}\s+(?:I|we)\s+(?:have\s+)?(?:chose|chosen|picked|selected)\b",
+                        re.IGNORECASE)
+    return bool(one.search(text) or picked.search(text))
+
+
 def finalize(
     instruction: str,
     specs: list[RuleSpec],
@@ -368,7 +387,8 @@ def finalize(
     requested_item: str | None = None,
     nothing_extra: bool = False,
 ) -> ParsedDraft:
-    """Give specs ids and texts, drop exact duplicates, restate the convenience fields."""
+    """Give specs ids and texts, drop exact duplicates, restate the convenience fields
+    (``single_item`` from the customer's words, ``names_one_item``)."""
     seen: set[tuple] = set()
     unique: list[RuleSpec] = []
     for spec in specs:
@@ -403,6 +423,7 @@ def finalize(
         requires_known_shop=any(r.field == KNOWN_SHOP_FIELD and r.on_fail == "decline" for r in rules),
         nothing_extra=nothing_extra,
         shop_type=shop[0] if shop else None,
+        single_item=names_one_item(instruction, requested_item),
         resolved=resolved,
         asked_about=asked_about,
     )

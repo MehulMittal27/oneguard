@@ -38,6 +38,7 @@ from oneguard.compiler.draft import (
 from oneguard.compiler.lint import stated_boundary
 from oneguard.compiler.parser import (
     NO_ALCOHOL,
+    ORDER_LIMIT_QUESTION,
     each_is_per_purchase,
     evening_window,
     excluded_item_categories,
@@ -46,6 +47,7 @@ from oneguard.compiler.parser import (
     price_change_clause,
     product_categories,
     product_question,
+    stay_cap,
 )
 from oneguard.compiler.resolve import at_several_shops, last_price
 from oneguard.engine.types import HistoryIndex
@@ -239,7 +241,7 @@ EXAMPLES: list[tuple[str, dict[str, Any]]] = [
                 _example_rule("order.order_cancellable", "=", "refundable rate only", value_text="true"),
                 _example_rule("items[].item_category", "not_in", "No flights", value_list=["travel"]),
             ],
-            "open_questions": ["No per-order limit stated: is the order limit CHF 300 (2 nights at CHF 150 each)?"],
+            "open_questions": [],
         },
     ),
     (
@@ -385,6 +387,8 @@ Rules:
   item word inside it ("one lunch delivery a day") is still its own items[].item_category rule.
 - A booking: the category (hotel), the place and the dates (unverifiable, one rule each), the
   price per night (items[].unit_price_chf), "refundable rate" -> order.order_cancellable "true".
+  The order limit for the stated nights (nights x the price per night) is added for you: write
+  no rule and no question about it.
 - "If a price changes, ask me" with no single price stated (several subscriptions) ->
   authorization.billing_amount_chf "=", value_from "last_price_at_shop", value_number null,
   currency "CHF", scope "purchase", source "inferred", on_fail "ask": each payment is compared
@@ -574,6 +578,11 @@ def read_with_llm(
     # never the model's own guess, so both paths read "weeknight dinners" the same.
     specs = [s for s in specs if s.field != HOUR_FIELD or re.search(r"\d", s.words)]
     specs += evening_window(" ".join(instruction.split()), specs)
+    # A per-night price times the stated nights is the order cap: the parser's, never the
+    # model's arithmetic, and it settles the model's question about the order limit.
+    if cap := stay_cap(" ".join(instruction.split()), specs):
+        specs += cap
+        questions = [q for q in questions if not ORDER_LIMIT_QUESTION.search(q)]
     if requested and not any(s.field == "items[].item_category" and s.operator == "in" for s in specs):
         # The parser's mapping, not the model's: the item's type from the catalogue, or the question.
         if categories := product_categories(requested):

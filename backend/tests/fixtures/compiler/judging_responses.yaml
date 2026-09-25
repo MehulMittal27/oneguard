@@ -31,6 +31,10 @@
 # all read the window; two in five add "not Sat, Sun" beside "Mon-Fri" (as before), so the recorded
 # run is one of the three without it. The other entries are unchanged: no other served instruction
 # names dinner, supper or a weeknight.
+# SCEN0124 re-recorded on 2026-09-25 (gpt-4.1, same settings) after the booking example learned
+# that the order limit for the stated nights is added for the model (p1/scen0122-lessons): the
+# same rules, and no longer the question "is the order limit CHF 600 (3 nights at CHF 200 each)?".
+# The other nine compile the same under the new prompt (two live runs each), so they are unchanged.
 - scenario: SCEN0101
   response:
     uncertainty_policy: ask
@@ -490,8 +494,7 @@
       words: No flights, no insurance
       source: exact
       on_fail: decline
-    open_questions:
-    - 'No per-order limit stated: is the order limit CHF 600 (3 nights at CHF 200 each)?'
+    open_questions: []
 - scenario: SCEN0130
   response:
     uncertainty_policy: ask

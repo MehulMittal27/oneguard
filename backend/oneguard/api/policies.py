@@ -17,7 +17,7 @@ from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
 from oneguard.api import models as api
-from oneguard.engine.ledger_base import LedgerEntry
+from oneguard.engine.ledger_base import LedgerEntry, is_final_approval
 from oneguard.engine.types import CompiledDraft, HistoryIndex, Policy, Rule
 
 POLICY_KEY = "__policy__"
@@ -47,7 +47,11 @@ _FLAGS = (
     "requires_known_shop",
     "nothing_extra",
     "shop_type",
+    "single_item",
 )
+_FLAG_DEFAULTS: dict[str, Any] = {"requires_known_shop": False, "nothing_extra": False, "single_item": False}
+"""The flags that are booleans: False when not stated (a stored policy from before a flag
+existed reads as not stated)."""
 _FLAG_RULES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "allowed_item_categories": (("items[].item_category",), ("in",)),
     "blocked_item_categories": (("items[].item_category",), ("not_in",)),
@@ -127,7 +131,7 @@ def store_rules(rules: Sequence[Rule], flags: dict[str, Any]) -> dict[str, Any]:
 def load_rules(stored: dict[str, Any], checks: Iterable[dict[str, Any]]) -> tuple[list[Rule], dict[str, Any]]:
     """Typed rules in check order, and the Policy flags, from a stored draft or mandate."""
     rules = [Rule.model_validate(stored[c["id"]]) for c in checks if c["id"] in stored]
-    flags = {name: None for name in _FLAGS} | {"requires_known_shop": False, "nothing_extra": False}
+    flags = {name: None for name in _FLAGS} | _FLAG_DEFAULTS
     flags.update(stored.get(POLICY_KEY) or {})
     return rules, flags
 
@@ -192,7 +196,7 @@ def period_limit(rules: Iterable[Rule]) -> tuple[float, int] | None:
 def form_rules(form: api.FormInput) -> tuple[list[Rule], dict[str, Any]]:
     """Typed rules and Policy flags for the form path, worded as §3.9 requires."""
     rules: list[Rule] = []
-    flags: dict[str, Any] = {name: None for name in _FLAGS} | {"requires_known_shop": False, "nothing_extra": False}
+    flags: dict[str, Any] = {name: None for name in _FLAGS} | _FLAG_DEFAULTS
     if form.per_order_limit_chf is not None:
         rules.append(
             Rule(
@@ -307,13 +311,29 @@ def form_dry_run(rules: Sequence[Rule], flags: dict[str, Any], history: HistoryI
 # C3 usage -------------------------------------------------------------------------------
 
 
-def usage(rules: Sequence[Rule], entries: Sequence[LedgerEntry], confirmed_at: datetime) -> api.MandateUsage:
+def fulfilment(flags: dict[str, Any], entries: Sequence[LedgerEntry], marked: dict[str, str]) -> api.Fulfilment | None:
+    """``usage.fulfilment`` of a single-item mandate (A8): how many of ``entries`` bought
+    its requested item (final approvals ``marked`` with that item, live id -> item) of the
+    one asked for. None for any other mandate."""
+    item = flags.get("requested_item")
+    if not (flags.get("single_item") and item):
+        return None
+    bought = [e for e in entries if marked.get(e.live_authorization_id) == item
+              and is_final_approval(e.outcome, e.final, e.uncertain_outcome)]
+    return api.Fulfilment(bought=len(bought), requested=1)
+
+
+def usage(
+    rules: Sequence[Rule], entries: Sequence[LedgerEntry], confirmed_at: datetime,
+    fulfilment: api.Fulfilment | None = None,
+) -> api.MandateUsage:
     """``Mandate.usage`` from the ledger entries of the mandate's latest run (§2, M4, M5).
 
     ``as_of`` is the simulated time of the last decision (``confirmed_at`` before any).
     Spent counts final approvals only (customer-approved step-ups included), pending the
     reservations of step-ups still waiting, both within the period window ending at
-    ``as_of``; with no period rule the window is the whole run.
+    ``as_of``; with no period rule the window is the whole run. ``fulfilment`` is the
+    caller's (``policies.fulfilment``), for a single-item mandate.
     """
     cap = per_order_cap(rules)
     period = period_limit(rules)
@@ -332,6 +352,6 @@ def usage(rules: Sequence[Rule], entries: Sequence[LedgerEntry], confirmed_at: d
         period_spent_chf=float(spent),
         period_window_start=start,
         pending_chf=float(pending),
-        fulfilment=None,
+        fulfilment=fulfilment,
         as_of=as_of,
     )
