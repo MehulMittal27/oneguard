@@ -13,6 +13,8 @@ Two services: `backend/` (FastAPI, deterministic engine, Viseca client) and `fro
 `docs/judging-pack.md` (the scenarios the sandbox serves) ·
 `docs/passport.md` (signed passports and receipts; C2, C4, C5, C8 and device changes
 need a device signature, so a plain `curl` gets 401: use `python -m oneguard.passport.cli`) ·
+`docs/api-contract.md` §1.2 (in prod every `/api/dev/*` call needs `X-OneGuard-Operator`
+from `ONEGUARD_OPERATOR_TOKEN`; scripts send it from that env var) ·
 `frontend/README.md` · `vendor/viseca-2026/technical_details.md`.
 
 ## Non-negotiable rules
