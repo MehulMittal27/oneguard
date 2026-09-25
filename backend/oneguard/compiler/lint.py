@@ -44,6 +44,7 @@ from oneguard.compiler.parser import (
     NUMBER_WORDS,
     PERIOD_WORD_DAYS,
     TIMES_WORDS,
+    is_generic_item,
     with_shared_currency,
 )
 from oneguard.engine.types import Rule
@@ -51,7 +52,7 @@ from oneguard.engine.types import Rule
 IssueCode = Literal[
     "amount_not_used", "invented_value", "boundary_changed", "currency_not_shown",
     "no_amount_cap", "contradiction", "exact_check_dropped", "on_fail_not_stated",
-    "restriction_dropped",
+    "restriction_dropped", "generic_requested_item",
 ]
 _AMOUNT_QUESTION = re.compile(r"\b(?:amount|limit|cost|price|spend|budget|CHF)\b", re.IGNORECASE)
 _STATED_NUMBERS = {"items[].size_eu", "order.return_window_days", "cart.quantity", "items[].quantity", COUNT_FIELD}
@@ -288,6 +289,9 @@ def lint(draft: ParsedDraft, asked_about: dict[str, str] | None = None) -> LintR
         issues.append(LintIssue(code="no_amount_cap",
                                 message="No per-order amount limit, and no question asking for one"))
     issues += _bounds_conflict(draft.rules)
+    if is_generic_item(draft.requested_item):  # C5 would match (almost) no item name and decline
+        issues.append(LintIssue(code="generic_requested_item", rule_id="C5",
+                                message=f'"{draft.requested_item}" names no product to match'))
     return LintResult(issues=issues)
 
 

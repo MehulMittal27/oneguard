@@ -175,8 +175,20 @@ _CATEGORY_HEADS = {"item", "items", "groceries", "grocery", "clothing", "clothes
                    "shopping", "subscriptions", "flights", "flight", "dinners"}
 _GENERIC_ITEMS = {"present", "gift", "thing", "product", "order", "purchase"}
 _VAGUE_ITEMS = {"something", "anything", "stuff"}
+# A requested item made of these words only names no product ("one ordinary grocery item"):
+# no requested item (C5), on both paths, and lint rejects a reading that keeps one.
+GENERIC_ITEM_WORDS = frozenset({"ordinary", "grocery", "groceries", "item", "items", "product", "thing",
+                                "something", "stuff", "essentials"})
 _FILLER = {"worn", "old", "new", "ordinary", "usual", "favourite", "favorite", "regular",
            "replacement", "same"}
+
+
+
+def is_generic_item(item: str | None) -> bool:
+    """Every word of ``item`` is generic (case and punctuation ignored): it names no product."""
+    words = re.findall(r"[a-z0-9]+", (item or "").lower())
+    return bool(words) and all(w in GENERIC_ITEM_WORDS for w in words)
+
 
 SHOP_KIND: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bsports?\b|\bsporting\b|\boutdoor\b", re.IGNORECASE), "sporting_goods"),
