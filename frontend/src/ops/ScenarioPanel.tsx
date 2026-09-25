@@ -2,11 +2,7 @@ import type { ScenarioSummary, SoftSignalsState } from '../api/types'
 import { CheckIcon } from '../components/icons/lucide'
 import { groupScenarios, scenarioOptionLabel, type ConsoleRun } from '../lib/opsConsole'
 import { softSignalsLabel } from '../lib/softSignals'
-import { TEXT_L, TEXT_M } from './style'
-
-const BUTTON = `${TEXT_M} inline-flex min-h-10 items-center justify-center gap-2 rounded-button px-5 font-semibold transition-opacity disabled:cursor-not-allowed disabled:opacity-40`
-const PRIMARY = `${BUTTON} bg-ink text-on-ink enabled:hover:opacity-90`
-const SECONDARY = `${BUTTON} border border-border-quiet bg-surface text-ink enabled:hover:bg-surface-sunken`
+import { BUTTON_PRIMARY as PRIMARY, BUTTON_SECONDARY as SECONDARY, TEXT_L, TEXT_M } from './style'
 
 /**
  * Which scenario to start and how: the picker (D9, grouped by customer, the
@@ -89,7 +85,7 @@ export function ScenarioPanel({
             type="checkbox"
             checked={showPhone}
             onChange={(e) => onShowPhone(e.target.checked)}
-            className="size-5 accent-ink"
+            className="size-5 accent-[var(--ops-gold)]"
           />
           Show customer phone
         </label>

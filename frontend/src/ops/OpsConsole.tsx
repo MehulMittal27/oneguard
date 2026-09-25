@@ -18,10 +18,13 @@ import {
 import { nextSoftSignals } from '../lib/softSignals'
 import { mergeDecisions } from '../state/mergeDecisions'
 import { CustomerPhone } from './CustomerPhone'
-import { DecisionStream } from './DecisionStream'
+import { DecisionLog } from './DecisionLog'
+import { HealthPanel } from './HealthPanel'
 import { JudgingRunDialog } from './JudgingRunDialog'
-import { OpsHeader } from './OpsHeader'
+import { OpsFooter, OpsHeader } from './OpsHeader'
+import { OpsTabs, type OpsTab } from './OpsTabs'
 import { RawDrawer } from './RawDrawer'
+import { RecentDecisions } from './RecentDecisions'
 import { RunHeader, type PassportLine } from './RunHeader'
 import { ScenarioPanel } from './ScenarioPanel'
 import { TEXT_M } from './style'
@@ -30,6 +33,25 @@ import { usePoll } from './usePoll'
 const HEALTH_POLL_MS = 5000
 const RUN_POLL_MS = 1500
 const OFFLINE = 'Nothing was approved while we were offline.'
+const ROBOTO = 'https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap'
+
+/** Roboto for the console page only (the phone UI keeps its own type); a system font until it loads. */
+function useRoboto() {
+  useEffect(() => {
+    if (document.querySelector(`link[href="${ROBOTO}"]`)) return
+    for (const [rel, href, cross] of [
+      ['preconnect', 'https://fonts.googleapis.com', false],
+      ['preconnect', 'https://fonts.gstatic.com', true],
+      ['stylesheet', ROBOTO, false],
+    ] as const) {
+      const link = document.createElement('link')
+      link.rel = rel
+      link.href = href
+      if (cross) link.crossOrigin = 'anonymous'
+      document.head.appendChild(link)
+    }
+  }, [])
+}
 
 function refusalText(error: unknown): string {
   return error instanceof ApiRefusal ? error.message : `OneGuard did not answer. ${OFFLINE}`
@@ -50,6 +72,8 @@ export default function OpsConsole() {
   useEffect(() => {
     document.title = 'Viseca · Agent control console'
   }, [])
+  useRoboto()
+  const [tab, setTab] = useState<OpsTab>('overview')
 
   // Health (/healthz) and the chaos toggle (D5), every 5 s --------------------------
   const [health, setHealth] = useState<Health | null | undefined>(undefined)
@@ -229,6 +253,23 @@ export default function OpsConsole() {
 
   // Raw receipt drawer and the phone ------------------------------------------------------
   const [raw, setRaw] = useState<{ decision: Decision; verification: Verification | null } | null>(null)
+  // Open rows in the decision log, kept here so Overview's strip can open one there.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
+  const toggleRow = useCallback((id: string) => {
+    setExpanded((open) => {
+      const next = new Set(open)
+      if (!next.delete(id)) next.add(id)
+      return next
+    })
+  }, [])
+  function openInLog(id: string) {
+    setExpanded((open) => new Set(open).add(id))
+    setTab('log')
+  }
+  const openRaw = useCallback(
+    (decision: Decision, verification: Verification | null) => setRaw({ decision, verification }),
+    [],
+  )
   const closeRaw = useCallback(() => setRaw(null), [])
   const closeJudging = useCallback(() => {
     setJudgingOpen(false)
@@ -242,7 +283,7 @@ export default function OpsConsole() {
   const judgingBlocked = judgingRunBlocked(health, healthFailed)
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-ground">
+    <div className="ops-viseca flex h-screen flex-col overflow-hidden bg-ground">
       <OpsHeader health={health} offline={healthFailed} />
       {offline && (
         <p role="alert" className={`${TEXT_M} shrink-0 border-b border-stopped-border bg-stopped-tint px-9 py-3 font-semibold text-stopped`}>
@@ -256,25 +297,58 @@ export default function OpsConsole() {
         }`}
       >
         <div className="flex min-h-0 min-w-0 flex-col gap-6">
-          <ScenarioPanel
-            scenarios={scenarios}
-            selected={selected}
-            onSelect={setSelectedId}
-            run={run ?? null}
-            busy={busy}
-            onReplay={replay}
-            onJudgingRun={() => setJudgingOpen(true)}
-            judgingBlocked={judgingBlocked}
-            signIn={signIn}
-            refusal={refusal}
-            signals={signals}
-            onToggleSignals={toggleSignals}
-            onRefreshHealth={() => setHealthRead((n) => n + 1)}
-            showPhone={showPhone}
-            onShowPhone={setShowPhone}
+          <OpsTabs
+            active={tab}
+            onSelect={setTab}
+            logCount={rows === null ? null : rows.length}
+            waiting={waiting}
+            healthBad={healthFailed || health?.status === 'degraded'}
           />
-          <RunHeader run={run} waiting={waiting} passport={passportLine} />
-          <DecisionStream decisions={rows} onOpenRaw={(decision, verification) => setRaw({ decision, verification })} />
+          {tab === 'overview' && (
+            <div
+              role="tabpanel"
+              id="ops-panel-overview"
+              aria-labelledby="ops-tab-overview"
+              className="scrollbar-none flex min-h-0 flex-col gap-6 overflow-y-auto"
+            >
+              <ScenarioPanel
+                scenarios={scenarios}
+                selected={selected}
+                onSelect={setSelectedId}
+                run={run ?? null}
+                busy={busy}
+                onReplay={replay}
+                onJudgingRun={() => setJudgingOpen(true)}
+                judgingBlocked={judgingBlocked}
+                signIn={signIn}
+                refusal={refusal}
+                signals={signals}
+                onToggleSignals={toggleSignals}
+                onRefreshHealth={() => setHealthRead((n) => n + 1)}
+                showPhone={showPhone}
+                onShowPhone={setShowPhone}
+              />
+              <RunHeader run={run} waiting={waiting} passport={passportLine} />
+              <RecentDecisions decisions={rows} onOpen={openInLog} onOpenLog={() => setTab('log')} />
+            </div>
+          )}
+          {tab === 'log' && (
+            <div role="tabpanel" id="ops-panel-log" aria-labelledby="ops-tab-log" className="flex min-h-0 flex-1 flex-col">
+              <DecisionLog
+                decisions={rows}
+                expanded={expanded}
+                onToggle={toggleRow}
+                onOpenRaw={openRaw}
+                scenarioId={run?.scenarioId ?? null}
+                runKind={run?.kind ?? null}
+              />
+            </div>
+          )}
+          {tab === 'health' && (
+            <div role="tabpanel" id="ops-panel-health" aria-labelledby="ops-tab-health" className="flex min-h-0 flex-1 flex-col">
+              <HealthPanel health={health} failed={healthFailed} onRefresh={() => setHealthRead((n) => n + 1)} />
+            </div>
+          )}
         </div>
 
         {showPhone && run !== undefined && (
@@ -295,6 +369,7 @@ export default function OpsConsole() {
         />
       )}
       {raw && <RawDrawer decision={raw.decision} verification={raw.verification} onClose={closeRaw} />}
+      <OpsFooter />
     </div>
   )
 }

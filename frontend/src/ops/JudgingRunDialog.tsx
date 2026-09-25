@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import type { ScenarioSummary } from '../api/types'
-import { TEXT_L, TEXT_M } from './style'
+import { BUTTON_PRIMARY, BUTTON_SECONDARY, TEXT_L, TEXT_M } from './style'
 
 /**
  * D3 behind a typed confirmation: a judging run talks to the payment platform
@@ -76,14 +76,14 @@ export function JudgingRunDialog({
           <button
             type="button"
             onClick={onClose}
-            className="min-h-10 rounded-button border border-border-quiet px-5 font-semibold text-ink hover:bg-surface-sunken"
+            className={BUTTON_SECONDARY}
           >
             Cancel
           </button>
           <button
             type="submit"
             disabled={!matches || busy}
-            className="min-h-10 rounded-button bg-ink px-5 font-semibold text-on-ink transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
+            className={BUTTON_PRIMARY}
           >
             {busy ? 'Starting…' : 'Start judging run'}
           </button>

@@ -1,12 +1,12 @@
 import type { Health } from '../api/ops'
 import { ShieldIcon } from '../components/icons/lucide'
 import { healthChips } from '../lib/opsConsole'
-import { TEXT_L, TEXT_M, TEXT_S, TONE_CLASS as CHIP_TONE } from './style'
+import { TEXT_M, TEXT_S, TONE_CLASS as CHIP_TONE } from './style'
 
 /**
- * The console's header: the customer-facing brand as text (no third-party logo
- * file: docs/brand-permission.md does not exist), the health chips from
- * `/healthz`, and OneGuard only as a small mark at the right edge.
+ * The console's header: "VISECA" as a text wordmark with a gold slash (no
+ * third-party logo file: docs/brand-permission.md does not exist), the health
+ * chips from `/healthz`, and OneGuard only as a small mark at the right edge.
  *
  * `health` is undefined until the first read, null in mock mode. `offline`: the
  * last read got no answer at all.
@@ -14,9 +14,12 @@ import { TEXT_L, TEXT_M, TEXT_S, TONE_CLASS as CHIP_TONE } from './style'
 export function OpsHeader({ health, offline }: { health: Health | null | undefined; offline: boolean }) {
   return (
     <header className="flex min-h-18 shrink-0 flex-wrap items-center gap-x-8 gap-y-3 border-b border-hairline bg-surface px-9 py-4">
-      <div className="flex shrink-0 items-baseline gap-4">
-        <span className={`${TEXT_L} font-bold tracking-[-0.01em] text-ink`}>Viseca</span>
-        <span className={`${TEXT_M} text-ink-muted`}>Agent control console</span>
+      <div className="flex shrink-0 items-center gap-5">
+        {/* The brand as text: colours and type only, no logo file. */}
+        <span className="ops-wordmark" aria-label="Viseca">
+          VISECA
+        </span>
+        <span className={`${TEXT_M} border-l border-hairline pl-5 text-ink-muted`}>Agent control console</span>
       </div>
 
       <ul aria-label="Health" className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
@@ -43,5 +46,14 @@ export function OpsHeader({ health, offline }: { health: Health | null | undefin
         Powered by OneGuard
       </p>
     </header>
+  )
+}
+
+/** The disclaimer every console page carries. */
+export function OpsFooter() {
+  return (
+    <footer className={`${TEXT_S} shrink-0 border-t border-hairline bg-surface px-9 py-3 text-ink-muted`}>
+      Prototype for the Swiss {'{ai}'} Weeks challenge · not an official Viseca product
+    </footer>
   )
 }

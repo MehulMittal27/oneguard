@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react'
-import { TEXT_M } from './style'
+import { LINK, TEXT_M } from './style'
 
 const SCREEN_W = 390
 const SCREEN_H = 844
@@ -42,7 +42,7 @@ export function CustomerPhone({ customerId, customerLabel }: { customerId: strin
           href={`/${query}`}
           target="_blank"
           rel="noreferrer"
-          className="shrink-0 font-semibold text-ink underline decoration-border-quiet underline-offset-4 hover:decoration-ink"
+          className={`${LINK} shrink-0`}
         >
           Open in new tab
         </a>

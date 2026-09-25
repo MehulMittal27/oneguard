@@ -23,7 +23,7 @@ import {
   type Verification,
 } from '../lib/opsConsole'
 import { reasonLabel } from '../lib/reasonCodes'
-import { TEXT_L, TEXT_M, TEXT_S, TONE_CLASS } from './style'
+import { BUTTON_SECONDARY, TEXT_L, TEXT_M, TEXT_S, TONE_CLASS } from './style'
 
 // One grid for the header and every row. Below 1000px of stream width the
 // message drops to a second line under the shop, so it is never cut to a stub.
@@ -58,21 +58,19 @@ type ReceiptCheck = Verification | null | undefined
  */
 export function DecisionStream({
   decisions,
+  expanded,
+  onToggle,
   onOpenRaw,
+  emptyText = 'No decision in this run yet.',
 }: {
   decisions: Decision[] | null
+  // Which rows are open (kept by the console, so Overview can open one here).
+  expanded: ReadonlySet<string>
+  onToggle: (authorizationId: string) => void
   onOpenRaw: (decision: Decision, receiptCheck: Verification | null) => void
+  emptyText?: string
 }) {
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
   const checks = useReceiptChecks(decisions)
-
-  function toggle(id: string) {
-    setExpanded((open) => {
-      const next = new Set(open)
-      if (!next.delete(id)) next.add(id)
-      return next
-    })
-  }
 
   return (
     <section aria-label="Decisions" className="@container flex min-h-0 flex-1 flex-col overflow-hidden rounded-card border border-hairline bg-surface">
@@ -95,7 +93,7 @@ export function DecisionStream({
             ))}
           </div>
         ) : decisions.length === 0 ? (
-          <p className={`${TEXT_M} px-8 py-8 text-ink-muted`}>No decision in this run yet.</p>
+          <p className={`${TEXT_M} px-8 py-8 text-ink-muted`}>{emptyText}</p>
         ) : (
           <ol className="flex flex-col">
             {decisions.map((d) => (
@@ -103,7 +101,7 @@ export function DecisionStream({
                 key={d.authorization_id}
                 decision={d}
                 open={expanded.has(d.authorization_id)}
-                onToggle={() => toggle(d.authorization_id)}
+                onToggle={() => onToggle(d.authorization_id)}
                 receipt={checks.get(d.authorization_id)}
                 onOpenRaw={onOpenRaw}
               />
@@ -264,7 +262,7 @@ function RowDetail({
           <button
             type="button"
             onClick={() => onOpenRaw(d, receipt ?? null)}
-            className="min-h-9 rounded-button border border-border-quiet bg-surface px-4 font-semibold text-ink hover:bg-surface-sunken"
+            className={BUTTON_SECONDARY}
           >
             {signed ? 'Raw receipt' : 'Raw decision'}
           </button>
