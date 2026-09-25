@@ -129,33 +129,45 @@ export async function thisDevice(cardId: string, devices?: Device[]): Promise<De
   return deviceId ? (listed.find((d) => d.device_id === deviceId) ?? null) : null
 }
 
-async function changeDevice(cardId: string, deviceId: string, action: 'approve' | 'remove'): Promise<Device> {
+type DeviceAction = 'approve' | 'remove' | 'transfer'
+
+async function changeDevice(cardId: string, deviceId: string, action: DeviceAction): Promise<Device> {
   if (MOCKS) {
     const state = await fixture()
     const now = new Date().toISOString()
-    state.devices = state.devices.map((d) =>
-      d.device_id !== deviceId
-        ? d
-        : action === 'approve'
-          ? { ...d, status: 'enrolled', enrolled_at: now, enrolled_by_device_id: 'mock-this-device' }
-          : { ...d, status: 'removed', removed_at: now },
-    )
+    state.devices = state.devices.map((d): Device => {
+      if (action === 'transfer') {
+        if (d.status !== 'enrolled') return d
+        return { ...d, role: d.device_id === deviceId ? 'controller' : 'approved' }
+      }
+      if (d.device_id !== deviceId) return d
+      return action === 'approve'
+        ? { ...d, status: 'enrolled', role: 'approved', enrolled_at: now, enrolled_by_device_id: 'mock-this-device' }
+        : { ...d, status: 'removed', role: null, removed_at: now }
+    })
     return state.devices.find((d) => d.device_id === deviceId) as Device
   }
   const response = await signedFetch(cardId, 'POST', `/cards/${cardId}/devices/${deviceId}/${action}`)
-  if (response.status === 409) {
+  // 409 (its state) and 403 not_controller (only the card's controller manages
+  // devices): the server's own words, shown under the list.
+  if (response.status === 409 || response.status === 403) {
     const data = (await response.json()) as { error?: { message?: string } }
     throw new Error(data.error?.message ?? `Couldn't ${action} this device`)
   }
   return json<Device>(response, `${action} the device`)
 }
 
-/** P8: an enrolled device (this one) lets a pending one control the card. */
+/** P8: the controller (this device) lets a pending one sign for the card. */
 export function approveDevice(cardId: string, deviceId: string): Promise<Device> {
   return changeDevice(cardId, deviceId, 'approve')
 }
 
-/** P9: an enrolled device (this one) removes another; the last one stays. */
+/** P9: the controller (this device) removes another; it cannot remove itself. */
 export function removeDevice(cardId: string, deviceId: string): Promise<Device> {
   return changeDevice(cardId, deviceId, 'remove')
+}
+
+/** P10: the controller (this device) makes another enrolled device the controller. */
+export function transferControl(cardId: string, deviceId: string): Promise<Device> {
+  return changeDevice(cardId, deviceId, 'transfer')
 }

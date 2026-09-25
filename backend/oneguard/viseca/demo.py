@@ -16,7 +16,7 @@ demo-live:
    or with purchases open at the platform, that run is named and nothing is changed
    (exit 1), unless ``--force`` (then D3 gets ``force: true``);
 4. enrol this terminal's device key on that card (its first device is enrolled at once;
-   otherwise approve "demo-live on <host>" from a device that controls the card first,
+   otherwise approve "demo-live on <host>" from the card's controller first,
    docs/passport.md), then C1 compile the instruction on that card, C2 confirm what it
    proposes, signed by that device;
 5. D3 start the run (409 ``run_active`` → exit 1), then, before the first decision, print
@@ -190,14 +190,14 @@ def device_key_path(api_base: str) -> Path:
 
 async def _enrolled_on(http: httpx.AsyncClient, device: DeviceKey, card: str, out: Callable[[str], None]) -> str | None:
     """This terminal's device id on ``card``, enrolled when the card has no device yet; None
-    (and why) while it waits for approval from a device that controls the card."""
+    (and why) while it waits for approval from the card's controller."""
     label = f"demo-live on {socket.gethostname()}"
     enrolled = await _call(http, "POST", f"/api/cards/{card}/devices", {"public_key_jwk": device.jwk, "label": label})
     if enrolled["status"] == "enrolled":
         return str(enrolled["device_id"])
     out(
-        f'This terminal ("{label}") is not approved for card {card} yet. Approve it from a device that '
-        f"controls the card (the card's Passport section, Approve), then run this again. Nothing was changed."
+        f'This terminal ("{label}") is not approved for card {card} yet. Approve it from the card\'s '
+        f"controller (its Passport section, Approve), then run this again. Nothing was changed."
     )
     return None
 

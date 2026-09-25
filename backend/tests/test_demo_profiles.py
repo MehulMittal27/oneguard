@@ -315,7 +315,7 @@ def test_demo_live_signs_the_policy_with_the_terminals_own_device(
     """demo-live's device path end to end (api-contract §3.10, docs/passport.md): a fresh
     terminal key on a card no device controls is enrolled at once, signs C2, and D3 starts the
     run; the passport lists it as the card's device. A second terminal on that card changes
-    nothing until a device that controls the card approves it, then it runs too."""
+    nothing until the card's controller (the first terminal) approves it, then it runs too."""
 
     async def scenario() -> None:
         fake = two_profiles()

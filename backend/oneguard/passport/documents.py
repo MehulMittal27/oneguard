@@ -79,7 +79,8 @@ def passport_body(
 ) -> dict[str, Any]:
     """The passport's signed body. ``flags`` keeps only the policy flags that restrict
     something (``requested_item``, ``nothing_extra``, ...); ``devices`` are the card's
-    enrolled devices."""
+    enrolled devices, each with its ``role`` (``controller`` or ``approved``);
+    ``controller_device_id`` names the controller (None when no device is enrolled)."""
     return normalise({
         "type": PASSPORT_TYPE,
         "passport_id": passport_id,
@@ -98,9 +99,11 @@ def passport_body(
                 "label": d["label"],
                 "enrolled_at": d["enrolled_at"],
                 "enrolled_by_device_id": d["enrolled_by_device_id"],
+                "role": d["role"],
             }
             for d in devices
         ],
+        "controller_device_id": next((d["device_id"] for d in devices if d["role"] == "controller"), None),
         "issued_at": issued_at,
         "expires_at": issued_at + PASSPORT_LIFETIME,
         "revoked_at": revoked_at,

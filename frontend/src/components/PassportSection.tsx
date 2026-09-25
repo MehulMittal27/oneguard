@@ -7,11 +7,12 @@ import {
   passportQrUrl,
   removeDevice,
   thisDevice,
+  transferControl,
   verifyDocument,
 } from '../api/passport'
 import type { Device, Passport, VerifyResult } from '../api/types'
 import { formatShortDate } from '../lib/datetime'
-import { deviceOffer } from '../lib/passportDevices'
+import { controllerLine, controllerOf, deviceOffer, isController, waitingLine } from '../lib/passportDevices'
 import { REVEAL_MS, prefersReducedMotion, takeReveal } from '../lib/passportReveal'
 import { DeviceGateCancelled, useDevice } from '../state/DeviceContext'
 import { CheckIcon, CrossIcon, DeviceIcon, ShieldIcon } from './icons/lucide'
@@ -23,6 +24,14 @@ const STATUS: Record<Device['status'], { label: string; className: string }> = {
   pending: { label: 'Pending', className: 'bg-asked-tint text-asked' },
   removed: { label: 'Removed', className: 'bg-surface-sunken text-ink-muted' },
 }
+
+// An enrolled device's badge names its role: the one controller, or approved.
+const ROLE: Record<'controller' | 'approved', { label: string; className: string }> = {
+  controller: { label: 'Controller', className: 'bg-ink text-on-ink' },
+  approved: { label: 'Approved', className: 'bg-approved-tint text-approved' },
+}
+
+const ACTIONS = { approve: approveDevice, remove: removeDevice, transfer: transferControl }
 
 // How often the list re-reads while a device waits, so an approval made on
 // another device shows up here without a reload.
@@ -43,6 +52,8 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
   const [attempt, setAttempt] = useState(0)
   const [busy, setBusy] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  // The enrolled device the controller is about to hand control to (asked once more first).
+  const [handover, setHandover] = useState<string | null>(null)
   // Kept with the version it checked: a new version is a new document, and an
   // earlier check says nothing about it.
   const [checked, setChecked] = useState<{ version: number; result: VerifyResult | 'checking' | 'error' } | null>(null)
@@ -81,11 +92,12 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
     }
   }, [cardId, attempt, deviceVersion, policyVersion, refresh])
 
-  async function change(device: Device, action: 'approve' | 'remove') {
+  async function change(device: Device, action: keyof typeof ACTIONS) {
     setBusy(device.device_id)
     setActionError(null)
+    setHandover(null)
     try {
-      await withDevice(cardId, () => (action === 'approve' ? approveDevice : removeDevice)(cardId, device.device_id))
+      await withDevice(cardId, () => ACTIONS[action](cardId, device.device_id))
       setRefresh((n) => n + 1)
     } catch (error) {
       if (!(error instanceof DeviceGateCancelled)) {
@@ -166,7 +178,10 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
   const revoked = Boolean(document.revoked_at)
   const issuedAt = typeof document.issued_at === 'string' ? document.issued_at : null
   const verify = checked && checked.version === passport?.version ? checked.result : null
-  const iControl = mine?.status === 'enrolled'
+  // Only the controller approves, removes and hands over control; every enrolled device signs changes.
+  const iManage = isController(devices, mine)
+  const controller = controllerOf(devices)
+  const controlLine = controllerLine(devices, mine)
   const listed = devices.filter((d) => d.status !== 'removed' || d.device_id === mine?.device_id)
   const removedCount = devices.length - listed.length
   const offer = deviceOffer(devices, mine)
@@ -257,6 +272,7 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
           <p className="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
             Devices that control this card
           </p>
+          {controlLine && <p className="mt-1 text-[13px] font-semibold text-ink">{controlLine}</p>}
           {listed.length === 0 ? (
             <p className="mt-2 text-[13px] text-ink-muted">
               None yet. The first device to confirm or change this card&apos;s policy becomes its controller,
@@ -265,7 +281,10 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
           ) : (
             <ul className="mt-2 flex flex-col gap-2">
               {listed.map((device) => {
-                const status = STATUS[device.status] ?? STATUS.removed
+                const status =
+                  device.status === 'enrolled' && controller
+                    ? ROLE[device.device_id === controller.device_id ? 'controller' : 'approved']
+                    : (STATUS[device.status] ?? STATUS.removed)
                 const isMine = device.device_id === mine?.device_id
                 const since =
                   device.status === 'enrolled' && device.enrolled_at
@@ -293,9 +312,10 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
                         {status.label}
                       </span>
                     </div>
-                    {iControl && !isMine && device.status !== 'removed' && (
-                      <div className="mt-3 flex gap-2">
-                        {device.status === 'pending' && (
+                    {iManage && !isMine && device.status !== 'removed' && handover !== device.device_id && (
+                      // Enrolled: two full-width rows, so "Make this the controller" never wraps at 390 px.
+                      <div className={`mt-3 flex gap-2 ${device.status === 'enrolled' ? 'flex-col' : ''}`}>
+                        {device.status === 'pending' ? (
                           <button
                             type="button"
                             onClick={() => change(device, 'approve')}
@@ -304,15 +324,52 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
                           >
                             {busy === device.device_id ? 'Working…' : 'Approve'}
                           </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setHandover(device.device_id)}
+                            disabled={busy !== null}
+                            className="h-10 w-full rounded-button border-2 border-ink text-[14px] font-semibold text-ink disabled:opacity-60"
+                          >
+                            Make this the controller
+                          </button>
                         )}
                         <button
                           type="button"
                           onClick={() => change(device, 'remove')}
                           disabled={busy !== null}
-                          className="h-10 flex-1 rounded-button border-2 border-destructive-border text-[14px] font-semibold text-destructive disabled:opacity-60"
+                          className={`h-10 rounded-button border-2 border-destructive-border text-[14px] font-semibold text-destructive disabled:opacity-60 ${
+                            device.status === 'enrolled' ? 'w-full' : 'flex-1'
+                          }`}
                         >
                           Remove
                         </button>
+                      </div>
+                    )}
+                    {iManage && handover === device.device_id && (
+                      <div className="mt-3 flex flex-col gap-2">
+                        {/* The customer's own name for the device — plain text. */}
+                        <p className="text-[13px] text-ink-soft">
+                          {device.label} will approve and remove devices for this card. This device stays approved.
+                        </p>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setHandover(null)}
+                            disabled={busy !== null}
+                            className="h-10 flex-1 rounded-button border-2 border-border-quiet text-[14px] font-semibold text-ink disabled:opacity-60"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => change(device, 'transfer')}
+                            disabled={busy !== null}
+                            className="h-10 flex-1 rounded-button bg-ink text-[14px] font-semibold text-on-ink disabled:opacity-60"
+                          >
+                            {busy === device.device_id ? 'Working…' : 'Hand over control'}
+                          </button>
+                        </div>
                       </div>
                     )}
                   </li>
@@ -326,6 +383,13 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
             </p>
           )}
           {actionError && <p className="mt-2 text-[13px] text-destructive">{actionError}</p>}
+          {mine?.status === 'enrolled' && !iManage && controller && (
+            <p className="mt-3 text-[13px] text-ink-muted">
+              {/* The controller's name is the customer's own text. */}
+              This device can change the policy and answer requests. {controller.label} approves and removes
+              devices.
+            </p>
+          )}
           {offer === 'controller' && (
             <button
               type="button"
@@ -340,7 +404,7 @@ export function PassportSection({ cardId, policyVersion }: { cardId: string; pol
             <div className="mt-3 flex flex-col gap-2">
               <p className="text-[13px] text-ink-muted">
                 {offer === 'waiting'
-                  ? 'This device is waiting for approval from one that controls the card.'
+                  ? `${waitingLine(devices)}.`
                   : "This device can see the card but can't change its policy."}
               </p>
               {offer === 'add' && (

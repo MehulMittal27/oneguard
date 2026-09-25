@@ -11,8 +11,13 @@ stage browser and a phone, or confirm and revoke policies, from the command line
     python -m oneguard.passport.cli [--api URL] devices CA0039
     python -m oneguard.passport.cli [--api URL] approve CA0039 --label "Stage laptop"
     python -m oneguard.passport.cli [--api URL] remove CA0039 --label "Second phone"
+    python -m oneguard.passport.cli [--api URL] transfer CA0039 --label "Stage laptop"
     python -m oneguard.passport.cli [--api URL] confirm /tmp/draft-CA0039.json
     python -m oneguard.passport.cli [--api URL] revoke CA0001
+
+The card's first device is its controller: only the controller approves, removes and hands
+control to another enrolled device (``transfer``); so the terminal, enrolled first, keeps
+control of the demo cards until it hands it over.
 
 ``confirm`` takes a C1 draft as saved by the demo script's ``draft`` helper and confirms it
 with its own checks. Exit 0 on success, 1 on a refusal (printed with its reason).
@@ -110,8 +115,9 @@ def main(argv: Sequence[str] | None = None, *, http: httpx.Client | None = None,
     enrol.add_argument("cards", nargs="+")
     enrol.add_argument("--label", default=default_label())
     commands.add_parser("devices", help="list a card's devices").add_argument("card")
-    for name in ("approve", "remove"):
-        change = commands.add_parser(name, help=f"{name} a device on a card, signed by this terminal")
+    for name in ("approve", "remove", "transfer"):
+        what = "make an enrolled device the card's controller" if name == "transfer" else f"{name} a device on a card"
+        change = commands.add_parser(name, help=f"{what}, signed by this terminal (the card's controller)")
         change.add_argument("card")
         change.add_argument("device_id", nargs="?")
         change.add_argument("--label", help="the device's label instead of its id")
@@ -140,22 +146,23 @@ def _run(terminal: Terminal, args: argparse.Namespace) -> int:
     if args.command == "enrol":
         for card in args.cards:
             enrolled = terminal.enrol(card, args.label)
-            note = "" if enrolled["status"] == "enrolled" else " - approve it from a device that controls the card"
+            note = "" if enrolled["status"] == "enrolled" else " - approve it from the card's controller"
             out(f"{card}: {enrolled['device_id']} {enrolled['status']}{note}")
         return 0
     if args.command == "devices":
         for d in terminal.devices(args.card):
-            out(f"{d['device_id']}  {d['status']:<8}  {d['label']}")
+            out(f"{d['device_id']}  {d['status']:<8}  {d.get('role') or '':<10}  {d['label']}")
         return 0
-    if args.command in ("approve", "remove"):
+    if args.command in ("approve", "remove", "transfer"):
         if not args.device_id and not args.label:
             raise Refused("name the device: its id, or --label")
-        statuses = ("pending",) if args.command == "approve" else ("enrolled", "pending")
+        statuses = {"approve": ("pending",), "remove": ("enrolled", "pending"), "transfer": ("enrolled",)}[args.command]
         device = terminal.find(args.card, args.device_id, args.label, statuses)
         changed = terminal.call(
             "POST", f"/api/cards/{args.card}/devices/{device['device_id']}/{args.command}", card=args.card
         )
-        out(f"{args.card}: {changed['label']} is {changed['status']}")
+        state = "the controller" if args.command == "transfer" else changed["status"]
+        out(f"{args.card}: {changed['label']} is {state}")
         return 0
     if args.command == "confirm":
         draft = json.loads(args.draft.read_text(encoding="utf-8"))

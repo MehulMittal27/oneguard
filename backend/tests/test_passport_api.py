@@ -23,7 +23,7 @@ from oneguard.passport.devices import (
 )
 from oneguard.passport.signer import DeviceKey
 from oneguard.store.db import session
-from oneguard.store.schema import Passport, Receipt
+from oneguard.store.schema import Device, Passport, Receipt
 from tests.fake_viseca import FakeViseca
 from tests.test_api_contract import (  # noqa: F401  fixtures
     Clock,
@@ -389,10 +389,38 @@ def test_a_second_device_waits_for_the_first_and_the_last_one_stays(db_url: str)
             assert (await run.post(approve)).status_code == 200  # the first device approves
             assert (await run.post(approve)).json()["error"]["code"] == "device_state"  # not pending any more
 
-            # remove the first from the phone; then the phone is the last and stays
+            listed = (await run.get("/api/cards/CA0001/devices")).json()["devices"]
+            assert [(d["label"], d["role"]) for d in listed] == [("Stage laptop", "controller"), ("Second phone", "approved")]
+
+            # only the controller approves, removes and hands over control: the approved phone gets 403
+            third = await enrol(run, DeviceKey(), label="Tablet")
             remove_first = f"/api/cards/CA0001/devices/{first['device_id']}/remove"
+            transfer_phone = f"/api/cards/CA0001/devices/{second['device_id']}/transfer"
+            for path in (f"/api/cards/CA0001/devices/{third['device_id']}/approve", remove_first,
+                         f"/api/cards/CA0001/devices/{third['device_id']}/remove", transfer_phone):
+                r = await run.post(path, signed=False, headers=signed(run, phone, second["device_id"], path))
+                assert r.status_code == 403 and r.json()["error"]["code"] == "not_controller", (path, r.text)
+                assert "Stage laptop" in r.json()["error"]["message"]
+            assert [d["status"] for d in (await run.get("/api/cards/CA0001/devices")).json()["devices"]] == [
+                "enrolled", "enrolled", "pending"]  # nothing changed
+
+            # the controller cannot remove itself while another device is enrolled: it hands over first
+            r = await run.post(remove_first)
+            assert r.status_code == 409 and r.json()["error"]["code"] == "device_state"
+            r = await run.post(f"/api/cards/CA0001/devices/{third['device_id']}/transfer")
+            assert r.status_code == 409 and r.json()["error"]["code"] == "device_state"  # pending: approve first
+            r = await run.post(f"/api/cards/CA0001/devices/{first['device_id']}/transfer")
+            assert r.status_code == 409 and r.json()["error"]["code"] == "device_state"  # already the controller
+            r = await run.post(transfer_phone)
+            assert r.status_code == 200 and r.json()["role"] == "controller", r.text
+            roles = {d["label"]: d["role"] for d in (await run.get("/api/cards/CA0001/devices")).json()["devices"]}
+            assert roles == {"Stage laptop": "approved", "Second phone": "controller", "Tablet": None}
+            r = await run.post(remove_first)  # the laptop is no controller any more
+            assert r.status_code == 403 and r.json()["error"]["code"] == "not_controller"
+
+            # the phone, now the controller, removes the laptop; then it is the last and stays
             r = await run.post(remove_first, signed=False, headers=signed(run, phone, second["device_id"], remove_first))
-            assert r.status_code == 200 and r.json()["status"] == "removed"
+            assert r.status_code == 200 and r.json()["status"] == "removed" and r.json()["role"] is None
             remove_phone = f"/api/cards/CA0001/devices/{second['device_id']}/remove"
             r = await run.post(remove_phone, signed=False, headers=signed(run, phone, second["device_id"], remove_phone))
             assert r.status_code == 409 and r.json()["error"]["code"] == "last_device"
@@ -403,6 +431,112 @@ def test_a_second_device_waits_for_the_first_and_the_last_one_stays(db_url: str)
             bad = await run.post("/api/cards/CA0001/devices", json={"public_key_jwk": {"kty": "RSA"}, "label": "x"})
             assert bad.status_code == 422
             assert (await run.post("/api/cards/CA9999/devices", json={"public_key_jwk": phone.jwk})).status_code == 404
+
+    asyncio.run(scenario())
+
+
+async def approved_phone(run: Running, card: str = "CA0001") -> tuple[DeviceKey, str]:
+    """A second device on the card, approved by the controller (``run.device``)."""
+    phone = DeviceKey()
+    pending = await enrol(run, phone, card=card, label="Phone")
+    r = await run.post(f"/api/cards/{card}/devices/{pending['device_id']}/approve")
+    assert r.status_code == 200 and r.json()["role"] == "approved", r.text
+    return phone, pending["device_id"]
+
+
+def test_an_approved_device_answers_tightens_confirms_and_revokes(db_url: str) -> None:  # noqa: F811
+    """Only device management is the controller's: every other device-bound write (C8, C4,
+    C2, C5) is accepted from an approved device."""
+
+    async def scenario() -> None:
+        fake = FakeViseca(fast())
+        async with running(db_url, fake=fake, **NO_SWEEP) as run:
+            decisions = await live_run(run)
+            phone, phone_id = await approved_phone(run)
+
+            def by_phone(path: str, body: Any = None) -> dict[str, str]:
+                return signed(run, phone, phone_id, path, body)
+
+            step_up = next(d for d in decisions if d["status"] == "pending_human")
+            path = f"/api/authorizations/{step_up['authorization_id']}/resolve"
+            r = await run.post(path, signed=False, json={"decision": "approve"}, headers=by_phone(path, {"decision": "approve"}))
+            assert r.status_code == 204, r.text
+
+            draft = (await run.post("/api/cards/CA0001/policy-drafts", json={"form": {
+                "per_order_limit_chf": 125, "period_limit_chf": 300, "period_days": 7, "categories": [],
+                "sellers_used_before_only": False, "uncertainty_policy": "ask"}})).json()  # fmt: skip
+            path, body = "/api/cards/CA0001/policy/tighten", {"add_checks": [], "uncertainty_policy": "decline"}
+            r = await run.post(path, signed=False, json=body, headers=by_phone(path, body))
+            assert r.status_code == 200, r.text
+
+            path = f"/api/policy-drafts/{draft['draft_id']}/confirm"
+            body = {"checks": draft["checks"], "uncertainty_policy": draft["uncertainty_policy"], "open_questions": []}
+            r = await run.post(path, signed=False, json=body, headers=by_phone(path, body))
+            assert r.status_code == 200 and r.json()["status"] == "active", r.text
+
+            path = "/api/cards/CA0001/policy/revoke"
+            r = await run.post(path, signed=False, headers=by_phone(path))
+            assert r.status_code == 204, r.text
+
+    asyncio.run(scenario())
+
+
+def test_the_passport_names_the_controller_and_a_transfer_is_a_new_version(db_url: str) -> None:  # noqa: F811
+    async def scenario() -> None:
+        async with running(db_url, **NO_SWEEP) as run:
+            await confirm_form(run, "CA0001")
+            laptop = run.device_ids["CA0001"]
+            doc = (await passport(run))["document"]
+            assert doc["controller_device_id"] == laptop
+            assert [(d["device_id"], d["role"]) for d in doc["devices"]] == [(laptop, "controller")]
+
+            _, phone_id = await approved_phone(run)
+            now = await passport(run)
+            assert now["versions"][-1]["reason"] == "devices"
+            assert [(d["device_id"], d["role"]) for d in now["document"]["devices"]] == [
+                (laptop, "controller"), (phone_id, "approved")]
+
+            r = await run.post(f"/api/cards/CA0001/devices/{phone_id}/transfer")
+            assert r.status_code == 200, r.text
+            after = await passport(run)
+            assert after["version"] == now["version"] + 1 and after["versions"][-1]["reason"] == "controller"
+            assert after["document"]["controller_device_id"] == phone_id
+            assert {d["device_id"]: d["role"] for d in after["document"]["devices"]} == {
+                laptop: "approved", phone_id: "controller"}
+            assert book(run).verify(after["document"], after["signature"], after["key_id"])[0]
+
+    asyncio.run(scenario())
+
+
+def test_devices_and_passports_from_before_controllers_name_the_earliest_enrolled_device(db_url: str) -> None:  # noqa: F811
+    """The migration: ``controller_since`` is NULL on rows written before controllers, so the
+    earliest enrolled device is the controller (none enrolled: none), with no data rewritten.
+    A passport issued before names no controller: the next sync issues one new version
+    (reason ``controller``) that does, and a second sync issues nothing."""
+
+    async def scenario() -> None:
+        async with running(db_url, **NO_SWEEP) as run:
+            await confirm_form(run, "CA0001")
+            laptop = run.device_ids["CA0001"]
+            _, phone_id = await approved_phone(run)
+            with session(run.services.db_engine) as s:  # as the previous release left them
+                for row in s.scalars(select(Device).where(Device.card_id == "CA0001")):
+                    row.controller_since = None
+                latest = s.scalars(select(Passport).order_by(Passport.version.desc())).first()
+                old = copy.deepcopy(latest.document)
+                old.pop("controller_device_id")
+                for d in old["devices"]:
+                    d.pop("role")
+                latest.document = old
+                version = latest.version
+            roles = {d["device_id"]: d["role"] for d in (await run.get("/api/cards/CA0001/devices")).json()["devices"]}
+            assert roles == {laptop: "controller", phone_id: "approved"}  # enrolled first: the laptop
+            assert await asyncio.to_thread(book(run).sync_passports) == 1
+            migrated = await passport(run)
+            assert migrated["version"] == version + 1 and migrated["versions"][-1]["reason"] == "controller"
+            assert migrated["document"]["controller_device_id"] == laptop
+            assert await asyncio.to_thread(book(run).sync_passports) == 0
+            assert (await run.get("/api/cards/CA0002/devices")).json()["devices"] == []  # none enrolled: no controller
 
     asyncio.run(scenario())
 
@@ -461,7 +595,8 @@ def test_the_operator_terminal_enrols_confirms_approves_removes_and_revokes(db_u
         assert run("confirm", str(saved)) == 0
         assert lines[-1].endswith("active, passport version 1")
 
-        laptop = client.post("/api/cards/CA0001/devices", json={"public_key_jwk": DeviceKey().jwk, "label": "Stage laptop"})
+        laptop_key = DeviceKey()
+        laptop = client.post("/api/cards/CA0001/devices", json={"public_key_jwk": laptop_key.jwk, "label": "Stage laptop"})
         assert laptop.json()["status"] == "pending"
         assert run("approve", "CA0001", "--label", "Stage laptop") == 0
         assert lines[-1] == "CA0001: Stage laptop is enrolled"
@@ -469,6 +604,14 @@ def test_the_operator_terminal_enrols_confirms_approves_removes_and_revokes(db_u
         assert run("remove", "CA0001", "--label", "Stage laptop") == 0
         assert lines[-1] == "CA0001: Stage laptop is removed"
         assert run("approve", "CA0001", "--label", "Nobody") == 1 and "0 devices" in lines[-1]
+
+        # hand control to the laptop: the terminal stays enrolled but can no longer manage devices
+        client.post("/api/cards/CA0001/devices", json={"public_key_jwk": laptop_key.jwk, "label": "Stage laptop"})
+        assert run("approve", "CA0001", "--label", "Stage laptop") == 0
+        assert run("transfer", "CA0001", "--label", "Stage laptop") == 0
+        assert lines[-1] == "CA0001: Stage laptop is the controller"
+        assert run("devices", "CA0001") == 0 and any("controller" in line and "Stage laptop" in line for line in lines)
+        assert run("remove", "CA0001", "--label", "Stage laptop") == 1 and "403 not_controller" in lines[-1]
 
         assert run("revoke", "CA0001", key=stranger) == 1  # a key the card never approved
         assert "device_not_enrolled" in lines[-1]

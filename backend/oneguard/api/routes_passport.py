@@ -24,7 +24,7 @@ from oneguard.api.services import Services
 from oneguard.passport import devices as device_store
 from oneguard.passport.book import PassportBook
 from oneguard.passport.canonical import as_signed
-from oneguard.passport.devices import DeviceStateError, DeviceView
+from oneguard.passport.devices import DeviceRoleError, DeviceStateError, DeviceView
 from oneguard.store.schema import Passport, Receipt
 
 router = APIRouter(prefix="/api")
@@ -55,7 +55,7 @@ def device_model(d: DeviceView) -> api.Device:
     return api.Device(
         device_id=d.device_id, card_id=d.card_id, label=d.label, status=d.status,  # type: ignore[arg-type]
         enrolled_at=d.enrolled_at, enrolled_by_device_id=d.enrolled_by_device_id,
-        removed_at=d.removed_at, last_seen_at=d.last_seen_at,
+        removed_at=d.removed_at, last_seen_at=d.last_seen_at, role=d.role,
     )  # fmt: skip
 
 
@@ -228,17 +228,21 @@ async def enrol_device(card_id: str, body: api.EnrolDeviceRequest, request: Requ
     return reply(api.EnrolDeviceResponse(device_id=device.device_id, status=device.status))  # type: ignore[arg-type]
 
 
+_CHANGES = {"approve": device_store.approve, "remove": device_store.remove, "transfer": device_store.transfer}
+
+
 async def _change_device(request: Request, card_id: str, device_id: str, action: str) -> JSONResponse:
+    """P8-P10: signed by an enrolled device (401 otherwise), which must be the card's
+    controller (403 ``not_controller``); a new passport version when it changed who may sign."""
     s = services(request)
     await card_customer(s, card_id)
     signer = await require_device(request, s, card_id)
     try:
-        if action == "approve":
-            device = await s.db(device_store.approve, s.db_engine, card_id, device_id, signer, s.now())
-        else:
-            device = await s.db(device_store.remove, s.db_engine, card_id, device_id, s.now())
+        device = await s.db(_CHANGES[action], s.db_engine, card_id, device_id, signer, s.now())
     except KeyError:
         raise not_found(f"No device {device_id} on card {card_id}.") from None
+    except DeviceRoleError as exc:
+        raise ApiError(403, exc.code, exc.message, {"card_id": card_id}) from None
     except DeviceStateError as exc:
         raise ApiError(409, exc.code, exc.message) from None
     await _reissue(s, card_id)
@@ -247,11 +251,17 @@ async def _change_device(request: Request, card_id: str, device_id: str, action:
 
 @router.post("/cards/{card_id}/devices/{device_id}/approve", response_model=api.Device)
 async def approve_device(card_id: str, device_id: str, request: Request) -> JSONResponse:
-    """An enrolled device lets a pending one control the card (a new passport version)."""
+    """The card's controller lets a pending device sign for it (a new passport version)."""
     return await _change_device(request, card_id, device_id, "approve")
 
 
 @router.post("/cards/{card_id}/devices/{device_id}/remove", response_model=api.Device)
 async def remove_device(card_id: str, device_id: str, request: Request) -> JSONResponse:
-    """An enrolled device removes a pending or enrolled one; the last enrolled one stays (409)."""
+    """The card's controller removes a pending or approved device; it cannot remove itself (409)."""
     return await _change_device(request, card_id, device_id, "remove")
+
+
+@router.post("/cards/{card_id}/devices/{device_id}/transfer", response_model=api.Device)
+async def transfer_control(card_id: str, device_id: str, request: Request) -> JSONResponse:
+    """The card's controller makes another enrolled device the controller (a new passport version)."""
+    return await _change_device(request, card_id, device_id, "transfer")
