@@ -288,7 +288,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         now=config.now,
     )
     app.state.services = s
-    s.book = await asyncio.to_thread(PassportBook.open, db, config.now)
 
     s.client = (config.viseca_client or _default_client)(db)
     start: asyncio.Task[None] | None = None
@@ -306,6 +305,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         for mandate in await asyncio.to_thread(queries.mandates, db):
             s.bind_mandate(mandate)
         start = asyncio.create_task(_start_worker(s), name="viseca-worker-start")
+    # After the worker's start is scheduled, so opening the book (the signing key, one
+    # round trip) never delays the first poll (docs/decisions.md, startup gap).
+    s.book = await asyncio.to_thread(PassportBook.open, db, config.now)
     load: asyncio.Task[None] | None = None
     if backend == "laya":
         load = asyncio.create_task(_load_signals_model(s, config.warm_signals or _warm_signals), name="signals-load")

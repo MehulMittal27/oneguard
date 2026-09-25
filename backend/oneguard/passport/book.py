@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Engine, func, select, update
+from sqlalchemy import Engine, and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -93,7 +93,16 @@ class PassportBook:
         """
         with self._lock:
             with session(self.db) as s:
-                query = select(Mandate)
+                # Only what can still change: an active mandate, or a revoked one whose
+                # passport has no revoked version yet. A revoked passport is final.
+                revoked_passport = (
+                    select(Passport.passport_id)
+                    .where(Passport.passport_id == Mandate.passport_id, Passport.revoked_at.is_not(None))
+                    .exists()
+                )
+                query = select(Mandate).where(
+                    or_(Mandate.status == "active", and_(Mandate.passport_id.is_not(None), ~revoked_passport))
+                )
                 if card_id is not None:
                     query = query.where(Mandate.card_id == card_id)
                 mandates = list(s.scalars(query.order_by(Mandate.confirmed_at, Mandate.mandate_id)))
@@ -231,57 +240,91 @@ class PassportBook:
                     answered = answered.where(Decision.live_authorization_id.in_(wanted))
                 new = [entry_of(r) for r in s.scalars(missing.order_by(Decision.decided_at).limit(limit))]
                 due = [entry_of(r) for r in s.scalars(answered.order_by(Decision.decided_at).limit(limit))]
-            issued = sum(self._issue_receipt(e) for e in new)
+            issued = self._issue_receipts(new) if new else 0
             resolved = sum(self._resolve_receipt(e) for e in due)
         return SyncCounts(receipts=issued, resolutions=resolved)
 
-    def _checks_and_passport(self, s: Session, entry: LedgerEntry) -> tuple[tuple[str, int] | None, list[dict[str, Any]]]:
-        """The passport version in force when the decision was made (the first one for a
-        decision older than every version: the backfill), and the checks it lists."""
-        versions = list(
-            s.scalars(select(Passport).where(Passport.mandate_id == entry.mandate_id).order_by(Passport.version))
-        )
-        if versions:
-            before = [v for v in versions if v.issued_at <= entry.decided_at]
-            chosen = before[-1] if before else versions[0]
-            return (chosen.passport_id, chosen.version), list(chosen.document.get("checks") or [])
-        mandate = s.get(Mandate, entry.mandate_id)
-        return None, list(mandate.checks) if mandate is not None else []
+    @staticmethod
+    def _in_force(versions: list[Passport], entry: LedgerEntry) -> Passport | None:
+        """The passport version in force when the decision was made; the first one for a
+        decision older than every version (the backfill)."""
+        if not versions:
+            return None
+        before = [v for v in versions if v.issued_at <= entry.decided_at]
+        return before[-1] if before else versions[0]
 
-    def _issue_receipt(self, entry: LedgerEntry) -> int:
-        receipt_id = entry.receipt_id or receipt_id_for(entry.live_authorization_id)
-        device_id = self._answers.get(entry.live_authorization_id)
+    def _issue_receipts(self, entries: list[LedgerEntry]) -> int:
+        """Receipts for ``entries`` in one transaction (a backfill pass is a few round trips,
+        not a few per decision). If another process issued one of them meanwhile, the pass
+        falls back to one transaction per receipt, skipping what exists."""
         try:
             with session(self.db) as s:
-                raw = s.get(EventRaw, entry.live_authorization_id)
-                passport, checks = self._checks_and_passport(s, entry)
-                body = receipt_body(
-                    entry, raw.event if raw else None, raw.source_authorization_id if raw else None,
-                    passport, checks, device_id, self.keys.active_key_id,
-                )  # fmt: skip
-                signature, key_id = self.keys.sign(body)
-                resolved = body["resolution"]
-                s.add(
-                    Receipt(
-                        receipt_id=receipt_id, live_authorization_id=entry.live_authorization_id,
-                        passport_id=passport[0] if passport else None,
-                        passport_version=passport[1] if passport else None,
-                        document=body, signature=signature, key_id=key_id, issued_at=self.now(),
-                        answered_by_device_id=resolved["device_id"] if resolved else None,
-                        resolved_at=(entry.resolved_at or self.now()) if resolved else None, history=[],
-                    )
-                )  # fmt: skip
-                if entry.receipt_id is None:  # a decision stored before receipts existed
-                    s.execute(
-                        update(Decision)
-                        .where(Decision.live_authorization_id == entry.live_authorization_id)
-                        .values(receipt_id=receipt_id)
-                    )
+                rows = self._receipt_rows(s, entries)
+                s.add_all(rows)
+                old = [
+                    {"live_authorization_id": r.live_authorization_id, "receipt_id": r.receipt_id}
+                    for r, e in zip(rows, entries, strict=True) if e.receipt_id is None
+                ]  # fmt: skip
+                if old:  # decisions stored before receipts existed
+                    s.execute(update(Decision), old)
+        except IntegrityError:
+            return sum(self._issue_one(e) for e in entries)
+        self._forget_answers(rows)
+        return len(rows)
+
+    def _issue_one(self, entry: LedgerEntry) -> int:
+        try:
+            with session(self.db) as s:
+                if s.scalar(select(Receipt.receipt_id).where(Receipt.live_authorization_id == entry.live_authorization_id)):
+                    return 0
+                (row,) = self._receipt_rows(s, [entry])
+                s.add(row)
+                if entry.receipt_id is None:
+                    s.execute(update(Decision), [{"live_authorization_id": row.live_authorization_id,
+                                                  "receipt_id": row.receipt_id}])  # fmt: skip
         except IntegrityError:
             return 0  # issued by another process
-        if resolved:
-            self._answers.pop(entry.live_authorization_id, None)
+        self._forget_answers([row])
         return 1
+
+    def _receipt_rows(self, s: Session, entries: list[LedgerEntry]) -> list[Receipt]:
+        """Signed ``Receipt`` rows for ``entries``: their events, passports and mandates are
+        read in three queries whatever the number of entries."""
+        live_ids = [e.live_authorization_id for e in entries]
+        mandate_ids = sorted({e.mandate_id for e in entries})
+        events = {r.live_authorization_id: r for r in s.scalars(select(EventRaw).where(EventRaw.live_authorization_id.in_(live_ids)))}
+        versions: dict[str, list[Passport]] = {}
+        for p in s.scalars(select(Passport).where(Passport.mandate_id.in_(mandate_ids)).order_by(Passport.version)):
+            versions.setdefault(p.mandate_id, []).append(p)
+        mandates = {m.mandate_id: m for m in s.scalars(select(Mandate).where(Mandate.mandate_id.in_(mandate_ids)))}
+        now = self.now()
+        rows: list[Receipt] = []
+        for entry in entries:
+            raw = events.get(entry.live_authorization_id)
+            chosen = self._in_force(versions.get(entry.mandate_id, []), entry)
+            mandate = mandates.get(entry.mandate_id)
+            checks = list(chosen.document.get("checks") or []) if chosen else list(mandate.checks) if mandate else []
+            passport = (chosen.passport_id, chosen.version) if chosen else None
+            body = receipt_body(
+                entry, raw.event if raw else None, raw.source_authorization_id if raw else None, passport, checks,
+                self._answers.get(entry.live_authorization_id), self.keys.active_key_id,
+            )  # fmt: skip
+            signature, key_id = self.keys.sign(body)
+            resolved = body["resolution"]
+            rows.append(Receipt(
+                receipt_id=entry.receipt_id or receipt_id_for(entry.live_authorization_id),
+                live_authorization_id=entry.live_authorization_id,
+                passport_id=passport[0] if passport else None, passport_version=passport[1] if passport else None,
+                document=body, signature=signature, key_id=key_id, issued_at=now,
+                answered_by_device_id=resolved["device_id"] if resolved else None,
+                resolved_at=(entry.resolved_at or now) if resolved else None, history=[],
+            ))  # fmt: skip
+        return rows
+
+    def _forget_answers(self, rows: list[Receipt]) -> None:
+        for row in rows:
+            if row.resolved_at is not None:
+                self._answers.pop(row.live_authorization_id, None)
 
     def _resolve_receipt(self, entry: LedgerEntry) -> int:
         device_id = self._answers.get(entry.live_authorization_id)
