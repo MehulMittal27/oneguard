@@ -107,7 +107,8 @@ function Passport({ line }: { line: PassportLine | null }) {
   return (
     <div className="ml-auto flex items-center gap-3">
       <p className={`${TEXT_S} flex items-center gap-1 font-semibold text-ink-soft tabular-nums`}>
-        Passport v{summary.version} · {summary.checks} checks · {summary.devices} devices
+        Passport v{summary.version} · {summary.checks} {summary.checks === 1 ? 'check' : 'checks'} ·{' '}
+        {summary.devices} {summary.devices === 1 ? 'device' : 'devices'}
         {verification?.verified && (
           <span className="flex items-center gap-1 text-approved">
             {' · '}
