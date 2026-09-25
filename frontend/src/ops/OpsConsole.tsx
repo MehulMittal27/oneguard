@@ -1,14 +1,25 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { getDecisions } from '../api/decisions'
 import { getCurrentRun, getSoftSignals, setSoftSignals, type CurrentRun } from '../api/operator'
-import { ApiRefusal, getHealth, getScenarios, restartReplay, startJudgingRun, type Health } from '../api/ops'
+import {
+  ApiRefusal,
+  getCatalogue,
+  getHealth,
+  getLiveRun,
+  getScenarios,
+  restartReplay,
+  startJudgingRun,
+  type Health,
+} from '../api/ops'
 import { getPassport, passportQrUrl, verifyDocument } from '../api/passport'
-import type { Decision, ScenarioSummary, SoftSignalsState } from '../api/types'
+import type { CatalogueScenario, Decision, LiveRun, ScenarioSummary, SoftSignalsState } from '../api/types'
 import {
   arrivalOrder,
+  completedRun,
   consoleRun,
   isWaiting,
-  judgingRunBlocked,
+  judgingRunGuard,
+  liveRunIds,
   passportSummary,
   readVerification,
   runDecisions,
@@ -150,6 +161,54 @@ export default function OpsConsole() {
   const selected =
     scenarios?.find((s) => s.scenario_id === selectedId) ?? (selectedId === null && run === null ? scenarios?.[0] : null) ?? null
 
+  // What the platform serves now (D8), re-read with D9. Undefined while reading;
+  // null when D8 did not answer, which the judging button treats as "not known".
+  const [catalogue, setCatalogue] = useState<CatalogueScenario[] | null | undefined>(undefined)
+  useEffect(() => {
+    let cancelled = false
+    getCatalogue()
+      .then((list) => {
+        if (!cancelled) setCatalogue(list)
+      })
+      .catch(() => {
+        if (!cancelled) setCatalogue((held) => held ?? null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [runKey])
+  const listed = selected ? catalogue?.find((c) => c.scenario_id === selected.scenario_id) : undefined
+  // A scenario D9 lists and D8 does not is not served now.
+  const served = catalogue === undefined || catalogue === null ? catalogue : Boolean(listed?.served)
+  const recordCard = listed?.profile?.card_id ?? selected?.card_id ?? null
+  const recordCustomer = listed?.profile?.customer_id ?? selected?.customer_id ?? null
+
+  // The selected served scenario's newest finished live run: its card's live runs
+  // named in C6, each read with D4 for its scenario and state. Re-read when the
+  // selection changes or the current run moves on (one may just have finished).
+  const selectedScenarioId = selected?.scenario_id ?? null
+  const recordKey =
+    selectedScenarioId && served && recordCard && recordCustomer
+      ? `${selectedScenarioId}|${recordCard}|${recordCustomer}|${runKey}|${run?.state}`
+      : null
+  const [onRecord, setOnRecord] = useState<{ key: string; run: LiveRun | null | 'failed' } | null>(null)
+  useEffect(() => {
+    if (!recordKey || !selectedScenarioId || !recordCard || !recordCustomer) return
+    let cancelled = false
+    getDecisions(recordCustomer, { operator: true })
+      .then((decisions) => Promise.all(liveRunIds(decisions, recordCard).map(getLiveRun)))
+      .then((runs) => completedRun(runs, selectedScenarioId))
+      .catch(() => 'failed' as const)
+      .then((found) => {
+        if (!cancelled) setOnRecord({ key: recordKey, run: found })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [recordKey, selectedScenarioId, recordCard, recordCustomer])
+  // No card or customer named yet: nothing of it can be on record (nor can it start).
+  const record = !recordCard || !recordCustomer ? null : onRecord?.key === recordKey ? onRecord.run : undefined
+
   // The run's decisions (C6 with ?operator=1: operator-only evidence included),
   // every 1.5 s, merged so a row changes in place ------------------------------------
   const [stream, setStream] = useState<{ key: string | null; rows: Decision[] | null }>({ key: null, rows: null })
@@ -279,8 +338,10 @@ export default function OpsConsole() {
   const phoneCustomer = run ? customerId : (selected?.customer_id ?? null)
   const phoneName = run ? run.customerName : (selected?.customer_name ?? null)
   const offline = healthFailed || runFailed
-  // D3 needs the worker polling (/healthz); the button and the dialog both say why not.
-  const judgingBlocked = judgingRunBlocked(health, healthFailed)
+  // D3 needs a served scenario (D8) and the worker polling (/healthz); the button and
+  // the dialog both say why not, and both repeat a finished run already on record.
+  const judging = judgingRunGuard({ health, healthFailed, served, record })
+  const judgingBlocked = judging.blocked
 
   return (
     <div className="ops-viseca flex h-screen flex-col overflow-hidden bg-ground">
@@ -320,6 +381,7 @@ export default function OpsConsole() {
                 onReplay={replay}
                 onJudgingRun={() => setJudgingOpen(true)}
                 judgingBlocked={judgingBlocked}
+                judgingWarning={judging.warning}
                 signIn={signIn}
                 refusal={refusal}
                 signals={signals}
@@ -364,6 +426,7 @@ export default function OpsConsole() {
           scenario={selected}
           busy={busy || judgingBlocked !== null}
           refusal={judgingRefusal ?? judgingBlocked}
+          warning={judging.warning}
           onStart={judgingRun}
           onClose={closeJudging}
         />
