@@ -8,7 +8,7 @@ const POLL_MS = 5000
 
 /**
  * Home's "Devices waiting for your approval" (`../../docs/api-contract.md` §6
- * item 18): every pending device on any of the customer's cards, each opening
+ * item 19): every pending device on any of the customer's cards, each opening
  * its card, where an enrolled device approves or removes it. Hidden when none
  * waits; a failed read keeps what was shown (it is a hint, not a state).
  */
