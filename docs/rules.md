@@ -133,7 +133,7 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
   - shop type: "{shop} is a {type} shop, not a {wanted} shop." / "Would approve at a {wanted} shop."
   - size: "Size {x}; you asked for {y}." / "Would approve in size {y}."
   - returns: "Returns: {x}; you asked for {y} days or more." ({x} is "none" for final sale, "not stated" when the shop is silent) / "Would approve with returns of {y} days or more."
-  - country: "{shop} is in {country}, not {wanted}." / "Would approve at a shop in {wanted}."; weekday: "Placed on a {day}, not {days}." / "Would approve on {days}."; quantity: "Quantity {x}; you allowed {n} or fewer." / "Would approve with a quantity of {n} or fewer."
+  - country: "{shop} is in {country}, not {wanted}." / "Would approve at a shop in {wanted}."; weekday: "Placed on a {day}, not {days}." / "Would approve on {days}."; time of day: "Placed at {HH:MM} Swiss time; you allowed from 17:00." / "Would approve from 17:00." (before / until / after for the other bounds); quantity: "Quantity {x}; you allowed {n} or fewer." / "Would approve with a quantity of {n} or fewer."
   - requested item: "The cart has {items}, not the {wanted} you asked for." / "Would approve with the {wanted}."; nothing extra: "The cart adds {items}, which you didn't ask for." / "Would approve without {items}."
   - signs and protections: injection "The shop's text had instructions aimed at the agent; they were ignored, so you decide."; duplicate "Same shop and items as the CHF {x} order {n} min earlier."; split "Together with the CHF {x} order {n} min earlier, CHF {total} is over your CHF {cap} limit."; recurring "{item} adds a recurring charge you did not ask for."; lookalike "{shop} is 1 letter away from {known shop}, a shop you know; it's a different shop."; no history "You have no purchase history yet, so we can't tell if you know this shop."; session watch "After recent unusual attempts on this card, we check with you until you approve one."
   A broken rule's clause is also its evidence detail (engine/policy.py); a typed rule on known shop, item type or shop type is checked by the same check as the flag, so both read alike.
@@ -142,7 +142,7 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 - **E5** For A1: say instructions were found and ignored; never repeat the injected instruction as if true.
 - **E6** No codes, jargon or "risk detected".
 - **E7** Every decision records the facts used (API: `evidence[]`).
-- **E8** After posting, an LLM may rewrite the explanation from the structured evidence only; it never sees or alters the decision.
+- **E8** After posting, an LLM may rewrite the explanation from the structured evidence only; it never sees or alters the decision. The rewrite is used only if it contains every number and every shop and item name of the template message verbatim (names case-insensitive); otherwise the template stays.
 
 ## 10. Turning words into rules
 
@@ -154,7 +154,7 @@ Suggest someone other than the customer is driving, or the purchase is unusual. 
 | # | Question | Default | Why |
 |---|---|---|---|
 | Q1 | One purchase or several per policy? | Each purchase judged on its own; only near-identical repeats caught (A3). | Viseca's notes call AU0023 "fully compliant" and AU0042 "a legitimate re-quote". |
-| Q2 | Ask with no answer in 120 s? | **Closed.** Expiry → post `/resolve` `decline` with message "No answer within 120 s; nothing was approved", evidence `resolved_by: timeout`. Not spent; reservation released. The stored and served message becomes "Expired: no answer within 120 s; nothing was approved." (the configured human window), the counterfactual is dropped and `explanation_source` is kept. The sandbox expires step-ups itself at the same moment, so the worker reads the platform's state first and posts only while it is still pending (decisions.md). | Viseca Q&A 24 Sep; live smoke 24 Sep. |
+| Q2 | Ask with no answer in 120 s? | **Closed.** Expiry → post `/resolve` `decline` with message "No answer within 120 s; nothing was approved", evidence `resolved_by: timeout`. Not spent; reservation released. The stored and served message becomes "Expired: no answer within 120 s; nothing was approved." (the configured human window), the counterfactual is dropped and `explanation_source` is kept. The sandbox expires step-ups itself at the same moment, so the worker reads the platform's state first and posts only while it is still pending (decisions.md). A customer's answer through C8 re-renders the message the same way: "Approved by you CHF {amount}: {clause}" / "Declined by you CHF {amount}: {clause}" with the asked clause verbatim; the counterfactual is kept. | Viseca Q&A 24 Sep; live smoke 24 Sep. |
 | Q3 | Hidden scenarios at judging? | Assume yes. | Rules must survive unseen wording. |
 | Q4 | Seven days rolling or calendar? | Rolling 168 h. | Standard reading. |
 | Q5 | Pending reserved against limits? | Yes (M5). | Otherwise late approval overspends. |
