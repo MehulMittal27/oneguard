@@ -340,6 +340,24 @@ export interface LiveRun {
   started_at?: string
 }
 
+// D8: one scenario of the store's catalogue as the platform sees it: whether it
+// serves the scenario now, the profile (customer and card) that runs it once
+// known, and a run of it still in progress (`../docs/api-contract.md` §2).
+export interface CatalogueScenario {
+  scenario_id: string
+  scenario_name: string
+  cardholder_instruction: string
+  served: boolean
+  profile: {
+    customer_id: string
+    name: string
+    card_id: string
+    profile_id: string | null
+    source: 'pack' | 'bootstrap' | 'run' | 'authorization'
+  } | null
+  active_run_id: string | null
+}
+
 // D9: one scenario of the store's catalogue, for the console's picker. The
 // customer and card are null until something names the scenario's card.
 export interface ScenarioSummary {

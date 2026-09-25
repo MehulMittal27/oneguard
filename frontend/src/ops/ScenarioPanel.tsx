@@ -1,5 +1,5 @@
 import type { ScenarioSummary, SoftSignalsState } from '../api/types'
-import { CheckIcon } from '../components/icons/lucide'
+import { CheckIcon, InfoIcon } from '../components/icons/lucide'
 import { groupScenarios, scenarioOptionLabel, type ConsoleRun } from '../lib/opsConsole'
 import { softSignalsLabel } from '../lib/softSignals'
 import { BUTTON_PRIMARY as PRIMARY, BUTTON_SECONDARY as SECONDARY, TEXT_L, TEXT_M } from './style'
@@ -7,8 +7,10 @@ import { BUTTON_PRIMARY as PRIMARY, BUTTON_SECONDARY as SECONDARY, TEXT_L, TEXT_
 /**
  * Which scenario to start and how: the picker (D9, grouped by customer, the
  * current run's scenario marked), its instruction verbatim, and the start
- * buttons (D2 replay at two speeds, D3 behind a typed confirmation and only while
- * `/healthz` shows the worker polling, saying why when not). Also the
+ * buttons (D2 replay at two speeds, D3 behind a typed confirmation and only for a
+ * scenario the platform serves now (D8) while `/healthz` shows the worker polling,
+ * saying why when not, and warning when the scenario already has a finished live
+ * run on record). Also the
  * chaos toggle (D5) and a health refresh.
  */
 export function ScenarioPanel({
@@ -20,6 +22,7 @@ export function ScenarioPanel({
   onReplay,
   onJudgingRun,
   judgingBlocked,
+  judgingWarning,
   signIn,
   refusal,
   signals,
@@ -35,8 +38,10 @@ export function ScenarioPanel({
   busy: boolean
   onReplay: (speedMs: number) => void
   onJudgingRun: () => void
-  // Why a judging run cannot start (the worker is off or not polling), or null.
+  // Why a judging run cannot start (replay only, or the worker is off or not polling), or null.
   judgingBlocked: string | null
+  // A served scenario whose finished live run is already on record; never disables the button.
+  judgingWarning: string | null
   // Whom to sign in as for the current run; the backend's refusal of a start, verbatim.
   signIn: string | null
   refusal: string | null
@@ -115,7 +120,10 @@ export function ScenarioPanel({
           className={SECONDARY}
           disabled={!canStart || judgingBlocked !== null}
           title={judgingBlocked ?? undefined}
-          aria-describedby={judgingBlocked ? 'ops-judging-blocked' : undefined}
+          aria-describedby={
+            [judgingBlocked && 'ops-judging-blocked', judgingWarning && 'ops-judging-warning'].filter(Boolean).join(' ') ||
+            undefined
+          }
           onClick={onJudgingRun}
         >
           Judging run (live)
@@ -140,6 +148,12 @@ export function ScenarioPanel({
       {judgingBlocked && (
         <p id="ops-judging-blocked" className={`${TEXT_M} text-ink-muted`}>
           {judgingBlocked}
+        </p>
+      )}
+      {judgingWarning && (
+        <p id="ops-judging-warning" className={`${TEXT_M} flex items-center gap-2 font-semibold text-asked-ink`}>
+          <InfoIcon size={16} />
+          {judgingWarning}
         </p>
       )}
       {signIn && (

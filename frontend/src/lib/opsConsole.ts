@@ -1,6 +1,6 @@
 import type { Health } from '../api/ops'
 import type { CurrentRun } from '../api/operator'
-import type { Decision, ScenarioSummary } from '../api/types'
+import type { Decision, LiveRun, ScenarioSummary } from '../api/types'
 
 /**
  * Pure logic behind the operator console (`/ops`, `src/ops/`). Nothing here
@@ -227,6 +227,84 @@ export function judgingRunBlocked(health: Health | null | undefined, failed = fa
   if (state === 'polling') return null
   const error = worker.last_error ? ` Last error: ${worker.last_error}` : ''
   return `Judging run needs the worker polling: it is ${state}.${error}`
+}
+
+/** "Thu 24 Sep 14:02": a run's real-clock start in the viewer's own time. */
+export function formatRunStart(iso: string): string {
+  const date = new Date(iso)
+  const day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][date.getDay()]
+  const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][date.getMonth()]
+  return `${day} ${date.getDate()} ${month} ${formatClock(iso).slice(0, 5)}`
+}
+
+/**
+ * The platform's ids of the live runs whose decisions C6 lists on a card, newest
+ * start first. A live run's ledger id is `live-<platform run id>`
+ * (docs/database.md `runs`); D4 is called with the platform's.
+ */
+export function liveRunIds(decisions: Decision[], cardId: string): string[] {
+  const started = new Map<string, string>()
+  for (const d of decisions) {
+    if (d.card_id !== cardId || !d.run_id?.startsWith('live-')) continue
+    const id = d.run_id.slice('live-'.length)
+    const at = d.run_started_at ?? ''
+    if (id && (started.get(id) ?? '') <= at) started.set(id, at)
+  }
+  return [...started].sort((a, b) => (a[1] < b[1] ? 1 : a[1] > b[1] ? -1 : 0)).map(([id]) => id)
+}
+
+/** The newest live run of the scenario that finished (`state: done`), or null. */
+export function completedRun(runs: LiveRun[], scenarioId: string): LiveRun | null {
+  let newest: LiveRun | null = null
+  for (const r of runs) {
+    if (r.scenario_id !== scenarioId || r.state !== 'done') continue
+    if (!newest || (r.started_at ?? '') > (newest.started_at ?? '')) newest = r
+  }
+  return newest
+}
+
+export interface JudgingGuard {
+  // Why the button is disabled, the most specific reason first; null: it can start.
+  blocked: string | null
+  // Said beside an enabled button and again in the confirmation; never disables it.
+  warning: string | null
+}
+
+/**
+ * "Judging run (live)" for the selected scenario. D3 only makes sense for a
+ * scenario the platform serves now (D8 `served`); the others are replay only,
+ * whatever the worker does, so that reason comes first. Then the worker
+ * (`judgingRunBlocked`). A catalogue not read yet, or not answering, is not a
+ * yes: the button waits for it, and for the runs on record. A served scenario
+ * with a finished live run (`record`) stays startable, with a warning that its
+ * run is already on record; runs on record that could not be read warn too.
+ */
+export function judgingRunGuard({
+  health,
+  healthFailed = false,
+  served,
+  record,
+}: {
+  health: Health | null | undefined
+  healthFailed?: boolean
+  // D8's `served` for the scenario; undefined while reading, null when D8 did not answer.
+  served: boolean | null | undefined
+  // The scenario's newest finished live run; undefined while reading, 'failed' when C6 or D4 did not answer.
+  record: LiveRun | null | undefined | 'failed'
+}): JudgingGuard {
+  if (served === false) return { blocked: 'Replay only: not served by the sandbox.', warning: null }
+  const warning =
+    record === 'failed'
+      ? 'The runs on record could not be read: this scenario may already have a finished run.'
+      : record
+        ? `Already on record (run ${record.started_at ? formatRunStart(record.started_at) : record.run_id}).`
+        : null
+  const worker = judgingRunBlocked(health, healthFailed)
+  if (worker) return { blocked: worker, warning }
+  if (served === undefined) return { blocked: 'Judging run needs the served scenarios: reading /api/dev/scenarios…', warning }
+  if (served === null) return { blocked: 'Judging run needs the served scenarios: /api/dev/scenarios did not answer.', warning }
+  if (record === undefined) return { blocked: 'Judging run needs the runs on record: reading them…', warning }
+  return { blocked: null, warning }
 }
 
 // Scenario picker (D9) ------------------------------------------------------------------

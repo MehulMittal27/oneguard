@@ -1,10 +1,11 @@
-import type { ReplayStatus, LiveRun, ScenarioSummary } from './types'
+import type { CatalogueScenario, ReplayStatus, LiveRun, ScenarioSummary } from './types'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 
 /**
  * What the operator console (`/ops`) reads and starts beyond `operator.ts`:
- * `/healthz`, D9's scenario list, D2 (replay) and D3 (a judging run). Operator
+ * `/healthz`, D8 and D9's scenario lists, D4 (a stored run), D2 (replay) and D3
+ * (a judging run). Operator
  * only, like everything in `operator.ts`: no customer screen imports this.
  *
  * With mocks on nothing runs, so health is `null` ("mock mode"), the list is
@@ -80,6 +81,25 @@ export async function getScenarios(): Promise<ScenarioSummary[]> {
   const response = await fetch(`${API_BASE_URL}/scenarios`)
   if (!response.ok) throw await refusal(response, 'Could not read the scenarios')
   return ((await response.json()) as { scenarios: ScenarioSummary[] }).scenarios
+}
+
+/**
+ * D8: the store's catalogue with what the platform serves now. The backend first
+ * re-reads the platform's bootstrap, so this is read once per run, not polled.
+ */
+export async function getCatalogue(): Promise<CatalogueScenario[]> {
+  if (import.meta.env.VITE_USE_MOCKS === 'true') return []
+
+  const response = await fetch(`${API_BASE_URL}/dev/scenarios`)
+  if (!response.ok) throw await refusal(response, 'Could not read the served scenarios')
+  return ((await response.json()) as { scenarios: CatalogueScenario[] }).scenarios
+}
+
+/** D4: one live run by the platform's run id, as the worker or the store last saw it. */
+export async function getLiveRun(runId: string): Promise<LiveRun> {
+  const response = await fetch(`${API_BASE_URL}/dev/runs/${encodeURIComponent(runId)}`)
+  if (!response.ok) throw await refusal(response, `Could not read run ${runId}`)
+  return (await response.json()) as LiveRun
 }
 
 /** D2: replay a scenario of the local data pack, `speedMs` apart. */

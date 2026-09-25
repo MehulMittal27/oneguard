@@ -5,19 +5,23 @@ import { BUTTON_PRIMARY, BUTTON_SECONDARY, TEXT_L, TEXT_M } from './style'
 /**
  * D3 behind a typed confirmation: a judging run talks to the payment platform
  * and holds the team's one delivery slot, so the operator types the scenario id
- * before it starts. The backend's refusal (409 `run_active`, `runs_disabled`,
+ * before it starts. A finished run of it already on record is repeated here as a
+ * warning (it does not stop the start). The backend's refusal (409 `run_active`, `runs_disabled`,
  * …) is shown in its own words, and the dialog stays open.
  */
 export function JudgingRunDialog({
   scenario,
   busy,
   refusal,
+  warning,
   onStart,
   onClose,
 }: {
   scenario: ScenarioSummary
   busy: boolean
   refusal: string | null
+  // A finished live run of this scenario already on record, or null.
+  warning: string | null
   onStart: () => void
   onClose: () => void
 }) {
@@ -55,6 +59,11 @@ export function JudgingRunDialog({
           ({scenario.customer_name ?? scenario.customer_id}). It needs the card&apos;s active policy, and only one run
           can be open at a time. Type the scenario id to start it.
         </p>
+        {warning && (
+          <p className="rounded-row border border-asked-border bg-asked-tint px-4 py-3 font-semibold text-asked-ink">
+            {warning}
+          </p>
+        )}
         <label className="flex flex-col gap-2 font-semibold text-ink">
           Scenario id
           <input

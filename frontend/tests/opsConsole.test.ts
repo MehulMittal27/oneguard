@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import type { Decision, ScenarioSummary } from '../src/api/types.ts'
+import type { Decision, LiveRun, ScenarioSummary } from '../src/api/types.ts'
 import {
   arrivalOrder,
+  completedRun,
   consoleRun,
   exportFileName,
   filterCounts,
@@ -14,6 +15,8 @@ import {
   groupScenarios,
   healthChips,
   judgingRunBlocked,
+  judgingRunGuard,
+  liveRunIds,
   outcomeBadge,
   hasReceipt,
   passportSummary,
@@ -230,6 +233,101 @@ test('a judging run waits for /healthz to show the worker polling, and says why 
     judgingRunBlocked({ worker: { configured: true, state: 'polling' } }, true),
     'Judging run needs the worker polling: /healthz did not answer.',
   )
+})
+
+function liveRun(fields: Partial<LiveRun>): LiveRun {
+  return {
+    run_id: 'R1',
+    scenario_id: 'SCEN0101',
+    card_id: 'CA1',
+    mandate_id: 'm',
+    state: 'done',
+    delivered: 10,
+    decided: 10,
+    pending_human: 0,
+    total: 10,
+    worker_ok: false,
+    last_error: null,
+    ...fields,
+  }
+}
+
+test('the live runs on record are the card’s live-<id> runs in C6, newest first, platform ids', () => {
+  const rows = [
+    decision({ authorization_id: 'a', run_id: 'live-OLD', run_started_at: '2026-09-20T09:00:00Z' }),
+    decision({ authorization_id: 'b', run_id: 'live-NEW', run_started_at: '2026-09-24T12:00:00Z' }),
+    decision({ authorization_id: 'c', run_id: 'live-OLD', run_started_at: '2026-09-20T09:00:00Z' }),
+    decision({ authorization_id: 'd', run_id: 'replay-abc', run_started_at: '2026-09-25T08:00:00Z' }),
+    decision({ authorization_id: 'e', run_id: 'live-OTHER', card_id: 'CA2' }),
+    decision({ authorization_id: 'f' }),
+  ]
+  assert.deepEqual(liveRunIds(rows, 'CA1'), ['NEW', 'OLD'])
+  assert.deepEqual(liveRunIds(rows, 'CA9'), [])
+})
+
+test('a scenario is on record by its newest finished live run, never one still going or failed', () => {
+  const runs = [
+    liveRun({ run_id: 'A', started_at: '2026-09-20T09:00:00Z' }),
+    liveRun({ run_id: 'B', started_at: '2026-09-24T12:00:00Z' }),
+    liveRun({ run_id: 'C', started_at: '2026-09-25T12:00:00Z', state: 'running' }),
+    liveRun({ run_id: 'D', started_at: '2026-09-25T13:00:00Z', state: 'error' }),
+    liveRun({ run_id: 'E', started_at: '2026-09-26T12:00:00Z', scenario_id: 'SCEN0102' }),
+  ]
+  assert.equal(completedRun(runs, 'SCEN0101')?.run_id, 'B')
+  assert.equal(completedRun(runs, 'SCEN0103'), null)
+  assert.equal(completedRun([liveRun({ state: 'running' })], 'SCEN0101'), null)
+})
+
+test('the judging button: served only, worker polling, the most specific reason, a record warns', () => {
+  const polling = { worker: { configured: true, state: 'polling' } }
+  const standby = { worker: { configured: true, state: 'standby' } }
+  const done = liveRun({ run_id: 'R9', started_at: '2026-09-24T12:05:00' })
+
+  // A public scenario is replay only, whatever the worker does.
+  for (const health of [polling, standby, undefined, null]) {
+    assert.deepEqual(judgingRunGuard({ health, served: false, record: done }), {
+      blocked: 'Replay only: not served by the sandbox.',
+      warning: null,
+    })
+  }
+  // Served and nothing on record: startable.
+  assert.deepEqual(judgingRunGuard({ health: polling, served: true, record: null }), { blocked: null, warning: null })
+  // Served and on record: startable, with a warning naming the run's start.
+  assert.deepEqual(judgingRunGuard({ health: polling, served: true, record: done }), {
+    blocked: null,
+    warning: 'Already on record (run Thu 24 Sep 12:05).',
+  })
+  assert.equal(
+    judgingRunGuard({ health: polling, served: true, record: liveRun({ run_id: 'R9', started_at: undefined }) }).warning,
+    'Already on record (run R9).',
+  )
+  // The worker rule still holds for a served scenario, and the warning stays beside it.
+  assert.deepEqual(judgingRunGuard({ health: standby, served: true, record: done }), {
+    blocked: 'Judging run needs the worker polling: it is standby.',
+    warning: 'Already on record (run Thu 24 Sep 12:05).',
+  })
+  assert.equal(
+    judgingRunGuard({ health: polling, healthFailed: true, served: true, record: null }).blocked,
+    'Judging run needs the worker polling: /healthz did not answer.',
+  )
+  // Not known is not a yes.
+  assert.equal(
+    judgingRunGuard({ health: polling, served: undefined, record: undefined }).blocked,
+    'Judging run needs the served scenarios: reading /api/dev/scenarios…',
+  )
+  assert.equal(
+    judgingRunGuard({ health: polling, served: null, record: undefined }).blocked,
+    'Judging run needs the served scenarios: /api/dev/scenarios did not answer.',
+  )
+  assert.deepEqual(judgingRunGuard({ health: polling, served: true, record: undefined }), {
+    blocked: 'Judging run needs the runs on record: reading them…',
+    warning: null,
+  })
+  // Runs on record that could not be read warn; they do not block.
+  assert.deepEqual(judgingRunGuard({ health: polling, served: true, record: 'failed' }), {
+    blocked: null,
+    warning: 'The runs on record could not be read: this scenario may already have a finished run.',
+  })
 })
 
 test('the passport line reads the real signed passport: version, checks and devices', () => {
