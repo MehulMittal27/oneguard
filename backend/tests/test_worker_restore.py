@@ -3,8 +3,9 @@
 ``bind_policy`` is in memory. Without a restore, every live run after a restart or a
 redeploy was decided from the mandate snapshot's ``hard_rules`` alone, which drops the
 requested item (C5), "nothing extra" (C10) and ``on_fail: ask``. The worker now loads
-the confirmed mandate stored for that Viseca id first; the snapshot is used only when
-there is none.
+the confirmed mandate stored for that Viseca id first; when there is none the card has no
+active policy and the purchase is declined (``no_active_policy``): the snapshot never
+decides.
 """
 
 from __future__ import annotations
@@ -74,6 +75,7 @@ def _store_confirmed(db: Engine, viseca_mandate_id: str, status: str = "active")
 async def _policy_used(db: Engine, store_it: bool, status: str = "active"):
     async with harness(db, fast()) as (fake, client, worker):
         viseca_mandate_id, run_id = await start_run(client, worker, SCENARIO)
+        worker._policies.clear()  # a restart: what C2 bound in memory is gone
         if store_it:
             _store_confirmed(db, viseca_mandate_id, status)
         await worker.start()  # a fresh worker: nothing bound in memory
@@ -85,14 +87,14 @@ async def _policy_used(db: Engine, store_it: bool, status: str = "active"):
 
 def test_a_restarted_worker_decides_from_the_stored_confirmed_policy(db: Engine):
     _, policy = asyncio.run(_policy_used(db, store_it=True))
-    assert policy.mandate_id == "M_STORED"
+    assert policy.mandate_id == "M_STORED" and policy.card_id == CARD
     assert policy.requested_item == "27-inch monitor" and policy.nothing_extra is True
     assert [r.on_fail for r in policy.rules] == ["decline", "ask"]
 
 
-def test_without_a_stored_policy_the_snapshot_still_decides(db: Engine):
+def test_without_a_stored_policy_the_card_has_no_active_policy(db: Engine):
     viseca_mandate_id, policy = asyncio.run(_policy_used(db, store_it=False))
-    assert policy.mandate_id == viseca_mandate_id
+    assert (policy.mandate_id, policy.status, policy.rules) == (viseca_mandate_id, "none", [])
 
 
 def test_a_stored_revoked_policy_binds_as_revoked(db: Engine):

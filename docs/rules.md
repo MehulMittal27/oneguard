@@ -43,7 +43,7 @@ The first step that applies decides.
 
 | Step | Condition | Outcome |
 |---|---|---|
-| 1 | Policy revoked or expired, `authority_status` ≠ `"active"` (`"revoked"` or `"expired"`), or `card_status_at_attempt` = `"blocked"` | Decline, with evidence naming the field and its value |
+| 1 | The card has no active policy of its own: none confirmed here, revoked (by the customer, at a named time), expired or superseded, or the purchase came under another card's policy. Or `authority_status` ≠ `"active"` (`"revoked"` or `"expired"`), or `card_status_at_attempt` = `"blocked"` | Decline, with evidence naming the field and its value. No active policy: `no_active_policy`, message "No spending policy is active on this card, so nothing your agent proposes can be paid from it." (never the platform's copy of the mandate's rules). Authority or card: `card_or_authority_inactive` |
 | 2 | Any customer rule or money rule `fail` | Decline |
 | 3 | Any protection with a Decline outcome triggered | Decline |
 | 4 | Any customer rule `unknown` | Uncertainty setting (Ask by default) |

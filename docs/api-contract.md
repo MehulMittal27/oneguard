@@ -244,7 +244,9 @@ Decision {
   run_started_at?: string,                    // NEW: that run's start, REAL clock (runs.started_at); C6 sends it
                                               // when the run has a `runs` row. The UI lists a card's newest run
   policy_applied?: { mandate_id: string,      // NEW: the policy this decision was checked against
-                     source: 'confirmed' | 'platform',   // platform = the Viseca mandate's own rules (no confirmed policy bound)
+                     source: 'confirmed' | 'platform',   // platform = the Viseca mandate's own rules: decisions made before
+                                                         // `no_active_policy`; none since (§4). Null on a no_active_policy
+                                                         // decline with no policy, and never another card's policy
                      checks: RuleCheck[] } | null,       // what decided, whatever the card's policy is now
   would_approve_if: Bound[] | null,           // NEW: the counterfactual structured, declines only (null otherwise
                                               // and on decisions made before it existed); what the agent is told
@@ -587,7 +589,11 @@ Added: `split_order_suspected`, `requote_accepted`, `already_fulfilled`,
 price, quantity, country, weekday, delivery date), `unusual_activity` (two weak warning
 signs), `session_watch` (the one ask after a burst, rules.md W-rule 4),
 `no_purchase_history` (a known-shop check, C9, left unknown because the customer has no
-purchase history yet; every other unknown keeps its own code, else unevaluable).
+purchase history yet; every other unknown keeps its own code, else unevaluable),
+`no_active_policy` (rules.md §4 step 1: the card has no active policy of its own, because none
+was confirmed, it was revoked, or the purchase came under another card's policy; message
+"No spending policy is active on this card, so nothing your agent proposes can be paid
+from it."; `card_or_authority_inactive` stays for a revoked authority or a blocked card).
 
 Development only: `stub`, emitted only while `ONEGUARD_STUBS` stubs `decide`
 (`backend/oneguard/engine/stubs.py`); never in a live run.

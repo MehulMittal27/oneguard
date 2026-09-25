@@ -12,6 +12,11 @@ test('period_count_exceeded has its own customer label', () => {
   assert.equal(reasonLabel('period_count_exceeded'), 'More orders than you allowed for this period')
 })
 
+test('no_active_policy has its own customer label', () => {
+  assert.ok(isKnownReasonCode('no_active_policy'))
+  assert.equal(reasonLabel('no_active_policy'), 'No active policy on this card')
+})
+
 test('an unknown code falls back to the neutral line', () => {
   assert.equal(reasonLabel('not_a_code'), 'Another check your rules ran')
 })

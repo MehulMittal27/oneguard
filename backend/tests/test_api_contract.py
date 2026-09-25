@@ -44,6 +44,7 @@ from oneguard.api.policies import (
 )
 from oneguard.api.services import Services
 from oneguard.engine import stubs
+from oneguard.engine.explain import NO_ACTIVE_POLICY_MESSAGE
 from oneguard.engine.interfaces import load_implementations
 from oneguard.engine.tier3 import rewrite_explanation
 from oneguard.engine.types import (
@@ -1344,11 +1345,12 @@ def test_a_restored_policy_keeps_the_flags_and_decisions_show_their_checks(db_ur
             worker._policies.clear()
             worker._restore_policy(tm)
             policy = worker._policies[tm]
+            assert policy.card_id == "CA0001"  # a purchase on another card is declined (no_active_policy)
             assert [r.id for r in policy.rules] == ["C1"]
             assert policy.requested_item == "27-inch monitor" and policy.nothing_extra is True
 
             event = {"mandate": {"mandate_id": tm}}
-            entry = type("Entry", (), {"mandate_id": policy.mandate_id})()
+            entry = type("Entry", (), {"mandate_id": policy.mandate_id, "card_id": "CA0001"})()
             applied = policy_applied(event, entry, policy)  # type: ignore[arg-type]
             assert applied is not None and applied.source == "confirmed"
             assert [c.model_dump(mode="json", exclude_none=True) for c in applied.checks] == [
@@ -1853,5 +1855,43 @@ def test_viseca_calls_are_logged_when_switched_on(db_url: str, monkeypatch: pyte
             paths = viseca_call_rows(run)
             assert "/v1/bootstrap" in paths and "/v1/reference-data" in paths
             assert any(p.startswith("/v1/decision-requests/next") for p in paths)
+
+    asyncio.run(scenario())
+
+
+def test_a_card_without_its_own_policy_shows_the_no_active_policy_decline(db_url: str) -> None:
+    """A run started straight at the platform (not through D3) on CA0001, which has no policy:
+    under a mandate nobody confirmed here, and under CA0039's confirmed mandate. C6 shows
+    each purchase declined with ``no_active_policy`` and the captain's message, and never
+    shows CU0019's policy on CU0001's decision (rules.md §4 step 1)."""
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast())) as run:
+            client = run.services.client
+            draft = await client.create_mandate("Made at the platform only.", [], "approve")
+            unknown = (await client.confirm_mandate(draft["draft_id"]))["mandate_id"]
+            await client.create_run("SCEN0000", unknown)
+            (first,) = await until(run.decisions)
+
+            await confirm_form(run, "CA0039", categories=["electronics"])
+            theirs = (await run.get("/api/cards/CA0039/policy")).json()["mandate"]["mandate_id"]
+            tm = next(m for m, v in run.fake.mandates.items() if v["status"] == "active")
+            await client.create_run("SCEN0000", tm)
+            second = await until(lambda: _other_than(run, first["authorization_id"]))
+
+            assert (await run.get("/api/cards/CA0001/policy")).json() == {"mandate": None}
+            for d in (first, second):
+                assert d["card_id"] == "CA0001" and d["decision"] == "stopped" and d["status"] == "final"
+                assert d["reason_codes"] == ["no_active_policy"]
+                assert d["message"] == NO_ACTIVE_POLICY_MESSAGE
+                assert d["counterfactual"] == "Confirm a new policy to let purchases like this go ahead."
+                assert d["evidence"][0]["rule"] == "Policy active" and d["evidence"][0]["outcome"] == "fail"
+                assert d.get("policy_applied") is None
+            assert first["evidence"][0]["detail"] == "No spending policy is stored for card CA0001."
+            assert "belongs to another card" in second["evidence"][0]["detail"]
+            assert theirs not in json.dumps(second) and "CA0039" not in json.dumps(second)
+
+    async def _other_than(run: Running, live_id: str) -> dict[str, Any] | None:
+        return next((d for d in await run.decisions() if d["authorization_id"] != live_id), None)
 
     asyncio.run(scenario())

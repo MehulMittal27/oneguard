@@ -6,9 +6,10 @@
 1. redelivery of a stored live ``authorization_id`` → the stored result, nothing counted (M7)
 2. ``build_facts``
 3. ``Ledger.view``; ``facts.merchant_known`` / ``merchant_known_on_card`` from it (Q7, C9)
-   - a policy that is no longer active (revoked, expired, superseded) is declined here
-     with ``card_or_authority_inactive`` without running rules or signals (§4 step 1,
-     T6, Q6); this holds whatever the engine functions are, stubs included
+   - a card with no active policy of its own (none stored, revoked, expired, superseded,
+     or the policy is another card's) is declined here with ``no_active_policy`` without
+     running rules or signals (§4 step 1, T6, Q6); this holds whatever the engine
+     functions are, stubs included
 4. ``evaluate_rules``
 5. ``resolve_unknowns`` only if a rule is unknown and a provider is configured (tier 2),
    then ``evaluate_rules`` again on the new facts; then ``policy.add_ledger_results`` adds
@@ -43,7 +44,8 @@ from oneguard import __version__
 from oneguard.api import models as api
 from oneguard.api import policies
 from oneguard.engine import stubs
-from oneguard.engine.explain import with_bounds
+from oneguard.engine.explain import NO_ACTIVE_POLICY_MESSAGE, RULE_LABELS, with_bounds
+from oneguard.engine.facts import ZURICH
 from oneguard.engine.ledger_base import Ledger, LedgerEntry
 from oneguard.engine.policy import (
     COUNT_FIELD,
@@ -164,28 +166,36 @@ def _optional_stage(name: str, fn: Callable[[], Any], fallback: Any) -> Any:
         return fallback
 
 
-def _inactive_policy(policy: Policy) -> tuple[EngineDecision, Explanation]:
-    """§4 step 1 for our own mandate: nothing is approved once it is not active (T6, Q6)."""
-    reason = "you revoked this policy" if policy.status == "revoked" else f"this policy is {policy.status}"
+def _no_active_policy_detail(policy: Policy, card_id: str) -> str | None:
+    """Why ``card_id`` has no active policy for this purchase (§4 step 1), or None when
+    ``policy`` is the card's active one."""
+    if policy.status == "none":
+        return f"No spending policy is stored for card {card_id}."
+    if policy.status == "revoked":
+        when = policy.revoked_at.astimezone(ZURICH).strftime("%d %b %Y, %H:%M") if policy.revoked_at else None
+        return f"Policy {policy.mandate_id} was revoked by the customer" + (f" at {when} Swiss time." if when else ".")
+    if policy.status != "active":
+        return f"Policy {policy.mandate_id} is {policy.status}."
+    if policy.card_id is not None and policy.card_id != card_id:
+        return f"The policy this purchase came under belongs to another card, not {card_id}."
+    return None
+
+
+def _no_active_policy(detail: str) -> tuple[EngineDecision, Explanation]:
+    """§4 step 1 for our own mandate: nothing is approved on a card without its own active
+    policy (none confirmed, revoked, or another card's; T6, Q6)."""
     return (
         EngineDecision(
             outcome="decline",
-            reason_codes=["card_or_authority_inactive"],
+            reason_codes=["no_active_policy"],
             step=1,
             deciding_ids=["policy_status"],
         ),
         Explanation(
-            message=f"Declined: {reason}, so nothing is approved under it.",
+            message=NO_ACTIVE_POLICY_MESSAGE,
             counterfactual="Confirm a new policy to let purchases like this go ahead.",
             would_approve_if=[{"requires": "active_policy"}],
-            evidence=[
-                EvidenceRow(
-                    rule="policy_status",
-                    outcome="fail",
-                    detail=f"Mandate {policy.mandate_id} status is {policy.status}.",
-                    source="policy",
-                )
-            ],
+            evidence=[EvidenceRow(rule=RULE_LABELS["policy_status"], outcome="fail", detail=detail, source="policy")],
         ),
     )
 
@@ -234,8 +244,8 @@ def decide_event(
             "merchant_known_on_card": facts.merchant_id in view.known_merchant_ids_on_card,
         }
     )
-    if ctx.policy.status != "active":
-        engine, explanation = _inactive_policy(ctx.policy)
+    if (inactive := _no_active_policy_detail(ctx.policy, card_id)) is not None:
+        engine, explanation = _no_active_policy(inactive)
         return _record(event, ctx, facts, view, engine, explanation, extra_evidence, started, [])
 
     rules: list[RuleResult] = fn["evaluate_rules"](facts, ctx.policy)
@@ -376,8 +386,9 @@ def policy_applied(event: dict, entry: LedgerEntry, policy: Policy) -> api.Polic
     """The checks this decision was made under, as the customer reads them (the flag checks
     C5 / C10 included, policies.flag_checks). ``platform``
     when the policy is the platform mandate's snapshot (no confirmed policy was bound to it:
-    its id is the event's mandate id). None for a policy with no rules (an unknown replay)."""
-    if not policy.rules:
+    its id is the event's mandate id). None for a policy with no rules (an unknown replay)
+    and for another card's policy (a customer never sees it)."""
+    if not policy.rules or policy.card_id not in (None, entry.card_id):
         return None
     platform = policy.mandate_id == (event.get("mandate") or {}).get("mandate_id")
     return api.PolicyApplied(

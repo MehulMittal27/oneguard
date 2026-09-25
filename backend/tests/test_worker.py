@@ -9,6 +9,7 @@ is the live one. Every test that uses ``db`` runs twice: on P2's ``StoreLedger``
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 import threading
 import time
@@ -25,6 +26,7 @@ from sqlalchemy import Engine, func, select
 from oneguard.api import models as api
 from oneguard.engine import stubs
 from oneguard.engine.explain import (
+    NO_ACTIVE_POLICY_MESSAGE,
     expired_message,
 )
 from oneguard.engine.ledger import StoreLedger
@@ -55,6 +57,7 @@ from oneguard.viseca.worker import (
     default_ledger,
     fx_rate_mismatches,
     overrun_setting,
+    policy_from_snapshot,
     timeout_message,
 )
 from tests.fake_viseca import FakeConfig, FakeViseca, judging_pack
@@ -127,6 +130,17 @@ async def harness(
         await client.aclose()
 
 
+async def confirmed(
+    client: VisecaClient, worker: VisecaWorker, hard_rules: list | None = None, uncertainty: str = "ask"
+) -> dict[str, Any]:
+    """A mandate confirmed at the platform with its policy bound on the worker, as C2 does:
+    a mandate with no confirmed policy here is declined (``no_active_policy``)."""
+    draft = await client.create_mandate("Test instruction.", hard_rules or [], uncertainty)
+    mandate = await client.confirm_mandate(draft["draft_id"])
+    worker.bind_policy(mandate["mandate_id"], policy_from_snapshot(mandate))
+    return mandate
+
+
 async def start_run(
     client: VisecaClient,
     worker: VisecaWorker,
@@ -134,8 +148,7 @@ async def start_run(
     hard_rules: list | None = None,
     uncertainty: str = "ask",
 ) -> tuple[str, str]:
-    draft = await client.create_mandate("Test instruction.", hard_rules or [], uncertainty)
-    mandate = await client.confirm_mandate(draft["draft_id"])
+    mandate = await confirmed(client, worker, hard_rules, uncertainty)
     run = await client.create_run(scenario_id, mandate["mandate_id"])
     worker.track_run(run["run_id"], scenario_id=scenario_id, viseca_mandate_id=mandate["mandate_id"])
     return mandate["mandate_id"], run["run_id"]
@@ -701,8 +714,7 @@ def test_the_ledger_holds_no_connection_between_decisions_or_after_stop(
                     all_handled.set()
 
             worker.add_handled_listener(handled)
-            draft = await client.create_mandate("Test instruction.", [], "ask")
-            mandate = await client.confirm_mandate(draft["draft_id"])
+            mandate = await confirmed(client, worker)
             run_id = (await client.create_run("SCEN0001", mandate["mandate_id"]))["run_id"]
             run_ids.append(run_id)
             worker.track_run(run_id, scenario_id="SCEN0001", viseca_mandate_id=mandate["mandate_id"])
@@ -839,14 +851,87 @@ def test_a_revoked_mandate_declines_everything_delivered_afterwards(
             assert len(later) == 8
             assert {e.outcome for e in earlier} == {"step_up"}
             for entry in later:
-                assert entry.outcome == "decline" and entry.step == 1
-                assert entry.reason_codes == ["card_or_authority_inactive"]
-                assert entry.evidence[0].rule == "policy_status" and entry.evidence[0].outcome == "fail"
+                assert entry.outcome == "decline" and entry.step == 1 and entry.spent_chf == 0
+                assert entry.reason_codes == ["no_active_policy"]
+                assert entry.message == NO_ACTIVE_POLICY_MESSAGE
+                row = entry.evidence[0]
+                assert (row.rule, row.outcome) == ("Policy active", "fail")  # a label, never a rule id
+                assert re.fullmatch(
+                    r"Policy \S+ was revoked by the customer at \d{2} \w{3} \d{4}, \d{2}:\d{2} Swiss time\.", row.detail
+                ), row.detail
             posted_later = {a.live_id: a.decisions[0] for a in auths}
             for entry in later:
                 posted = posted_later[entry.live_authorization_id]
                 assert posted["decision"] == "decline"
-                assert posted["reason_codes"] == ["card_or_authority_inactive"]
+                assert posted["reason_codes"] == ["no_active_policy"]
+                assert posted["customer_message"] == NO_ACTIVE_POLICY_MESSAGE
+
+    asyncio.run(scenario())
+
+
+def test_a_mandate_with_no_policy_stored_here_declines_every_purchase(
+    db: Engine, history: StoreHistoryIndex
+) -> None:
+    """A run under a platform mandate nobody confirmed here (a card that never had a
+    policy): every purchase is declined at step 1 with ``no_active_policy``, before the
+    deadline, and nothing is spent. The platform's copy of the rules never decides."""
+
+    async def scenario() -> None:
+        async with harness(db, fast(), history=history) as (fake, client, worker):
+            await worker.start()
+            rules = [{"field": "authorization.billing_amount_chf", "operator": "<=", "value": 1000}]
+            draft = await client.create_mandate("Made at the platform only.", rules, "approve")
+            tm = (await client.confirm_mandate(draft["draft_id"]))["mandate_id"]
+            run_id = (await client.create_run("SCEN0001", tm))["run_id"]
+            auths = fake.runs[run_id].auths
+            await wait_until(lambda: all(a.decisions for a in auths), timeout=60)
+            entries = await worker.ledger_entries([a.live_id for a in auths])
+            assert len(entries) == len(auths) == 10
+            for entry in entries:
+                assert (entry.outcome, entry.step, entry.final, entry.spent_chf) == ("decline", 1, True, 0)
+                assert entry.reason_codes == ["no_active_policy"] and entry.message == NO_ACTIVE_POLICY_MESSAGE
+                assert entry.evidence[0].rule == "Policy active"
+                assert entry.evidence[0].detail == f"No spending policy is stored for card {entry.card_id}."
+            for auth in auths:
+                (posted,) = auth.decisions
+                assert posted["decision"] == "decline" and posted["reason_codes"] == ["no_active_policy"]
+                assert posted["customer_message"] == NO_ACTIVE_POLICY_MESSAGE
+                assert not auth.auto_declined and auth.accepted_at is not None
+                assert auth.accepted_at <= auth.deadline_at
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("started_by_d3", [False, True])
+def test_another_cards_policy_never_decides_unless_d3_is_moving_it(
+    db: Engine, history: StoreHistoryIndex, started_by_d3: bool
+) -> None:
+    """A purchase on CA0001 under a mandate whose policy is CA0011's is declined
+    (``no_active_policy``, "belongs to another card"), unless D3 announced the run
+    (``expect_run``): the platform picks the run's card and D3 moves the policy there."""
+
+    async def scenario() -> None:
+        async with harness(db, fast(), history=history) as (fake, client, worker):
+            await worker.start()
+            draft = await client.create_mandate("Another card's policy.", [], "approve")
+            mandate = await client.confirm_mandate(draft["draft_id"])
+            tm = mandate["mandate_id"]
+            worker.bind_policy(tm, policy_from_snapshot(mandate).model_copy(update={"card_id": "CA0011"}))
+            if started_by_d3:
+                worker.expect_run(tm, "SCEN0000")
+            run_id = (await client.create_run("SCEN0000", tm))["run_id"]
+            (auth,) = fake.runs[run_id].auths
+            assert auth.template["authorization"]["card_id"] == "CA0001"
+            await wait_until(lambda: bool(auth.decisions), timeout=30)
+            (entry,) = await worker.ledger_entries([auth.live_id])
+            if started_by_d3:
+                assert entry.step != 1 and entry.reason_codes != ["no_active_policy"]
+            else:
+                assert (entry.outcome, entry.step, entry.reason_codes) == ("decline", 1, ["no_active_policy"])
+                assert entry.message == NO_ACTIVE_POLICY_MESSAGE
+                assert "belongs to another card" in entry.evidence[0].detail
+                assert "CA0011" not in entry.evidence[0].detail  # another customer's card is never named
+                assert auth.decisions[0]["reason_codes"] == ["no_active_policy"]
 
     asyncio.run(scenario())
 

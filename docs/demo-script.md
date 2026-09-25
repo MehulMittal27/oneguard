@@ -375,7 +375,7 @@ Eleven purchases, 15 s apart, 150 s in total. Seconds after the start:
 | 105 | Loom and Pine 95.00 (AU0031) | step_up | Waiting for you CHF 95.00: After recent unusual attempts on this card, we check with you until you approve one. | known device and shop, asked once: **Approvals** → **Approve** at once, within 15 s |
 | 120 | Milano Weave 247.00 (AU0032) | approve | Approved CHF 247.00: it is within the limits you set. (approve branch) | watch off after the customer's yes: escalate, check once, relax |
 | 120-135 | | | | **Revoke** now (15 s): **Accounts** → Card CA0023 → **Revoke** → sheet "Revoke this policy?" → **Revoke** |
-| 135, 150 | RainThread 138.00, Loom and Pine 268.00 (AU0033, AU0034) | decline | Declined: you revoked this policy, so nothing is approved under it. (after revoke) | counterfactual "Confirm a new policy to let purchases like this go ahead." |
+| 135, 150 | RainThread 138.00, Loom and Pine 268.00 (AU0033, AU0034) | decline | No spending policy is active on this card, so nothing your agent proposes can be paid from it. (after revoke; `no_active_policy`) | counterfactual "Confirm a new policy to let purchases like this go ahead." |
 
 **Say**: the burst was stopped by the customer's own rule (known shops only), the session
 watch made the next ordinary purchase ask once, and one yes relaxed it. Revoke takes effect

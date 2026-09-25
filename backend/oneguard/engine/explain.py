@@ -63,6 +63,11 @@ REMOVED = "[instructions removed]"
 LEADS = {"approve": "Approved", "decline": "Declined", "step_up": "Waiting for you"}
 EXPIRED_MESSAGE = "Expired: no answer within {seconds} s; nothing was approved."
 """rules.md Q2: the stored message of a step-up closed by the timeout."""
+NO_ACTIVE_POLICY_MESSAGE = (
+    "No spending policy is active on this card, so nothing your agent proposes can be paid from it."
+)
+"""rules.md §4 step 1: the card has no active policy (none confirmed, revoked, or another
+card's). The captain's wording, not the "{Outcome} CHF {amount}: {clause}." template."""
 
 
 def expired_message(window_s: float) -> str:
@@ -91,6 +96,7 @@ REASON_TEMPLATES: dict[str, str] = {
     "injection_suspected": "the shop's text contains instructions aimed at the agent, which were ignored",
     "new_device_burst": "the way it was made suggests someone else may be driving",
     "card_or_authority_inactive": "the card or your permission is not active",
+    "no_active_policy": "no spending policy is active on this card",
     "unevaluable": "not everything could be checked in time",
     "customer_confirmation": "you confirmed it",
     "split_order_suspected": "together with an order a few minutes earlier it goes over your per-order limit",
@@ -370,6 +376,8 @@ def _message(
     """"{Outcome} CHF {amount}: {clause}." with the deciding rule's or signal's clause. At
     most one clause is joined to it: the second of two signs that decide together, else
     the note that instructions in the shop's text were ignored."""
+    if "no_active_policy" in decision.reason_codes:
+        return NO_ACTIVE_POLICY_MESSAGE  # the captain's wording, whatever the amount (§4 step 1)
     amount = _chf(facts.billing_amount_chf)
     lead = LEADS[decision.outcome]
     if decision.outcome == "approve":

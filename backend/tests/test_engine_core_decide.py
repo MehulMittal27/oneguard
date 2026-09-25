@@ -115,7 +115,8 @@ def test_step7_everything_passes():
 def test_step1_inactive_declines_first(which):
     rules = [R(i, "fail" if i == which else "pass") for i in STEP1_RULE_IDS] + clean(C1="fail")[3:]
     d = D(rules, prot=[S("A1", outcome="decline")], warn=[S("W1")])
-    assert (d.outcome, d.step, d.deciding_ids, d.reason_codes) == ("decline", 1, [which], ["card_or_authority_inactive"])
+    code = "no_active_policy" if which == "policy_status" else "card_or_authority_inactive"
+    assert (d.outcome, d.step, d.deciding_ids, d.reason_codes) == ("decline", 1, [which], [code])
 
 
 def test_step2_a_broken_rule_declines():

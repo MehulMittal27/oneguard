@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from oneguard.engine.explain import NO_ACTIVE_POLICY_MESSAGE
 from oneguard.llm.provider import NullProvider
 from oneguard.replay.events import Pack
 from oneguard.replay.oracle import ORACLE, unanswered_outcomes
@@ -227,7 +228,9 @@ def test_replay_under_a_revoked_policy_declines_every_purchase(seeded: Path, tmp
             assert (await run.get("/api/dev/runs/current")).json()["policy_source"] == "revoked"
             for source, row in rows.items():
                 assert row["decision"] == "stopped", source
-                assert {"card_or_authority_inactive", "no_active_policy"} & set(row["reason_codes"]), source
+                assert row["reason_codes"] == ["no_active_policy"], source
+                assert row["message"] == NO_ACTIVE_POLICY_MESSAGE, source
+                assert "was revoked by the customer at" in row["evidence"][0]["detail"], source
         assert (await stored_current_run(db))["policy_source"] == "revoked"
 
     asyncio.run(scenario())

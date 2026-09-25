@@ -197,7 +197,11 @@ class Rule(_Model):
 class Policy(_Model):
     """The confirmed mandate the gate applies (§3 Policy, C1–C12, T5–T6, Q6).
 
-    ``status`` feeds §4 step 1 (revoked / expired policy). ``uncertainty_policy`` is
+    ``status`` feeds §4 step 1 (revoked / expired policy; ``none``: no policy is stored
+    for the card, so nothing is approved). ``card_id`` is the card the policy was
+    confirmed for (None: not tied to a card, e.g. a replay's compiled policy); a purchase
+    on another card is declined at step 1. ``revoked_at`` is when the customer revoked
+    it, named in the step-1 evidence. ``uncertainty_policy`` is
     C11. The convenience fields restate rules already in ``rules``: ``None`` or
     ``False`` means the customer did not state that rule, never "anything goes"
     (C3 ``allowed_item_categories``, C4 ``blocked_item_categories``, C5
@@ -208,7 +212,7 @@ class Policy(_Model):
     """
 
     mandate_id: str
-    status: Literal["active", "superseded", "revoked", "expired"]
+    status: Literal["active", "superseded", "revoked", "expired", "none"]
     instruction: str
     rules: list[Rule]
     uncertainty_policy: UncertaintyPolicy
@@ -219,6 +223,8 @@ class Policy(_Model):
     nothing_extra: bool = False
     shop_type: str | None = None
     single_item: bool = False
+    card_id: str | None = None
+    revoked_at: AwareDatetime | None = None
 
 
 class PriorDecision(_Model):
