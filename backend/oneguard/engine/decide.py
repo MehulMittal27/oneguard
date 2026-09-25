@@ -84,6 +84,7 @@ _SIGNAL_CODE = {
     "S_agent_directed": "injection_suspected",
 }
 _RELATED_ORDER = ("A3", "A4", "A5")
+_INJECTION_IDS = ("A1", "S_agent_directed")
 
 
 def _dedupe(codes: list[str]) -> list[str]:
@@ -199,7 +200,11 @@ def decide(
     if unsure_ids and setting == "decline":
         return result("decline", 4, unsure_codes, unsure_ids)
     if reserved_only or step1_unsure or (unknown and setting == "ask"):
-        codes = ["period_reserved_pending"] * bool(reserved_only) + unsure_codes
+        # An injection that would ask on its own (step 5 or 6) is a cause of this ask too: its
+        # code is named after the unknowns' (the message already says the text was ignored).
+        injected = [s for s in [*protections_, *soft] if s.id in _INJECTION_IDS and s.triggered
+                    and s.outcome_if_triggered == "ask"]
+        codes = ["period_reserved_pending"] * bool(reserved_only) + unsure_codes + [_signal_code(s) for s in injected]
         return result("step_up", 4, codes, [r.rule_id for r in reserved_only] + unsure_ids)
     approved_despite_unknown = bool(unknown)  # setting "approve": steps 5-6 may still ask (D2)
 
