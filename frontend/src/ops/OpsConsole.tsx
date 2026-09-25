@@ -125,13 +125,14 @@ export default function OpsConsole() {
   const selected =
     scenarios?.find((s) => s.scenario_id === selectedId) ?? (selectedId === null && run === null ? scenarios?.[0] : null) ?? null
 
-  // The run's decisions (C6), every 1.5 s, merged so a row changes in place ----------
+  // The run's decisions (C6 with ?operator=1: operator-only evidence included),
+  // every 1.5 s, merged so a row changes in place ------------------------------------
   const [stream, setStream] = useState<{ key: string | null; rows: Decision[] | null }>({ key: null, rows: null })
   usePoll(
     async () => {
       if (!runKey || !customerId || !cardId) return
       try {
-        const mine = runDecisions(await getDecisions(customerId), { ledgerRunId, cardId })
+        const mine = runDecisions(await getDecisions(customerId, { operator: true }), { ledgerRunId, cardId })
         setStream((prev) => {
           const held = prev.key === runKey ? (prev.rows ?? []) : []
           const merged = mergeDecisions(held, mine)

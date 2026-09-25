@@ -37,8 +37,12 @@ function withDeadline(decision: Decision): Decision {
  * touching call sites. Call this once per sign-in (DecisionsProvider), not
  * on every screen visit — `deadline_at` uses the real clock, so refetching
  * would keep resetting any pending countdown.
+ *
+ * `operator: true` (the `/ops` console only) adds `?operator=1`, so C6 also
+ * sends the operator-only evidence rows (ledger reconciliation,
+ * `../../docs/api-contract.md` §3.4). The customer's app never asks for them.
  */
-export async function getDecisions(customerId: string): Promise<Decision[]> {
+export async function getDecisions(customerId: string, { operator = false }: { operator?: boolean } = {}): Promise<Decision[]> {
   if (import.meta.env.VITE_USE_MOCKS === 'true') {
     const { decisions } = await import('../mocks/fixtures/decisions.json')
     return (decisions as Decision[])
@@ -46,7 +50,8 @@ export async function getDecisions(customerId: string): Promise<Decision[]> {
       .map(withDeadline)
   }
 
-  const response = await fetch(`${API_BASE_URL}/customers/${customerId}/decisions`)
+  const query = operator ? '?operator=1' : ''
+  const response = await fetch(`${API_BASE_URL}/customers/${customerId}/decisions${query}`)
   if (!response.ok) {
     throw new Error(`Failed to load decisions (${response.status})`)
   }

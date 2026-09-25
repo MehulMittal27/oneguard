@@ -100,7 +100,7 @@ that customer and skips the picker (session only), and `?embed=1` drops `DeviceF
 
 **Operator console (`/ops`)** is a separate desktop page of the same build, never linked from the
 phone UI (`src/ops/`, loaded lazily by `src/Root.tsx`): for the projector. It follows the current
-run (D7) whoever started it, lists its decisions (C6) newest delivered first with expandable
+run (D7) whoever started it, lists its decisions (C6 with `?operator=1`) newest delivered first with expandable
 evidence and receipts, starts replays (D2) and judging runs (D3, typed confirmation), shows
 `/healthz` as chips and embeds this app as the run's customer (`/?customer=<id>&embed=1`). It never
 answers a step-up or touches a device. Contract: `../docs/api-contract.md` §6 item 18.
