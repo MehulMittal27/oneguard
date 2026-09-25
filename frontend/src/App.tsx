@@ -16,6 +16,8 @@ import { TabBar, type TabId } from './components/TabBar'
 import { DeviceFrame } from './components/DeviceFrame'
 import { OperatorStrip } from './components/OperatorStrip'
 import { StatusBar } from './components/StatusBar'
+import { DeviceProvider } from './state/DeviceProvider'
+import { Verify } from './screens/Verify/Verify'
 
 /**
  * P3-2: the operator strip is opt-in by `?demo=1` and read once, at module
@@ -151,14 +153,21 @@ function Shell() {
   return signedInAs ? <SignedInShell /> : <SignIn />
 }
 
+// `/verify` is where a passport's QR code lands, on any phone and without
+// signing in (docs/passport.md); everything else is the signed-in app.
+const IS_VERIFY_PAGE = typeof window !== 'undefined' && window.location.pathname === '/verify'
+
 function App() {
+  if (IS_VERIFY_PAGE) return <Verify />
   return (
     <CustomerProvider>
-      <PolicyProvider>
-        <DecisionsProvider>
-          <Shell />
-        </DecisionsProvider>
-      </PolicyProvider>
+      <DeviceProvider>
+        <PolicyProvider>
+          <DecisionsProvider>
+            <Shell />
+          </DecisionsProvider>
+        </PolicyProvider>
+      </DeviceProvider>
     </CustomerProvider>
   )
 }

@@ -20,6 +20,7 @@ from oneguard.compiler.draft import (
     COUNT_FIELD,
     COUNTRY_FIELD,
     EVENING_HOURS,
+    FROM_PERIOD_LIMIT,
     HOUR_FIELD,
     KNOWN_SHOP_FIELD,
     MONEY_FIELDS,
@@ -836,6 +837,36 @@ def stay_cap(text: str, specs: list[RuleSpec]) -> list[RuleSpec]:
         note=f"{count} nights at CHF {each} each", value_from=f"{count} nights x the price per night")]
 
 
+_PERIOD_NAMES = {7: "weekly", 14: "fortnightly", 30: "monthly"}
+
+
+def period_cap(specs: list[RuleSpec]) -> list[RuleSpec]:
+    """A period limit with no per-order limit is also the per-order cap: "under CHF 80 per
+    month" -> each payment under CHF 80 (same operator, scope purchase, source inferred), as
+    one payment above the whole period's limit breaks it on its own. The period rule stays
+    beside it. The tightest period limit when there are several. Nothing when a per-order cap
+    is stated or derived (``stay_cap``), or when the items are priced or counted instead ("two
+    tickets, max CHF 90 each": that order limit is asked). Both compiler paths add it from
+    here, so they read the same (docs/decisions.md)."""
+    if any(
+        (s.field == "authorization.billing_amount_chf" and s.scope == "purchase" and is_amount(s))
+        or s.field in ("cart.quantity", "items[].quantity", "items[].unit_price_chf")
+        for s in specs
+    ):
+        return []
+    period = [s for s in specs if s.field == "authorization.billing_amount_chf" and s.scope == "period"
+              and s.operator in ("<", "<=") and is_amount(s)]
+    if not period:
+        return []
+    limit = min(period, key=lambda s: (to_chf(s.value, s.currency), s.operator == "<="))
+    days = limit.period_days or 7
+    name = _PERIOD_NAMES.get(days, f"{days}-day")
+    return [RuleSpec(
+        field="authorization.billing_amount_chf", operator=limit.operator, value=limit.value,
+        currency=limit.currency, scope="purchase", words=limit.words, source="inferred",
+        note=f"from your {name} limit", value_from=FROM_PERIOD_LIMIT)]
+
+
 def _price_change(reading: _Reading, text: str) -> None:
     """"If a price changes, ask me" with no single price to compare against (several
     subscriptions): each purchase's total against the last price the customer paid at
@@ -895,6 +926,7 @@ def parse(instruction: str, history=None, card_id: str = "", today: date | None 
     _shops(reading, text)
     _stay(reading, text)
     reading.specs += stay_cap(text, reading.specs)
+    reading.specs += period_cap(reading.specs)
     if history is not None:
         _same_price(reading, text, history, card_id)
     _renew(reading, text)

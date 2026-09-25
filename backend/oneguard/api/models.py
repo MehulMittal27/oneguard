@@ -175,8 +175,17 @@ class MandateUsage(ApiModel):
     as_of: Timestamp
 
 
+class PassportSummary(ApiModel):
+    """The mandate's passport, latest version (docs/passport.md)."""
+
+    passport_id: str
+    version: int = Field(ge=1)
+    issued_at: Timestamp
+    devices_count: int = Field(ge=0)
+
+
 class Mandate(ApiModel):
-    _omit_if_none = frozenset({"usage"})
+    _omit_if_none = frozenset({"usage", "passport"})
 
     mandate_id: str
     card_id: str
@@ -188,6 +197,7 @@ class Mandate(ApiModel):
     status: Literal["active", "revoked"]
     confirmed_at: Timestamp
     usage: MandateUsage | None = None
+    passport: PassportSummary | None = None
 
 
 class Evidence(ApiModel):
@@ -288,6 +298,7 @@ class Decision(ApiModel):
             "run_id",
             "run_started_at",
             "policy_applied",
+            "receipt_id",
         }
     )
 
@@ -324,6 +335,10 @@ class Decision(ApiModel):
     run_id: str | None = None
     run_started_at: Timestamp | None = None
     policy_applied: PolicyApplied | None = None
+    would_approve_if: list[dict[str, Any]] | None = None
+    """The counterfactual structured (declines only): ``{field, operator, value, scope?}``,
+    ``{remove_items: [...]}`` or ``{requires: ...}`` per failing rule (docs/passport.md)."""
+    receipt_id: str | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> Decision:
@@ -513,6 +528,122 @@ class SoftSignalsState(ApiModel):
     replay: bool
 
 
+# Passport (docs/passport.md) ------------------------------------------------------------
+
+
+class Device(ApiModel):
+    """A browser or phone that may control a card. ``label`` is the customer's own text."""
+
+    device_id: str
+    card_id: str
+    label: str
+    status: Literal["pending", "enrolled", "removed"]
+    enrolled_at: Timestamp | None
+    enrolled_by_device_id: str | None
+    removed_at: Timestamp | None
+    last_seen_at: Timestamp
+
+
+class DevicesResponse(ApiModel):
+    devices: list[Device]
+
+
+class EnrolDeviceRequest(ApiModel):
+    public_key_jwk: dict[str, Any]
+    label: str | None = Field(default=None, max_length=200)
+
+
+class DeviceReset(ApiModel):
+    """Operator reset (``/api/dev/devices/reset/{card}``): how many devices were removed."""
+
+    card_id: str
+    removed: int = Field(ge=0)
+
+
+class EnrolDeviceResponse(ApiModel):
+    device_id: str
+    status: Literal["pending", "enrolled", "removed"]
+
+
+class PassportVersion(ApiModel):
+    version: int = Field(ge=1)
+    issued_at: Timestamp
+    reason: str
+
+
+class Passport(ApiModel):
+    """The latest signed version of the card's passport, and every version's reason."""
+
+    passport_id: str
+    version: int = Field(ge=1)
+    document: dict[str, Any]
+    signature: str
+    key_id: str
+    versions: list[PassportVersion]
+
+
+class ReceiptSignature(ApiModel):
+    """An earlier signature of a receipt, before its step-up was answered."""
+
+    document: dict[str, Any]
+    signature: str
+    key_id: str
+    signed_at: str
+
+
+class Receipt(ApiModel):
+    receipt_id: str
+    document: dict[str, Any]
+    signature: str
+    key_id: str
+    history: list[ReceiptSignature]
+
+
+class PublicKey(ApiModel):
+    key_id: str
+    algorithm: Literal["ed25519"]
+    public_key_pem: str
+    active: bool
+
+
+class KeysResponse(ApiModel):
+    keys: list[PublicKey]
+
+
+class VerifyRequest(ApiModel):
+    """A document with its signature and key id, or the id of a stored one to check."""
+
+    document: dict[str, Any] | None = None
+    signature: str | None = None
+    key_id: str | None = None
+    passport_id: str | None = None
+    version: int | None = Field(default=None, ge=1)
+    receipt_id: str | None = None
+
+    @model_validator(mode="after")
+    def _one_form(self) -> VerifyRequest:
+        forms = [self.document is not None, self.passport_id is not None, self.receipt_id is not None]
+        if sum(forms) != 1:
+            raise ValueError("send a document with signature and key_id, or passport_id (and version), or receipt_id")
+        if self.document is not None and (self.signature is None or self.key_id is None):
+            raise ValueError("a document needs its signature and key_id")
+        return self
+
+
+class VerifyResult(ApiModel):
+    """``valid`` when OneGuard's key signed exactly this document. ``document`` is the one
+    checked (the stored one for an id), so a verify page can show who holds it."""
+
+    valid: bool
+    document_type: Literal["passport", "receipt"] | None
+    key_id: str | None
+    issued_at: str | None
+    reason: str
+    document: dict[str, Any] | None = None
+    current: bool | None = None
+    """For a passport: this is its latest version and it is not revoked. None for a receipt."""
+
+
 # §3.8 errors --------------------------------------------------------------------------
 
 ErrorCode = Literal[
@@ -528,6 +659,13 @@ ErrorCode = Literal[
     "internal",
     "runs_disabled",
     "run_active",
+    "device_signature_required",
+    "device_not_enrolled",
+    "signature_invalid",
+    "replay",
+    "last_device",
+    "device_state",
+    "forbidden",
 ]
 
 

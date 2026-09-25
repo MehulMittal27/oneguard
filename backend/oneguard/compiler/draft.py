@@ -189,6 +189,10 @@ def next_weekday(after: date, weekday: str) -> date:
 
 
 # --- Wording -------------------------------------------------------------------------
+FROM_PERIOD_LIMIT = "the period limit"
+"""``RuleSpec.value_from`` of a per-order cap derived from a period limit (``parser.period_cap``)."""
+
+
 def _limit_text(spec: RuleSpec, subject: str, tail: str) -> str:
     chf = to_chf(spec.value, spec.currency)
     bound = {"<=": "at or below", "<": "under", "=": "exactly"}[spec.operator]
@@ -217,6 +221,8 @@ def rule_text(spec: RuleSpec, requested_item: str | None = None) -> str:
     if f == "authorization.billing_amount_chf" and v == LAST_PRICE_AT_SHOP:
         bound = {"=": "the same as", "<=": "at or below", "<": "under"}[op]
         text = f"Total {bound} your last payment at the same shop"
+    elif f == "authorization.billing_amount_chf" and spec.value_from == FROM_PERIOD_LIMIT:
+        text = _limit_text(spec, "Each payment", "")
     elif f == "authorization.billing_amount_chf" and spec.scope == "period":
         text = _limit_text(spec, "Total", f" across any {spec.period_days or 7} days")
     elif f == "authorization.billing_amount_chf":
@@ -378,21 +384,33 @@ def to_rule(spec: RuleSpec, taken: set[str], requested_item: str | None = None) 
     )
 
 
+_COUNT = re.compile(r"^(?:two|three|four|five|six|seven|eight|nine|ten|\d+|some|several|pairs|sets)$",
+                    re.IGNORECASE)
+
+
 def names_one_item(instruction: str, requested_item: str | None) -> bool:
     """The instruction asks for its requested item once: "the X I chose" (picked,
-    selected), "one X", "a X", "an X", with up to four words before the item's last word
-    ("the 27-inch monitor I chose", "a pair of trail shoes"). Both compiler paths set
-    ``single_item`` from here, on the customer's words; "my X", "new X" or a count of two
-    or more is not one item. Its first final approval fulfils the mandate (A8)."""
+    selected), "one X", "a X", "an X", "new X" ("I need new hiking boots"), "replace my X",
+    "get me X", with up to four words before the item's last word ("the 27-inch monitor I
+    chose", "a pair of trail shoes", "replace my worn road-running shoes"). Both compiler
+    paths set ``single_item`` from here, on the customer's words; a count of two or more
+    ("two new shirts", "get me three shirts") or a plural with none of these cues ("buy the
+    running shoes", "renew my membership") is not one item. Its first final approval
+    fulfils the mandate (A8)."""
     words = re.findall(r"[\w'-]+", (requested_item or "").lower())
     if not words:
         return False
     text = " ".join(instruction.split())
     head = re.escape(words[-1])
-    one = re.compile(rf"\b(?:a|an|one)\s+(?:[\w'-]+\s+){{0,4}}?{head}\b", re.IGNORECASE)
+    one = re.compile(rf"(?=\b(?:a|an|one|new|replace\s+(?:my|our|the)|get\s+(?:me|us))\s+"
+                     rf"(?P<gap>(?:[\w'-]+\s+){{0,4}}?){head}\b)", re.IGNORECASE)  # overlapping
     picked = re.compile(rf"\bthe\s+(?:[\w'-]+\s+){{0,4}}?{head}\s+(?:I|we)\s+(?:have\s+)?(?:chose|chosen|picked|selected)\b",
                         re.IGNORECASE)
-    return bool(one.search(text) or picked.search(text))
+    for m in one.finditer(text):
+        before = re.findall(r"[\w'-]+", text[: m.start()])[-1:]
+        if not any(_COUNT.match(w) for w in m.group("gap").split() + before):
+            return True
+    return bool(picked.search(text))
 
 
 def finalize(

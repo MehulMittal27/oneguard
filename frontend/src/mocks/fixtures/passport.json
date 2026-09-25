@@ -1,0 +1,219 @@
+{
+  "mock": true,
+  "_comment": "A real passport (CA0039, version 2) and a real receipt (AU0037) as a local OneGuard signed them, plus a second device waiting for approval. Mock mode only (src/api/passport.ts).",
+  "keys": [
+    {
+      "key_id": "ogk_0c2645bc369980b1",
+      "algorithm": "ed25519",
+      "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAulxiOR/+yWNcFfrA9hyM2oRLOI+5eObCVxRLlQ1rRqU=\n-----END PUBLIC KEY-----\n",
+      "active": true
+    }
+  ],
+  "passport": {
+    "passport_id": "pp_ec82dcddb63f6892777c79b6",
+    "version": 2,
+    "document": {
+      "card_id": "CA0039",
+      "checks": [
+        {
+          "currency": "CHF",
+          "field": "authorization.billing_amount_chf",
+          "id": "C1",
+          "on_fail": "decline",
+          "operator": "<=",
+          "scope": "purchase",
+          "source": "exact",
+          "text": "Total at or below CHF 400 per order",
+          "value": 400
+        },
+        {
+          "field": "items[].item_category",
+          "id": "C3",
+          "on_fail": "decline",
+          "operator": "in",
+          "source": "inferred",
+          "text": "Only electronics",
+          "value": [
+            "electronics"
+          ]
+        },
+        {
+          "field": "merchant.merchant_category",
+          "id": "C8",
+          "on_fail": "decline",
+          "operator": "=",
+          "source": "exact",
+          "text": "Only from a electronics shop (\"known electronics seller\")",
+          "value": "electronics"
+        },
+        {
+          "field": null,
+          "flag": "requested_item",
+          "id": "requested_item",
+          "on_fail": "decline",
+          "operator": null,
+          "source": "exact",
+          "text": "Only the item you asked for: 27-inch computer monitor",
+          "value": "27-inch computer monitor"
+        },
+        {
+          "field": null,
+          "flag": "nothing_extra",
+          "id": "nothing_extra",
+          "on_fail": "decline",
+          "operator": null,
+          "source": "exact",
+          "text": "Nothing added that you didn't ask for",
+          "value": true
+        }
+      ],
+      "devices": [
+        {
+          "device_id": "f9e27513-6b45-4444-a463-a329eaf30d4a",
+          "enrolled_at": "2026-09-25T00:30:09Z",
+          "enrolled_by_device_id": null,
+          "label": "Stage laptop"
+        }
+      ],
+      "expires_at": "2026-12-24T00:30:09Z",
+      "flags": {
+        "allowed_item_categories": [
+          "electronics"
+        ],
+        "nothing_extra": true,
+        "requested_item": "27-inch computer monitor",
+        "shop_type": "electronics"
+      },
+      "holder": {
+        "customer_id": "CU0019",
+        "name": "Oliver Graf"
+      },
+      "instruction": "Buy one 27-inch computer monitor from a known electronics seller for CHF 400 or less. No add-ons or protection plans. Ask me when uncertain.",
+      "issued_at": "2026-09-25T00:30:09Z",
+      "issuer": {
+        "key_id": "ogk_0c2645bc369980b1",
+        "name": "OneGuard"
+      },
+      "mandate_id": "md_75695eabc5fa7e82",
+      "passport_id": "pp_ec82dcddb63f6892777c79b6",
+      "remembered_confirmations": 0,
+      "revoked_at": null,
+      "type": "oneguard.passport/1",
+      "uncertainty_policy": "ask",
+      "version": 2
+    },
+    "signature": "+N9r2QkhQvHqv8jHGvhPdA4JNAU/kgsN6ewlK4L6NOzq1+qKGmrMGJPyxUZNw02yq6OKOu9xoPzYhptKEWSPBg==",
+    "key_id": "ogk_0c2645bc369980b1",
+    "versions": [
+      {
+        "version": 1,
+        "issued_at": "2026-09-25T00:30:01Z",
+        "reason": "backfill"
+      },
+      {
+        "version": 2,
+        "issued_at": "2026-09-25T00:30:09Z",
+        "reason": "devices"
+      }
+    ]
+  },
+  "devices": [
+    {
+      "device_id": "f9e27513-6b45-4444-a463-a329eaf30d4a",
+      "card_id": "CA0039",
+      "label": "Stage laptop",
+      "status": "enrolled",
+      "enrolled_at": "2026-09-25T00:30:09Z",
+      "enrolled_by_device_id": null,
+      "removed_at": null,
+      "last_seen_at": "2026-09-25T00:30:09Z"
+    },
+    {
+      "device_id": "5b0f3c4e-2d7a-4c1b-9e63-7a8d2f1c0b44",
+      "card_id": "CA0039",
+      "label": "Second phone",
+      "status": "pending",
+      "enrolled_at": null,
+      "enrolled_by_device_id": null,
+      "removed_at": null,
+      "last_seen_at": "2026-09-25T00:31:40Z"
+    }
+  ],
+  "receipts": {
+    "AU0037": {
+      "receipt_id": "rc_34458465286f766409c0e75c",
+      "document": {
+        "authorization": {
+          "amount": "520.00",
+          "billing_amount_chf": "520.00",
+          "currency": "CHF",
+          "items_hash": "032b53f15b095a3e5ea5f2eed54d1cccf332c07a36080e57dbe7a316a0db33f2",
+          "live_id": "rp_747103c84df7",
+          "merchant_id": "ME0022",
+          "occurred_at": "2026-08-12T14:05:00Z",
+          "source_id": "AU0037"
+        },
+        "decided_at": "2026-09-25T00:30:08Z",
+        "engine_version": "oneguard/0.0.0 signals=off",
+        "evidence_hash": "20f96726f6eaf01aa6a2a765f02e24ea114fe348bc951d972f65fa032e713892",
+        "issuer": {
+          "key_id": "ogk_0c2645bc369980b1",
+          "name": "OneGuard"
+        },
+        "outcome": "decline",
+        "passport_id": "pp_ec82dcddb63f6892777c79b6",
+        "passport_version": 1,
+        "permitted": [
+          {
+            "check_id": "policy_status",
+            "outcome": "pass"
+          },
+          {
+            "check_id": "authority_status",
+            "outcome": "pass"
+          },
+          {
+            "check_id": "card_status",
+            "outcome": "pass"
+          },
+          {
+            "check_id": "C1",
+            "outcome": "fail"
+          },
+          {
+            "check_id": "C3",
+            "outcome": "pass"
+          },
+          {
+            "check_id": "C8",
+            "outcome": "pass"
+          },
+          {
+            "check_id": "requested_item",
+            "outcome": "pass"
+          },
+          {
+            "check_id": "nothing_extra",
+            "outcome": "pass"
+          }
+        ],
+        "reason_codes": [
+          "per_order_limit_exceeded"
+        ],
+        "receipt_id": "rc_34458465286f766409c0e75c",
+        "resolution": null,
+        "type": "oneguard.receipt/1",
+        "would_approve_if": [
+          {
+            "field": "authorization.billing_amount_chf",
+            "operator": "<=",
+            "value": 400
+          }
+        ]
+      },
+      "signature": "FU/XeKP/6jaIGzzDdcLYoArvVta8FG+2T30PyiDwSh3bSSZjCJqB1Yui1ctGajWF9+NdYQ3Q/mZ+ks3u85k+Ag==",
+      "key_id": "ogk_0c2645bc369980b1",
+      "history": []
+    }
+  }
+}

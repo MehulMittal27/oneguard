@@ -118,6 +118,16 @@ export interface Mandate {
   status: 'active' | 'revoked'
   confirmed_at: string
   usage?: MandateUsage
+  // The mandate's signed passport, latest version (`../docs/api-contract.md` §2,
+  // §6 item 19); absent until one is issued.
+  passport?: PassportSummary
+}
+
+export interface PassportSummary {
+  passport_id: string
+  version: number
+  issued_at: string
+  devices_count: number
 }
 
 // The engine ledger's own view of the mandate, authoritative when present
@@ -224,6 +234,61 @@ export interface Decision {
     source: 'confirmed' | 'platform'
     checks: RuleCheck[]
   } | null
+  // What the agent was told on a decline: the counterfactual, structured
+  // (`../docs/passport.md` §3.3). The UI shows it in words from `counterfactual`.
+  would_approve_if?: WouldApproveIf[] | null
+  // The decision's signed receipt (`GET /api/authorizations/{id}/receipt`).
+  receipt_id?: string
+}
+
+export type WouldApproveIf =
+  | { field: string; operator: string; value: number | string | string[]; scope?: 'period'; period_days?: number }
+  | { remove_items: string[] }
+  | { requires: string }
+
+// Passport, receipts and devices (`../docs/api-contract.md` §1.3, §2). A
+// document is exactly what was signed; every string in it that came from a
+// person or a shop renders as a plain text node.
+export type SignedDocument = Record<string, unknown>
+
+export interface Passport {
+  passport_id: string
+  version: number
+  document: SignedDocument
+  signature: string
+  key_id: string
+  versions: { version: number; issued_at: string; reason: string }[]
+}
+
+export interface Receipt {
+  receipt_id: string
+  document: SignedDocument
+  signature: string
+  key_id: string
+  history: { document: SignedDocument; signature: string; key_id: string; signed_at: string }[]
+}
+
+export interface Device {
+  device_id: string
+  card_id: string
+  // The customer's own name for the device — plain text.
+  label: string
+  status: 'pending' | 'enrolled' | 'removed'
+  enrolled_at: string | null
+  enrolled_by_device_id: string | null
+  removed_at: string | null
+  last_seen_at: string
+}
+
+export interface VerifyResult {
+  valid: boolean
+  document_type: 'passport' | 'receipt' | null
+  key_id: string | null
+  issued_at: string | null
+  reason: string
+  document?: SignedDocument | null
+  // Passport only: this is its latest version and it is not revoked.
+  current?: boolean | null
 }
 
 // Operator-only shapes (`../docs/api-contract.md` §1.1 D1–D6), for the `?demo=1`
