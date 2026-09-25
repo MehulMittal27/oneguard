@@ -73,11 +73,11 @@ scenarios:
       - {id: AU0016, outcome: step_up, rules: [C7, C11], note: "return policy not stated; order_returnable unknown"}
       - {id: AU0017, outcome: decline, rules: [C5], note: "trail-running, not road-running"}
       - {id: AU0018, outcome: step_up, rules: [A6], alt: {q10_a6_without_c10: decline}, chf: 194.00, note: "shoes + protection plan billed monthly; C10 not stated in this instruction"}
-      - {id: AU0019, outcome: approve, rules: [C7], chf: 168.00, note: "14 days exactly, passes"}
+      - {id: AU0019, outcome: step_up, rules: [A8, C7], reason_codes: [already_fulfilled], chf: 168.00, note: "\"replace my ... shoes\" is one pair: AU0012 bought it (A8); 14 days exactly, passes"}
       - {id: AU0020, outcome: decline, rules: [C5], note: "cycling helmet"}
       - {id: AU0021, outcome: decline, rules: [C1], chf: 215.00}
       - {id: AU0022, outcome: decline, rules: [C8], note: "sustainable_goods, not a specialist sports retailer"}
-      - {id: AU0023, outcome: approve, rules: [], note: "unfamiliar but fully compliant; C9 not requested (P6)", evidence_info: [unfamiliar_merchant]}
+      - {id: AU0023, outcome: step_up, rules: [A8], reason_codes: [already_fulfilled], note: "AU0012 bought the pair (A8); otherwise unfamiliar but fully compliant; C9 not requested (P6)", evidence_info: [unfamiliar_merchant]}
 
   SCEN0003:
     instruction: "The agent may buy clothing for me, up to CHF 250 per order, from shops I have used before. Pause anything that looks like someone other than me is driving the session. Ask me when uncertain."
@@ -113,8 +113,8 @@ scenarios:
       - {id: AU0044, outcome: step_up, rules: [A8, C9], reason_codes: [already_fulfilled], alt: {q7_known_shop: {card: decline}}, chf: 310.00, note: "AU0035 bought the monitor (A8); Circuit and Pine known on customer's other card CA0038"}
       - {id: AU0045, outcome: step_up, rules: [A8, C1], reason_codes: [already_fulfilled], chf: 399.90, note: "AU0035 bought the monitor (A8); C1 boundary passes"}
 
-totals_under_defaults: {approve: 10, decline: 20, step_up: 11, depends: 4}
-totals_with_q10_decline: {approve: 10, decline: 21, step_up: 10, depends: 4}
+totals_under_defaults: {approve: 8, decline: 20, step_up: 13, depends: 4}
+totals_with_q10_decline: {approve: 8, decline: 21, step_up: 12, depends: 4}
 
 unseen_instructions:
   - instruction: "Buy two concert tickets, max CHF 90 each, from the official ticket seller"

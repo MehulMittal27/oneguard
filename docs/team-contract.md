@@ -125,7 +125,7 @@ class Rule:                    id, field, operator, value, currency, scope, peri
 class Policy:                  mandate_id, instruction, rules: list[Rule], uncertainty_policy, requested_item: str | None,
                                allowed_item_categories, blocked_item_categories, requires_known_shop: bool,
                                nothing_extra: bool, shop_type: str | None,
-                               single_item: bool  # "the X I chose" / "one X" / "a X": A8 already bought
+                               single_item: bool  # "the X I chose" / "one X" / "a X" / "new X" / "replace my X": A8 already bought
 class Fulfilment:              authorization_id, mandate_id, timestamp, billing_amount_chf, item  # A8
 class PriorDecision:           authorization_id, timestamp, outcome, final, approved: bool, merchant_id, item_ids: list, billing_amount_chf, reserved: bool
 class LedgerView:              period_spent_chf, period_reserved_chf, period_window_start,

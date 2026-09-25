@@ -7,7 +7,7 @@ All 45 public purchases through the real pipeline (`pipeline.decide_event`), one
 | Ledger | store (`engine.ledger.StoreLedger`, temp SQLite) |
 | Soft signals | on (`ONEGUARD_SOFT_SIGNALS=keywords`); a second run with signals off gives identical outcomes |
 | Step-ups | never answered; oracle branches read: SCEN0001 "AU0006 pending (reserved)"; SCEN0003 "AU0031 declined or expired" |
-| Outcomes | 10 approve, 20 decline, 15 step_up |
+| Outcomes | 8 approve, 20 decline, 17 step_up |
 | Oracle match | 45/45 |
 | Signals off vs on | 45/45 identical outcomes |
 
@@ -31,11 +31,11 @@ All 45 public purchases through the real pipeline (`pipeline.decide_event`), one
 | AU0016 | step_up | return_terms_unknown | Waiting for you CHF 175.00: Returns: not stated; you asked for 14 days or more. | Would approve with returns of 14 days or more. |
 | AU0017 | decline | item_mismatch | Declined CHF 180.00: The cart has Trail-running shoes, not the road-running shoes you asked for. | Would approve with the road-running shoes. |
 | AU0018 | step_up | recurring_charge_added | Waiting for you CHF 194.00: Extended protection plan adds a recurring charge you did not ask for. | Would approve without the recurring add-on. |
-| AU0019 | approve | within_limits | Approved CHF 168.00: it is within the limits you set. |  |
+| AU0019 | step_up | already_fulfilled | Waiting for you CHF 168.00: You already bought the road-running shoes on 11 Aug for CHF 165.00; approve another? | Would approve if it were the first one bought under this instruction. |
 | AU0020 | decline | item_mismatch | Declined CHF 120.00: The cart has Cycling helmet, not the road-running shoes you asked for. | Would approve with the road-running shoes. |
 | AU0021 | decline | per_order_limit_exceeded | Declined CHF 215.00: CHF 215.00 is over your CHF 200.00 limit. | Would approve at CHF 200.00 or less. |
 | AU0022 | decline | merchant_category_mismatch | Declined CHF 189.00: GreenLoop is a sustainable goods shop, not a sporting goods shop. | Would approve at a sporting goods shop. |
-| AU0023 | approve | within_limits | Approved CHF 179.00: it is within the limits you set. |  |
+| AU0023 | step_up | already_fulfilled | Waiting for you CHF 179.00: You already bought the road-running shoes on 11 Aug for CHF 165.00; approve another? | Would approve if it were the first one bought under this instruction. |
 | AU0024 | approve | within_limits | Approved CHF 145.00: it is within the limits you set. |  |
 | AU0025 | approve | within_limits | Approved CHF 189.05: it is within the limits you set. |  |
 | AU0026 | step_up | new_device_burst | Waiting for you CHF 165.00: Made from a device you have not used before. |  |
