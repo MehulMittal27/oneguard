@@ -15,8 +15,10 @@
    the results that need the LedgerView (C2 period limits, remembered answers)
 6. ``protections``, ``warning_signs``, ``soft_signals`` (only when signals are enabled)
 7. ``decide``, then ``explain``
-8. ``Ledger.record`` (and ``flag_merchant`` when A1 triggered), with any ``extra_evidence``
-   (the worker's ``info`` reconciliation rows) appended to the explanation's evidence
+8. ``Ledger.record`` (and ``flag_merchant`` when A1 triggered, ``mark_requested_item``
+   when a single-item mandate's requested item is in the cart, A8), with any
+   ``extra_evidence`` (the worker's ``info`` reconciliation rows) appended to the
+   explanation's evidence
 9. mapped to the API ``Decision``
 
 Functions are resolved by name through ``engine/stubs.py`` (``ONEGUARD_STUBS``). Tier 2
@@ -40,7 +42,11 @@ from oneguard.api import models as api
 from oneguard.api import policies
 from oneguard.engine import stubs
 from oneguard.engine.ledger_base import Ledger, LedgerEntry
-from oneguard.engine.policy import COUNT_FIELD, add_ledger_results
+from oneguard.engine.policy import (
+    COUNT_FIELD,
+    add_ledger_results,
+    matches_requested_item,
+)
 from oneguard.engine.types import (
     EngineDecision,
     EvidenceRow,
@@ -307,6 +313,9 @@ def _record(
     for signal in protections:
         if signal.id == "A1" and signal.triggered:
             ctx.ledger.flag_merchant(ctx.run_id, facts.merchant_id, signal.detail, decided_at)
+    item = ctx.policy.requested_item
+    if ctx.policy.single_item and item and any(matches_requested_item(line, item) for line in facts.items):
+        ctx.ledger.mark_requested_item(facts.authorization_id, item)  # fulfils once a final approval (A8)
 
     # The stored entry is the truth: under a concurrent redelivery it is the first one.
     engine, explanation = from_entry(stored)

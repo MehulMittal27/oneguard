@@ -88,6 +88,7 @@ def compile_instruction(
         requires_known_shop=chosen.requires_known_shop,
         nothing_extra=chosen.nothing_extra,
         shop_type=chosen.shop_type,
+        single_item=chosen.single_item,
     )
 
 
@@ -123,6 +124,7 @@ def dry_run_policy(policy: Policy, history: HistoryIndex, card_id: str, customer
         requires_known_shop=policy.requires_known_shop,
         nothing_extra=policy.nothing_extra,
         shop_type=policy.shop_type,
+        single_item=policy.single_item,
     )
     return dry_run(draft, history, card_id, customer_id)
 

@@ -124,16 +124,19 @@ class Facts:                   authorization_id, source_authorization_id, timest
 class Rule:                    id, field, operator, value, currency, scope, period_days, text, source, kind
 class Policy:                  mandate_id, instruction, rules: list[Rule], uncertainty_policy, requested_item: str | None,
                                allowed_item_categories, blocked_item_categories, requires_known_shop: bool,
-                               nothing_extra: bool, shop_type: str | None
+                               nothing_extra: bool, shop_type: str | None,
+                               single_item: bool  # "the X I chose" / "one X" / "a X": A8 already bought
+class Fulfilment:              authorization_id, mandate_id, timestamp, billing_amount_chf, item  # A8
 class PriorDecision:           authorization_id, timestamp, outcome, final, approved: bool, merchant_id, item_ids: list, billing_amount_chf, reserved: bool
 class LedgerView:              period_spent_chf, period_reserved_chf, period_window_start,
                                period_count: int | None, period_reserved_count, period_last_approved_at,  # cart.purchases_in_period
                                priors: list[PriorDecision],
                                known_merchant_ids: set, known_merchant_names: dict[str, str], known_device_ids: set, known_countries: set,
                                max_approved_chf: float, last_price_chf_by_merchant: dict[str, float],  # C1 last price per shop
-                               flagged_merchant_ids: set, frozen: bool, confirmed_keys: set
+                               flagged_merchant_ids: set, frozen: bool, confirmed_keys: set,
+                               fulfilments: list[Fulfilment] | None  # A8; None = not tracked (P3)
 class RuleResult:              rule_id, outcome: RuleOutcome, detail, counterfactual: str | None, source: FactSource
-class Signal:                  id (A1..A7, W1..W6, S_agent_directed), triggered: bool, strength: Literal["strong","weak","protection"],
+class Signal:                  id (A1..A8, W1..W6, S_agent_directed), triggered: bool, strength: Literal["strong","weak","protection"],
                                outcome_if_triggered: Literal["ask","decline","info"], detail, source, related: tuple[str, str] | None
 class EngineDecision:          outcome, reason_codes: list[str], step: int, deciding_ids: list[str],
                                related: tuple[str, str] | None, session_trust: Literal["normal","elevated","frozen"]

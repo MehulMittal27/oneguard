@@ -161,7 +161,9 @@ MandateUsage { per_order_limit_chf: number|null,                      // NEW —
                period_spent_chf: number,       // final approvals only (incl. human-approved step-ups)
                period_window_start: string,    // simulated time, ISO 8601
                pending_chf: number,            // stepped-up, awaiting the customer — not spent
-               fulfilment?: { bought: number, requested: number } | null,   // single-item mandates
+               fulfilment?: { bought: number, requested: number } | null,   // single-item mandates (A8):
+                                                                            // final approvals of the requested
+                                                                            // item in the latest run, of 1
                confirmations?: [{ rule_text: string, merchant_name: string,  // NEW: "things you've confirmed":
                                   item_name: string }],                     // remembered yeses (ask once,
                                                                             // then remember); names untrusted

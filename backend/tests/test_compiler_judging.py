@@ -18,6 +18,8 @@
    limit: SCEN0113 compiled on both paths declines a second dinner the same simulated day.
 7. "Weeknight dinners" is the evening as well (local_hour >= 17 and < 23, inferred), on both
    paths: the live run's Tue 01:15 and Wed 15:35 deliveries now decline.
+8. A per-night price times the stated nights is the per-order cap (inferred, the per-night
+   rule kept), on both paths: SCEN0124 compiles with no open question and C2 accepts it.
 """
 
 from __future__ import annotations
@@ -51,7 +53,6 @@ WEEK = ["mon", "tue", "wed", "thu", "fri"]
 
 # Open questions a correct reading keeps, and why (no per-order limit is stated; T5).
 QUESTION_WHY = {
-    "SCEN0124": "only a per-night price is stated: is the order limit CHF 600 (3 nights)?",
     "SCEN0136": "only a monthly total is stated: what is the most one payment may cost?",
 }
 
@@ -104,6 +105,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
         ("order.order_cancellable", "=", "true", None, None, None, "decline"),  # "refundable rate only"
         ("unverifiable", "=", "a hotel in Munich", None, None, None, "decline"),
         ("unverifiable", "=", "for 3 nights from 10 September to 13 September", None, None, None, "decline"),
+        (BILL, "<=", 600, "CHF", "purchase", None, "decline"),  # 3 nights at CHF 200: the order cap
     ]},
     "SCEN0130": {"item": "hiking boots", "extra": True, "rules": [
         (BILL, "<=", 180, "CHF", "purchase", None, "decline"),
@@ -375,7 +377,7 @@ def test_a_per_item_amount_is_per_item_only_where_the_parser_reads_it_so(history
     nights = _raw("items[].unit_price_chf", "<=", "at most CHF 200 per night", value_number=200, currency="CHF",
                   scope="purchase")
     read = read_with_llm(SERVED["SCEN0124"], Scripted(_response(nights)), history, "", TODAY)
-    assert [r.field for r in read.rules] == ["items[].unit_price_chf"]
+    assert [r.field for r in read.rules] == ["items[].unit_price_chf", BILL]  # and the stay's cap
 
 
 COUNT_PHRASES = [
@@ -544,3 +546,42 @@ def test_one_item_reads_in_the_singular():
     """SCEN0101 on the LLM path adds "one ordinary grocery item" as cart.quantity = 1."""
     spec = RuleSpec(field="cart.quantity", operator="=", value=1, words="one ordinary grocery item")
     assert rule_text(spec) == "Exactly 1 item"
+
+
+# --- 8. per-night price x nights = the order cap (SCEN0124) -------------------------------
+def test_scen0124_has_the_order_cap_and_no_question_on_both_paths(history):
+    from oneguard.compiler import lint_accepted_ids
+
+    instruction = SERVED["SCEN0124"]
+    response = next(e["response"] for e in RECORDED if e["scenario"] == "SCEN0124")
+    for draft in (parse(instruction, history, "", TODAY),
+                  compile_instruction(instruction, history, "", Scripted(response), today=TODAY)):
+        cap = [r for r in draft.rules if r.field == BILL]
+        assert [(r.id, r.operator, r.value, r.scope, r.source) for r in cap] == [("C1", "<=", 600, "purchase", "inferred")]
+        assert cap[0].text == "Total at or below CHF 600 per order (3 nights at CHF 200 each)"
+        assert any(r.field == "items[].unit_price_chf" and r.value == 200 for r in draft.rules)  # kept
+        assert draft.open_questions == []
+        assert lint_accepted_ids(draft.rules, [r.id for r in draft.rules]) == ([], [])  # C2 accepts it
+
+
+def test_the_models_order_limit_question_is_settled_by_the_cap(history):
+    nights = _raw("items[].unit_price_chf", "<=", "at most CHF 200 per night", value_number=200, currency="CHF",
+                  scope="purchase")
+    asked = _response(nights) | {"open_questions": [
+        "No per-order limit stated: is the order limit CHF 600 (3 nights at CHF 200 each)?", "Which hotel?"]}
+    read = read_with_llm(SERVED["SCEN0124"], Scripted(asked), history, "", TODAY)
+    assert read.open_questions == ["Which hotel?"]
+    assert [(r.field, r.value) for r in read.rules if r.field == BILL] == [(BILL, 600)]
+
+
+@pytest.mark.parametrize(("instruction", "cap"), [
+    ("Book a hotel for 2 nights, under CHF 150 per night", ("<", 300, "CHF")),
+    ("Book a hotel for two nights, max EUR 120 per night", ("<=", 240, "EUR")),
+    ("Book a hotel for 3 nights, at most CHF 200 per night, max CHF 500 per order", ("<=", 500, "CHF")),
+    ("Book a hotel from 3 May to 5 May, at most CHF 150 per night", None),  # no count of nights stated
+    ("Buy two concert tickets, max CHF 90 each", None),  # counted items keep their question
+], ids=["under", "euro", "stated-cap-wins", "dates-only", "counted-items"])
+def test_the_cap_is_the_per_night_price_times_the_stated_nights(instruction, cap, history):
+    draft = parse(instruction, history, "", TODAY)
+    caps = [(r.operator, r.value, r.currency) for r in draft.rules if r.field == BILL and r.scope == "purchase"]
+    assert caps == ([cap] if cap else [])

@@ -23,6 +23,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from oneguard.engine.types import (
     EvidenceRow,
+    Fulfilment,
     HistoryIndex,
     LedgerView,
     Outcome,
@@ -156,6 +157,20 @@ def confirmation_keys(rule_ids: Iterable[str], merchant_id: str, item_ids: Itera
     return keys
 
 
+def fulfilments(decisions: Iterable[Any], marks: dict[str, str]) -> list[Fulfilment]:
+    """``LedgerView.fulfilments``: the final approvals among ``decisions`` (oldest first)
+    whose cart held the requested item (``marks``: live id -> requested item). Declines,
+    and pending, declined or expired step-ups, fulfil nothing (A8)."""
+    return [
+        Fulfilment(
+            authorization_id=d.live_authorization_id, mandate_id=d.mandate_id, timestamp=d.ts_sim,
+            billing_amount_chf=float(d.billing_amount_chf), item=marks[d.live_authorization_id],
+        )
+        for d in sorted(decisions, key=lambda d: d.ts_sim)
+        if d.live_authorization_id in marks and is_final_approval(d.outcome, d.final, d.uncertain_outcome)
+    ]
+
+
 def last_prices(history: HistoryIndex | None, customer_id: str, approved: Iterable[Any]) -> dict[str, float]:
     """``LedgerView.last_price_chf_by_merchant``: history's last approved price at each shop
     the customer knows, replaced by this run's final approvals (``approved``: decisions with
@@ -243,6 +258,13 @@ class Ledger(ABC):
     def flag_merchant(self, run_id: str, merchant_id: str, reason: str, at: datetime) -> None:
         """Remember an A1 injection at this shop for later purchases in the run."""
 
+    @abstractmethod
+    def mark_requested_item(self, authorization_id: str, item: str) -> None:
+        """Remember that this recorded decision's cart held the single-item mandate's
+        requested ``item`` (A8). Once the decision is a final approval, ``view`` reports it
+        in ``fulfilments``: for this run, and for later live runs under the same mandate.
+        Marking the same live id again changes nothing (M7)."""
+
     def note_event(self, event: dict[str, Any]) -> None:
         """Keep what the view learns from a purchase's event: its device and shop country.
 
@@ -283,6 +305,7 @@ class InMemoryLedger(Ledger):
         self.history = history
         self.entries: dict[str, LedgerEntry] = {}
         self.flags: dict[str, set[str]] = {}
+        self.requested: dict[str, str] = {}  # live id -> requested item (A8)
         self.events: dict[str, tuple[str | None, str | None]] = {}  # live id -> device, country
         self._lock = threading.Lock()
 
@@ -378,6 +401,7 @@ class InMemoryLedger(Ledger):
                 if e.outcome == "step_up" and e.uncertain_outcome == "approved" and e.resolved_by == "customer"
                 for key in confirmation_keys(e.deciding_ids, e.merchant_id, e.item_ids)
             },
+            fulfilments=fulfilments(run, self.requested),
         )
 
     def reserve(self, authorization_id: str, amount_chf: float) -> None:
@@ -438,6 +462,10 @@ class InMemoryLedger(Ledger):
     def flag_merchant(self, run_id: str, merchant_id: str, reason: str, at: datetime) -> None:
         with self._lock:
             self.flags.setdefault(run_id, set()).add(merchant_id)
+
+    def mark_requested_item(self, authorization_id: str, item: str) -> None:
+        with self._lock:
+            self.requested.setdefault(authorization_id, item)
 
     def set_deadline(self, authorization_id: str, deadline_at: datetime) -> LedgerEntry:
         with self._lock:

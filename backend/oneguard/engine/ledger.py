@@ -18,6 +18,9 @@ Rules it enforces (docs/rules.md):
 - W1, W3 known devices and countries: history plus this run's approvals (their stored
       events); W4 the largest approved purchase, the same way; C1 the last approved price
       at each shop, the same way (this run's latest approval there wins).
+- A8  a single-item mandate's requested item, once bought: the final approvals whose
+      cart held it (``requested_item_orders``), this run's plus earlier live runs' under
+      the same mandate, as the remembered confirmations below.
 
 Both PM decisions below carry over between sessions for live runs, and stay inside the
 run for replays (``runs.kind``), so replaying a scenario always decides the same way.
@@ -55,14 +58,21 @@ from oneguard.engine.ledger_base import (
     answered_message,
     check_resolution,
     confirmation_keys,
+    fulfilments,
     is_final_approval,
     known_merchant_names,
     last_prices,
     period_counts,
 )
 from oneguard.engine.ledger_base import Ledger as LedgerBase
-from oneguard.engine.types import HistoryIndex, LedgerView, PriorDecision
-from oneguard.store.schema import Decision, EventRaw, MerchantFlag, Run
+from oneguard.engine.types import Fulfilment, HistoryIndex, LedgerView, PriorDecision
+from oneguard.store.schema import (
+    Decision,
+    EventRaw,
+    MerchantFlag,
+    RequestedItemOrder,
+    Run,
+)
 
 CENT = Decimal("0.01")
 
@@ -180,6 +190,7 @@ class StoreLedger(LedgerBase):
                                 + [d for d in run if d.card_id == card_id]),
             # P1 contract change, P2 to review: the field exists now, so no feature check.
             confirmed_keys=self._confirmed_keys(run_id, at),
+            fulfilments=self._fulfilments(run_id, run),
         )
 
     def _approved_devices_and_countries(self, live_ids: list[str]) -> tuple[set[str], set[str]]:
@@ -254,6 +265,19 @@ class StoreLedger(LedgerBase):
         if earlier:
             rows += self.session.scalars(select(Decision).where(Decision.run_id.in_(earlier), *customer_ok))
         return {key for d in rows for key in confirmation_keys(d.deciding_ids, d.merchant_id, d.item_ids)}
+
+    def _fulfilments(self, run_id: str, run: list[Decision]) -> list[Fulfilment]:
+        """A8: this run's decisions before the purchase (``run``) plus earlier live runs
+        under the same mandate, as ``ledger_base.fulfilments`` reads them."""
+        earlier = self._earlier_live_runs(run_id, "mandate")
+        decisions = list(self.session.scalars(select(Decision).where(Decision.run_id.in_(earlier)))) if earlier else []
+        decisions += run
+        ids = [d.live_authorization_id for d in decisions]
+        if not ids:
+            return []
+        marks = {row.live_authorization_id: row.item for row in self.session.scalars(
+            select(RequestedItemOrder).where(RequestedItemOrder.live_authorization_id.in_(ids)))}
+        return fulfilments(decisions, marks)
 
     # --- writes (each commits: a decision is durable before it is posted) ---------------
     def record(self, entry: LedgerEntry) -> LedgerEntry:
@@ -342,6 +366,15 @@ class StoreLedger(LedgerBase):
     def flag_merchant(self, run_id: str, merchant_id: str, reason: str, at: datetime) -> None:
         self.session.add(MerchantFlag(run_id=run_id, merchant_id=merchant_id, reason=reason, flagged_at=at))
         self.session.commit()
+
+    def mark_requested_item(self, authorization_id: str, item: str) -> None:
+        if self.session.get(RequestedItemOrder, authorization_id) is not None:
+            return  # M7: a redelivered or concurrent decision is marked once
+        try:
+            self.session.add(RequestedItemOrder(live_authorization_id=authorization_id, item=item))
+            self.session.commit()
+        except IntegrityError:  # a concurrent mark of the same live id won
+            self.session.rollback()
 
 
 Ledger = StoreLedger

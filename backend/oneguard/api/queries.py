@@ -27,6 +27,7 @@ from oneguard.store.schema import (
     EventRaw,
     Mandate,
     PolicyDraft,
+    RequestedItemOrder,
     Run,
     ScenarioCatalogue,
     ScenarioProfile,
@@ -218,6 +219,17 @@ def policy_lineage(db: Engine, mandate_id: str) -> set[str]:
         if viseca_id is None:
             return {mandate_id}
         return {mandate_id, *s.scalars(select(Mandate.mandate_id).where(Mandate.viseca_mandate_id == viseca_id))}
+
+
+def requested_item_marks(db: Engine, live_ids: Iterable[str]) -> dict[str, str]:
+    """Live id -> requested item, for the ids among ``live_ids`` whose cart held their
+    single-item mandate's requested item (``requested_item_orders``, A8)."""
+    ids = list(live_ids)
+    if not ids:
+        return {}
+    with session(db) as s:
+        rows = s.scalars(select(RequestedItemOrder).where(RequestedItemOrder.live_authorization_id.in_(ids)))
+        return {row.live_authorization_id: row.item for row in rows}
 
 
 # Drafts and mandates --------------------------------------------------------------------

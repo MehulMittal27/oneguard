@@ -168,4 +168,7 @@ Fly, `performance-2x` (2 dedicated CPUs) with 4 GB in lhr, image `oneguard:9a1a6
   went over 500 ms.
 - Per-purchase P95 1.3-1.5 s is above 900 ms, so the cloud went back to keywords
   (docs/decisions.md): Fly secret `ONEGUARD_SOFT_SIGNALS=keywords`, same image.
+- Superseded 2026-09-25 (docs/decisions.md): keywords missed two live injections, so Laya is
+  back on `performance-2x` with `ONEGUARD_SIGNAL_BUDGET_MS=1500`, above both P95s above; the
+  slowest purchases (P99 1.7-1.8 s) keep the keyword answer.
 
