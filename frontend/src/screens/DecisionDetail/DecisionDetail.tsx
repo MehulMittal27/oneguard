@@ -15,6 +15,7 @@ import { formatShortDate, formatTime } from '../../lib/datetime'
 import { messageWithoutCounterfactual } from '../../lib/decisionMessage'
 import { getInitials } from '../../lib/initials'
 import { formatChf } from '../../lib/money'
+import { sameChecks } from '../../lib/policyReview'
 import { reasonLabel } from '../../lib/reasonCodes'
 import { useCustomer } from '../../state/CustomerContext'
 import { useDecisions } from '../../state/DecisionsContext'
@@ -148,7 +149,10 @@ export function DecisionDetail({
   const appliedNote =
     applied?.source === 'platform'
       ? 'Checked against the rules stored with the payment platform — no policy you confirmed here was linked to it.'
-      : applied && mandate && applied.mandate_id !== mandate.mandate_id
+      : applied &&
+          mandate &&
+          applied.mandate_id !== mandate.mandate_id &&
+          !sameChecks(applied.checks, mandate.checks)
         ? "Checked against an earlier policy on this card, not the one it has now."
         : null
   // DESIGN.md #9's persona chrome (D-058) — extra framing only for the one

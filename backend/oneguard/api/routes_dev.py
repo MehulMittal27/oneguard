@@ -292,7 +292,7 @@ async def _move_policy(s: Services, mandate_id: str, card_id: str, customer_id: 
             s.bind_mandate(old)
             if old.viseca_mandate_id and old.viseca_mandate_id != moved.viseca_mandate_id:
                 await revoke_at_platform(s, old, strict=False)
-        s.bind_mandate(moved)
+        s.bind_mandate(moved, moved=True)
     return moved.mandate_id
 
 
@@ -484,7 +484,7 @@ async def ledger_snapshot(card_id: str, request: Request) -> JSONResponse:
     mandate = await s.db(queries.latest_mandate, s.db_engine, card_id)
     rules = policies.load_rules(mandate.rules, mandate.checks)[0] if mandate else []
     mandate_id = entries[-1].mandate_id if entries else (mandate.mandate_id if mandate else "")
-    if mandate is not None and mandate.mandate_id != mandate_id:
+    if mandate is not None and mandate_id not in await s.db(queries.policy_lineage, s.db_engine, mandate.mandate_id):
         rules = []
     usage = policies.usage(rules, entries, entries[-1].ts_sim if entries else s.now())
     frozen = False

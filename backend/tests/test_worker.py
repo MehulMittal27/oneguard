@@ -851,6 +851,43 @@ def test_a_revoked_mandate_declines_everything_delivered_afterwards(
     asyncio.run(scenario())
 
 
+def test_a_moved_policy_names_the_new_mandate_from_the_next_purchase(
+    db: Engine, history: StoreHistoryIndex
+) -> None:
+    """D3 moves the policy mid-run (``move_policy``): what is already decided keeps the
+    original mandate id, every later purchase is decided under the moved one."""
+
+    async def scenario() -> None:
+        async with harness(db, fast(), history=history) as (_fake, client, worker):
+            handled: list[str] = []
+            original: list[str] = []
+            all_handled = asyncio.Event()
+
+            def on_handled(live_id: str) -> None:
+                if live_id in handled:
+                    return
+                handled.append(live_id)
+                if len(handled) == 2:
+                    (run,) = [r for r in worker._runs.values() if r.viseca_mandate_id == mandate_id]
+                    assert run.ctx is not None
+                    original.append(run.ctx.policy.mandate_id)
+                    worker.move_policy(mandate_id, run.ctx.policy.model_copy(update={"mandate_id": "md_moved"}))
+                if len(handled) == 10:
+                    all_handled.set()
+
+            worker.add_handled_listener(on_handled)
+            await worker.start()
+            mandate_id, _ = await start_run(client, worker, "SCEN0001")
+            await asyncio.wait_for(all_handled.wait(), timeout=120)  # a hang guard, not a wait
+
+            by_id = {e.live_authorization_id: e for e in await worker.ledger_entries(handled)}
+            assert original[0] != "md_moved"
+            assert {by_id[i].mandate_id for i in handled[:2]} == set(original)
+            assert {by_id[i].mandate_id for i in handled[2:]} == {"md_moved"}
+
+    asyncio.run(scenario())
+
+
 def test_context_and_event_feed_mismatches_become_info_evidence(
     db: Engine, history: StoreHistoryIndex
 ) -> None:

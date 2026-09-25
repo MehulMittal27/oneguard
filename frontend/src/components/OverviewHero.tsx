@@ -1,6 +1,6 @@
 import type { Decision } from '../api/types'
 import { formatChf } from '../lib/money'
-import { recentDecisions } from '../lib/spend'
+import { countDecisions } from '../lib/runs'
 import type { FilterId } from '../screens/Activity/Activity'
 
 // Same circle/rounded-square/diamond shape language as OrderCapLeashMeter's
@@ -28,6 +28,12 @@ const AMOUNT_STYLE: Record<
  * expired request counts as Uncertain (D-041), never its own bucket. Supersedes
  * D-055, which made the headline a count of risky purchases instead.
  *
+ * It counts exactly what Activity's filter chips count: each card's newest run
+ * (`splitByRun(...).current`, passed in by Home), through the same
+ * `countDecisions`, re-derived from the decisions feed on every poll. It used to
+ * window the last 7 simulated days, which dropped a long run's early approvals
+ * from Home while Activity still listed them.
+ *
  * Don't reintroduce `-on-ink` tokens here: this is a white card now, and they
  * are tuned for a dark ground.
  */
@@ -38,26 +44,23 @@ export function OverviewHero({
   decisions: Decision[]
   onOpenActivity: (filter: FilterId) => void
 }) {
-  const recent = recentDecisions(decisions, 7)
-  const counts = {
-    approved: recent.filter((d) => d.decision === 'approved').length,
-    stopped: recent.filter((d) => d.decision === 'stopped').length,
-    uncertain: recent.filter((d) => d.decision === 'uncertain').length,
-  }
-  const processedChf = recent.reduce((sum, d) => sum + d.billing_amount_chf, 0)
+  const counts = countDecisions(decisions)
+  const processedChf = decisions.reduce((sum, d) => sum + d.billing_amount_chf, 0)
+  // Mock fixtures carry no run ids; everything they hold is then "so far".
+  const scope = decisions.some((d) => d.run_id) ? 'latest run' : 'so far'
 
   return (
     <div className="rounded-hero border border-hairline bg-surface p-6">
       <p className="text-[11px] font-semibold tracking-[0.09em] text-cord-accent uppercase">
-        Processed by your rules · last 7 days
+        Processed by your rules · {scope}
       </p>
       <p className="mt-4 font-display text-[40px] leading-none font-bold tracking-[-0.02em] text-ink tabular-nums">
         {formatChf(processedChf)}
       </p>
       <p className="mt-2 text-[15px] text-ink-muted">
-        {recent.length === 1
+        {counts.all === 1
           ? '1 purchase proposed by your agent'
-          : `${recent.length} purchases proposed by your agent`}
+          : `${counts.all} purchases proposed by your agent`}
       </p>
 
       <div className="mt-5 grid grid-cols-3 gap-2 border-t border-hairline pt-4">
