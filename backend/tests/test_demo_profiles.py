@@ -502,6 +502,7 @@ def test_demo_live_names_the_run_in_progress_and_starts_another_only_with_force(
                 out=lines.append,
                 force=True,
                 max_seconds=0.5,  # nobody here decides it (the worker is stopped)
+                device=run.device,
             )
             assert "Sign in as Test Served (CU9001, card CA9001)" in lines
             assert len(fake.runs) == 2 and no_local_worker == []
