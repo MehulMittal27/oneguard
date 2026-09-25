@@ -41,6 +41,11 @@
 # recorded response); the LLM path now reads it, as the parser does, as merchant.merchant_city =
 # Munich (parser.places). The other nine name no place and compile the same (one live run each),
 # except SCEN0113's run adding "not Sat, Sun" beside "Mon-Fri", the variance noted above.
+# SCEN0136 re-recorded on 2026-09-25 (gpt-4.1, same settings) after the prompt learned that a
+# period limit with no per-order limit is also the per-payment cap, added for the model
+# (p4/period-cap, parser.period_cap): the same rules, and no longer the question "what is the most
+# one purchase may cost?" (two live runs, identical). The other nine compile the same under the new
+# prompt (two live runs each), except SCEN0101's requested_item in one run, the variance noted above.
 - scenario: SCEN0101
   response:
     uncertainty_policy: ask
@@ -704,5 +709,4 @@
       words: If a price changes, ask me
       source: inferred
       on_fail: ask
-    open_questions:
-    - 'No amount stated: what is the most one purchase may cost?'
+    open_questions: []
