@@ -1125,6 +1125,8 @@ class VisecaWorker:
             total=status.total,
             worker_ok=self.status().ok,
             last_error=run.last_error or self._last_error,
+            ledger_run_id=run.run_id,
+            started_at=run.started_at,
         )
 
     def status(self) -> WorkerStatus:

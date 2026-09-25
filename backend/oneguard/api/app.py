@@ -344,6 +344,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.add_api_route("/healthz", healthz, methods=["GET"], include_in_schema=False)
     app.include_router(routes_customer.router)
     app.include_router(routes_dev.router)
+    app.include_router(routes_dev.catalogue_router)
     static.mount(app, app.state.config.frontend_dist)
     return app
 

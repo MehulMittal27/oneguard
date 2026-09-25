@@ -202,6 +202,11 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
         "total": 10,
         "running": True,
         "next_at": "2026-09-24T10:00:04Z",
+        "ledger_run_id": "replay-1",
+        "started_at": "2026-09-24T10:00:00Z",
+        "decided": 3,
+        "customer_id": "CU0001",
+        "customer_name": "Alex Meier",
     },
     api.LiveRun: {
         "run_id": "run_1",
@@ -217,6 +222,8 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
         "last_error": None,
         "customer_id": "CU1217",
         "customer_name": "Omar Chen",
+        "ledger_run_id": "live-run_1",
+        "started_at": "2026-09-24T10:00:00Z",
     },
     api.ScenarioProfile: {
         "customer_id": "CU1217",
@@ -248,6 +255,28 @@ EXAMPLES: dict[type[BaseModel], dict[str, Any]] = {
                     "source": "run",
                 },
                 "active_run_id": None,
+            }
+        ]
+    },
+    api.ScenarioSummary: {
+        "scenario_id": "S1",
+        "name": "Connection check",
+        "event_count": 2,
+        "instruction": "Buy one grocery item for CHF 20 or less.",
+        "customer_id": None,
+        "customer_name": None,
+        "card_id": None,
+    },
+    api.ScenarioSummariesResponse: {
+        "scenarios": [
+            {
+                "scenario_id": "S1",
+                "name": "Connection check",
+                "event_count": 2,
+                "instruction": "Buy one grocery item for CHF 20 or less.",
+                "customer_id": "CU1217",
+                "customer_name": "Omar Chen",
+                "card_id": "CA1331",
             }
         ]
     },
