@@ -52,6 +52,7 @@ from sqlalchemy.orm import Session
 from oneguard.engine.ledger_base import (
     PRIOR_WINDOW,
     LedgerEntry,
+    answered_message,
     check_resolution,
     confirmation_keys,
     is_final_approval,
@@ -309,6 +310,8 @@ class StoreLedger(LedgerBase):
         if message is not None:
             row.message = message
             row.counterfactual = None
+        else:
+            row.message = answered_message(row.message, decision, float(row.billing_amount_chf))
         row.final = True
         row.uncertain_outcome = "expired" if resolved_by == "timeout" else ("approved" if approved else "declined")
         row.spent_chf = _money(row.billing_amount_chf) if approved else _money(0)

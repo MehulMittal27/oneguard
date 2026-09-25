@@ -48,7 +48,7 @@ The frontend ignores unknown fields, so additions are safe. Removing or renaming
 |---|---|---|---|---|---|
 | C12 | GET | `/api/customers` | — | `{ customers: Customer[] }` | |
 | C10 | GET | `/api/customers/{customer_id}/accounts` | — | `{ accounts: Account[] }` | 404 |
-| C6 | GET | `/api/customers/{customer_id}/decisions` | — | `{ decisions: Decision[] }` newest first | 404 |
+| C6 | GET | `/api/customers/{customer_id}/decisions[?operator=1]` | — | `{ decisions: Decision[] }` newest first; operator-only evidence only with `?operator=1` (§3.4) | 404 |
 | C1 | POST | `/api/cards/{card_id}/policy-drafts` | `{ instruction }` **or** `{ form: FormInput }` | `PolicyDraft` | 404 card · 422 neither/both · 504 compiler timeout |
 | C2 | POST | `/api/policy-drafts/{draft_id}/confirm` | `{ checks: RuleCheck[], uncertainty_policy, open_questions }` | `Mandate` | 404 draft · 401 not signed by a device on the draft's card (§3.10) · 409 draft already confirmed · 422 unknown check id · 409 `lint_failed` (see §3.2) |
 | C3 | GET | `/api/cards/{card_id}/policy` | — | `{ mandate: Mandate \| null }` | 404 card |
@@ -403,17 +403,23 @@ fields, never in place of them. Both default to unknown, and unknown is never a 
   model rewrite on a later poll (`explanation_source: 'model'`). The worker posts the
   template, then, only while a provider is configured (D5 toggles it), rewrites it in the
   background and updates the stored decision's `message` and `explanation_source`. A
-  failed or rejected rewrite leaves the template.
+  failed or rejected rewrite leaves the template. A rewrite is rejected unless it contains
+  verbatim every number (amounts, counts, times) and every shop and item name
+  (case-insensitive) of the template message (`engine/tier3.py`).
 - The engine reconciles `context.approved_spend_in_period_chf` from Viseca against its own
   ledger on every event, and each decision against the platform's event feed
   (`GET /v1/events?since=<cursor>`, advancing with the returned `next_cursor`) as well as
-  against `context`; either mismatch is logged as an `info` evidence row.
+  against `context`; either mismatch is logged as an `info` evidence row. `ledger_mismatch`
+  rows are **operator-only**: kept in the stored decision and the decision posted to
+  Viseca, sent by C6 only with `?operator=1` (the operator console passes it); the
+  customer's app never sees them (`api/models.py` `OPERATOR_ONLY_EVIDENCE`).
 - A decline is posted to Viseca with one more evidence row, `{ kind: 'would_approve_if', rule:
   'would_approve_if', outcome: 'info', source: 'policy', detail: <counterfactual>,
   would_approve_if: Bound[] }`, so the agent learns what the customer would accept. It is not
   in `Decision.evidence`. A 400/422 on the body is retried without that row, then minimal.
 - Every decision gets a signed `Receipt` (P4, docs/passport.md), issued by a background sweep
-  off the decision's path (never delaying a post); a step-up's answer re-signs it.
+  off the decision's path (never delaying a post); a step-up's answer re-signs it. Its
+  `evidence_hash` covers the stored evidence, operator-only rows included.
 - `Decision.evidence` may carry a W6 row (rules.md §8): the cart line, its unit price in CHF
   and the catalogue range `items.unit_price_min_chf`–`items.unit_price_max_chf`.
 
@@ -429,7 +435,11 @@ fields, never in place of them. Both default to unknown, and unknown is never a 
   recorded and nothing is posted. Still pending → `/resolve` `decline`, message "No answer
   within 120 s; nothing was approved", `resolved_by: timeout` (rules.md Q2); on a 409 the
   state is read again and recorded. Never a second `/resolve` for the same id. Not spent. A
-  customer answer through C8 sets `resolved_by: 'customer'`.
+  customer answer through C8 sets `resolved_by: 'customer'` and re-renders the stored and
+  served message as "Approved by you CHF {amount}: {clause}" / "Declined by you CHF
+  {amount}: {clause}", the clause the customer was asked with kept verbatim (a tier-3
+  rewrite is kept whole as the clause); the counterfactual is unchanged
+  (`engine/ledger_base.py` `answered_message`).
 - A step-up renders the **complete** purchase (all lines, delivery fee, currency, recurring
   flag, flagged text).
 

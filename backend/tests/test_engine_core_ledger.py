@@ -247,6 +247,30 @@ def test_customer_declines_step_up(ledger):
     assert (view(ledger).period_spent_chf, view(ledger).period_reserved_chf) == (0.0, 0.0)
 
 
+ASKED = "Waiting for you CHF 61.13: You haven't bought from Valley Fresh before."
+
+
+@pytest.mark.parametrize("kind", ["store", "memory"])
+@pytest.mark.parametrize("answer,lead", [("approve", "Approved by you"), ("decline", "Declined by you")])
+def test_a_customer_answer_re_renders_the_message_and_keeps_the_counterfactual(maker, kind, answer, lead):
+    asked = entry("step_up", 61.13, auth_id="S1").model_copy(
+        update={"message": ASKED, "counterfactual": "Would approve at a shop you have bought from before."}
+    )
+    with maker() as s:
+        led = StoreLedger(s) if kind == "store" else InMemoryLedger()
+        led.record(asked)
+        r = led.resolve("S1", answer, "customer", NOW)
+        assert r.message == f"{lead} CHF 61.13: You haven't bought from Valley Fresh before."
+        assert r.counterfactual == asked.counterfactual
+        assert led.get("S1").message == r.message
+
+
+def test_a_rewritten_step_up_message_is_kept_whole_after_the_lead(ledger):
+    ledger.record(entry("step_up", 45.0, auth_id="S1").model_copy(update={"message": "I need your OK on this."}))
+    r = ledger.resolve("S1", "decline", "customer", NOW)
+    assert r.message == "Declined by you CHF 45.00: I need your OK on this."
+
+
 def test_timeout_is_expired_and_declined(ledger):
     ledger.record(entry("step_up", 65.0, auth_id="S1"))
     r = ledger.resolve("S1", "decline", "timeout", NOW, message=expired_message(120))

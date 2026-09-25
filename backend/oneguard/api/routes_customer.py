@@ -183,16 +183,26 @@ def build_decisions(
     return decisions
 
 
+def for_customer(decision: api.Decision) -> api.Decision:
+    """``decision`` without its operator-only evidence rows (``api.OPERATOR_ONLY_EVIDENCE``)."""
+    evidence = [row for row in decision.evidence if row.rule not in api.OPERATOR_ONLY_EVIDENCE]
+    return decision if len(evidence) == len(decision.evidence) else decision.model_copy(update={"evidence": evidence})
+
+
 @router.get("/customers/{customer_id}/decisions", response_model=api.DecisionsResponse)
-async def list_decisions(customer_id: str, request: Request) -> JSONResponse:
-    """C6: the customer's full history, newest first; lapsed step-ups are closed first."""
+async def list_decisions(customer_id: str, request: Request, operator: bool = False) -> JSONResponse:
+    """C6: the customer's full history, newest first; lapsed step-ups are closed first.
+    Operator-only evidence (ledger reconciliation) is sent only with ``?operator=1``."""
     s = services(request)
     await _require_customer(s, customer_id)
     stored = await s.db(queries.customer_decisions, s.db_engine, customer_id)
     if await s.close_lapsed(stored):
         stored = await s.db(queries.customer_decisions, s.db_engine, customer_id)
     mandates = await s.db(queries.mandates_by_id, s.db_engine, {d.entry.mandate_id for d in stored})
-    return reply(api.DecisionsResponse(decisions=build_decisions(stored, s.history, mandates)))
+    decisions = build_decisions(stored, s.history, mandates)
+    if not operator:
+        decisions = [for_customer(d) for d in decisions]
+    return reply(api.DecisionsResponse(decisions=decisions))
 
 
 # C1 -------------------------------------------------------------------------------------
