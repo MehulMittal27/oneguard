@@ -62,8 +62,8 @@ export function SignIn() {
             <header className="flex flex-col gap-4">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-2">
-                  <span className="flex size-7 items-center justify-center rounded-full bg-gradient-to-br from-[#fff0bd] to-[#ffc45b] text-[#e0561b]">
-                    <ShieldIcon size={20} strokeWidth={1.8} />
+                  <span className="flex size-9 items-center justify-center">
+                    <ShieldIcon size={30} strokeWidth={2.1} color="#f2a73b" />
                   </span>
                   <span className="text-[12px] font-bold tracking-[0.08em] text-ink-soft uppercase">
                     One Guard
@@ -92,9 +92,8 @@ export function SignIn() {
                   <div key={label} className="flex flex-col items-center gap-3 text-center">
                     <span
                       aria-hidden="true"
-                      className={`flex size-8 items-center justify-center rounded-full text-[14px] font-semibold ${
-                        i === 1 ? 'bg-cord-accent text-on-ink' : 'bg-ink text-on-ink'
-                      }`}
+                      className={`flex size-8 items-center justify-center rounded-full text-[14px] font-semibold ${i === 1 ? 'bg-cord-accent text-on-ink' : 'bg-ink text-on-ink'
+                        }`}
                     >
                       {i + 1}
                     </span>
@@ -140,11 +139,6 @@ export function SignIn() {
               >
                 {selected ? `Continue as ${selected.name}` : 'Continue'}
               </button>
-              {/* The same line the operator console carries at its right edge. */}
-              <p className="-mt-2 flex items-center justify-center gap-2 text-[12px] text-ink-muted">
-                <ShieldIcon size={13} strokeWidth={2} />
-                Powered by OneGuard
-              </p>
             </div>
           </div>
         </div>
@@ -240,9 +234,8 @@ function CustomerList({
         return (
           <label
             key={customer.customer_id}
-            className={`flex min-h-[60px] cursor-pointer items-center gap-4 rounded-row border-2 bg-surface px-5 py-3 transition-colors ${
-              isSelected ? 'border-ink' : 'border-transparent'
-            }`}
+            className={`flex min-h-[60px] cursor-pointer items-center gap-4 rounded-row border-2 bg-surface px-5 py-3 transition-colors ${isSelected ? 'border-ink' : 'border-transparent'
+              }`}
           >
             <input
               type="radio"

@@ -18,9 +18,9 @@ import {
 } from 'lucide-react'
 import type { IconProps } from './IconProps'
 
-export function ShieldIcon({ size = 28, strokeWidth = 1.8, filled }: IconProps) {
+export function ShieldIcon({ size = 28, strokeWidth = 1.8, filled, color = 'var(--ink)' }: IconProps & { color?: string }) {
   void filled
-  return <ShieldCheck size={size} fill="none" stroke="var(--ink)" strokeWidth={strokeWidth} aria-hidden="true" />
+  return <ShieldCheck size={size} fill="none" stroke={color} strokeWidth={strokeWidth} aria-hidden="true" />
 }
 
 export function HomeIcon({ size = 22, strokeWidth = 1.8, filled }: IconProps) {

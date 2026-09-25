@@ -298,7 +298,7 @@ export function DecisionDetail({
 
       <section className="flex flex-col gap-3">
         <p className="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
-          {isManipulated ? 'What decided it' : 'What was checked'}
+          {isManipulated ? 'Decided by your rules' : 'What was checked'}
         </p>
         {[...decision.evidence]
           .sort((a, b) => {
@@ -431,7 +431,6 @@ export function DecisionDetail({
 
       {isManipulated && signedInAs && (
         <>
-          <p className="text-center text-[12px] text-ink-muted">Illustrative decisions on synthetic data.</p>
           <button
             type="button"
             onClick={onGoHome}

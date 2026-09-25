@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { getAccounts } from '../../api/accounts'
 import type { Account } from '../../api/types'
 import { BottomSheet } from '../../components/BottomSheet'
-import { BackChevronIcon, PlusIcon } from '../../components/icons/lucide'
+import { BackChevronIcon } from '../../components/icons/lucide'
 import { NetworkState } from '../../components/NetworkState'
 import { limitsFromMandate } from '../../lib/spend'
 import { useCustomer } from '../../state/CustomerContext'
@@ -19,9 +19,8 @@ function CardChip({ guarded }: { guarded: boolean }) {
   return (
     <span
       aria-hidden="true"
-      className={`relative h-[34px] w-[52px] shrink-0 rounded-meter ${
-        guarded ? 'bg-ink' : 'bg-card-icon-gray'
-      }`}
+      className={`relative h-[34px] w-[52px] shrink-0 rounded-meter ${guarded ? 'bg-ink' : 'bg-card-icon-gray'
+        }`}
     >
       <span className="absolute bottom-[7px] left-[7px] h-[3px] w-3.5 rounded-[2px] bg-ground" />
     </span>
@@ -150,11 +149,7 @@ export function Accounts({
             <div className="rounded-card bg-surface p-5">
               <div className="flex w-full items-start justify-between gap-3">
                 <div className="min-w-0">
-                <p className="font-display text-[19px] font-bold text-ink">{humanise(selectedAccount.account_purpose)}</p>
-                <p className="mt-0.5 text-[13px] text-ink-muted">
-                  {humanise(selectedAccount.account_type)} · {selectedAccount.account_id} ·{' '}
-                  {selectedAccount.cards.filter((card) => policiesByCard[card.card_id]?.status === 'active').length} of {selectedAccount.cards.length} {selectedAccount.cards.length === 1 ? 'card' : 'cards'} guarded
-                </p>
+                  <p className="font-display text-[19px] font-bold text-ink">{humanise(selectedAccount.account_purpose)}</p>
                 </div>
                 {accounts.length > 1 && selectedAccount.status === 'active' && (
                   <span className="shrink-0 rounded-pill bg-approved-tint px-2.5 py-1 text-[12px] font-semibold text-approved">Active</span>
@@ -180,25 +175,20 @@ export function Accounts({
                       <CardChip guarded={isActive} />
                       <span className="min-w-0 flex-1">
                         <span className="block text-[15px] font-semibold text-balance text-ink">{humanise(card.card_purpose)} · {card.card_id}</span>
-                        <span className="block text-[13px] leading-[1.35] text-ink-muted">
-                          {isActive
-                            ? `${humanise(card.card_type)} · ${limitCount} ${limitCount === 1 ? 'limit' : 'limits'}`
-                            : isRevoked
-                              ? 'Policy revoked.'
-                              : 'No policy is set for this card.'}
+                        {isActive && (
+                          <span className="block text-[13px] leading-[1.35] text-ink-muted">
+                            {humanise(card.card_type)} · {limitCount} {limitCount === 1 ? 'limit' : 'limits'}
+                          </span>
+                        )}
+                      </span>
+                      <span className="flex shrink-0 items-center gap-1">
+                        <span className={`rounded-pill px-2.5 py-1 text-[12px] font-semibold ${isActive ? 'bg-approved-tint text-approved' : 'bg-surface-expired text-ink-muted'}`}>
+                          {isActive ? 'Policy active' : isRevoked ? 'Policy revoked' : 'No policy'}
+                        </span>
+                        <span className="rotate-180 text-ink-muted" aria-hidden="true">
+                          <BackChevronIcon size={18} strokeWidth={2} />
                         </span>
                       </span>
-                      {isActive ? (
-                        <span className="flex shrink-0 items-center gap-1">
-                          <span className="rounded-pill bg-approved-tint px-2.5 py-1 text-[12px] font-semibold text-approved">Policy active</span>
-                          <span className="rotate-180 text-ink-muted"><BackChevronIcon size={18} strokeWidth={2} /></span>
-                        </span>
-                      ) : (
-                        <span className="flex shrink-0 items-center gap-1.5">
-                          <span className="rounded-pill bg-surface-expired px-2.5 py-1 text-[12px] font-semibold text-ink-muted">{isRevoked ? 'Policy revoked' : 'No policy'}</span>
-                          {!isRevoked && <span className="flex items-center gap-1 text-[13px] font-semibold text-ink"><PlusIcon size={14} strokeWidth={2.4} /> Add</span>}
-                        </span>
-                      )}
                     </button>
                   )
                 })}

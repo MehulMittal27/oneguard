@@ -62,7 +62,6 @@ function PendingCard({
     const rank = { fail: 0, uncertain: 1, pass: 2, info: 3 } as const
     return rank[a.outcome] - rank[b.outcome]
   })
-
   async function handle(answer: 'approve' | 'decline') {
     setResolving(true)
     setError(false)
@@ -125,11 +124,10 @@ function PendingCard({
         {decision.items.map((item, index) => (
           <div
             key={index}
-            className={`rounded-row px-4 py-3 ${
-              decision.injection_flag
+            className={`rounded-row px-4 py-3 ${decision.injection_flag
                 ? 'border-[1.5px] border-asked-border bg-asked-tint'
                 : 'border border-hairline bg-surface'
-            }`}
+              }`}
           >
             {/* item_name/item_details are untrusted merchant text — plain text nodes only. */}
             <p className="text-[14px] font-medium text-ink">
@@ -155,34 +153,35 @@ function PendingCard({
         shows only when it says something the message does not (it is usually
         the uncertain evidence row's detail, listed just below anyway).
       */}
-      <div className="mt-3 rounded-row border border-asked-border bg-asked-tint px-4 py-3">
-        <p className="text-[11px] font-semibold tracking-[0.08em] text-asked-ink uppercase">
-          Why this needs your answer
+      <div className="mt-3 rounded-row border border-asked-border border-l-4 bg-surface px-4 py-4">
+        <div className="flex items-center gap-2 text-asked">
+          <HelpCircleIcon size={18} strokeWidth={2.3} />
+          <p className="text-[15px] font-semibold text-ink">Why we paused this purchase</p>
+        </div>
+        <p className="mt-2 text-[14px] leading-[1.45] font-medium text-ink">
+          {messageWithoutCounterfactual(decision.message, decision.counterfactual)}
         </p>
+        {decision.uncertainty && noteAddsToMessage(decision.message, decision.uncertainty.note) && (
+          <p className="mt-2 text-[13px] leading-[1.45] text-asked-ink">{decision.uncertainty.note}</p>
+        )}
+        {decision.counterfactual && (
+          <div className="mt-3 rounded-row bg-asked-tint px-3 py-2.5">
+            <p className="text-[11px] font-semibold text-asked-ink">What would change the decision</p>
+            <p className="mt-1 text-[13px] leading-[1.4] text-asked-ink">{decision.counterfactual}</p>
+          </div>
+        )}
         {decision.merchant_meta && (
-          <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 border-t border-asked-border/60 pt-2 text-[11px]">
+          <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 border-t border-hairline pt-3 text-[11px]">
             <div><dt className="text-ink-muted">Category</dt><dd className="font-medium text-ink">{humanise(decision.merchant_meta.category)}</dd></div>
             <div><dt className="text-ink-muted">Country</dt><dd className="font-medium text-ink">{decision.merchant_meta.country}</dd></div>
             <div><dt className="text-ink-muted">Known on this card</dt><dd className="font-medium text-ink">{decision.merchant_meta.familiar ? 'Yes' : 'No'}</dd></div>
             <div><dt className="text-ink-muted">Prior approvals</dt><dd className="font-medium text-ink">{decision.merchant_meta.prior_approvals_on_card} on this card · {decision.merchant_meta.prior_approvals_other_cards} on others</dd></div>
           </dl>
         )}
-        <p className="mt-1 text-[13px] font-medium text-asked-ink">
-          {messageWithoutCounterfactual(decision.message, decision.counterfactual)}
-        </p>
-        {decision.counterfactual && (
-          <p className="mt-1 text-[13px] text-asked-ink">{decision.counterfactual}</p>
-        )}
-        {decision.uncertainty && noteAddsToMessage(decision.message, decision.uncertainty.note) && (
-          <p className="mt-2 text-[13px] text-asked-ink">{decision.uncertainty.note}</p>
-        )}
       </div>
 
       {orderedEvidence.length > 0 && (
         <div className="mt-3 flex flex-col gap-2">
-          <p className="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
-            Checks · failed, uncertain, passed
-          </p>
           {orderedEvidence.map((item, index) => {
             const style = EVIDENCE_STYLE[item.outcome] ?? EVIDENCE_STYLE.info
             return (
@@ -206,59 +205,24 @@ function PendingCard({
         </div>
       )}
 
-      {/*
-        A step-up on a restriction no data can check ("an official ticket
-        seller") is the one case where approving can also be remembered: the
-        engine stores the answer against this shop and item and stops asking
-        (engine/policy.py `is_unverifiable`). The button says so in full, so the
-        customer is never agreeing to a standing rule by pressing a button that
-        only said "Approve". It stacks rather than sharing the two-column row —
-        the sentence does not fit half a 390px screen.
-      */}
-      {decision.confirmable ? (
-        <div className="mt-4 flex flex-col gap-3">
-          <button
-            type="button"
-            disabled={resolving}
-            onClick={() => handle('approve')}
-            className="min-h-14 rounded-row bg-approved px-4 py-3 text-[15px] leading-[1.35] font-semibold text-on-ink disabled:opacity-60"
-          >
-            {/* Merchant name is untrusted shop text — a plain text node here too. */}
-            Approve, and treat {decision.merchant.name} as {decision.confirmable.phrase} from now
-            on
-          </button>
-          <p className="text-[12px] text-ink-muted">
-            Applies to this shop and the items in this order. Everything else still asks you.
-          </p>
-          <button
-            type="button"
-            disabled={resolving}
-            onClick={() => handle('decline')}
-            className="h-14 rounded-row border-2 border-destructive-border text-[16px] font-semibold text-destructive disabled:opacity-60"
-          >
-            Reject
-          </button>
-        </div>
-      ) : (
-        <div className="mt-4 grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            disabled={resolving}
-            onClick={() => handle('approve')}
-            className="h-14 rounded-row bg-approved text-[16px] font-semibold text-on-ink disabled:opacity-60"
-          >
-            Approve
-          </button>
-          <button
-            type="button"
-            disabled={resolving}
-            onClick={() => handle('decline')}
-            className="h-14 rounded-row border-2 border-destructive-border text-[16px] font-semibold text-destructive disabled:opacity-60"
-          >
-            Reject
-          </button>
-        </div>
-      )}
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <button
+          type="button"
+          disabled={resolving}
+          onClick={() => handle('approve')}
+          className="h-14 rounded-row bg-approved text-[16px] font-semibold text-on-ink disabled:opacity-60"
+        >
+          Approve
+        </button>
+        <button
+          type="button"
+          disabled={resolving}
+          onClick={() => handle('decline')}
+          className="h-14 rounded-row border-2 border-destructive-border text-[16px] font-semibold text-destructive disabled:opacity-60"
+        >
+          Reject
+        </button>
+      </div>
 
       {error && (
         <p className="mt-3 text-[13px] text-destructive">
@@ -396,9 +360,8 @@ export function Approvals({
                   aria-selected={i === safeIndex}
                   aria-label={`Purchase ${i + 1} of ${pending.length}`}
                   onClick={() => setFocusedIndex(i)}
-                  className={`h-1.5 rounded-pill transition-[width] ${
-                    i === safeIndex ? 'w-5 bg-asked' : 'w-1.5 bg-hairline'
-                  }`}
+                  className={`h-1.5 rounded-pill transition-[width] ${i === safeIndex ? 'w-5 bg-asked' : 'w-1.5 bg-hairline'
+                    }`}
                 />
               ))}
             </div>
@@ -444,7 +407,7 @@ export function Approvals({
               <DecisionMark
                 key={decision.authorization_id}
                 decision={decision}
-                compact
+                tagOnly
                 onClick={() => setViewingId(decision.authorization_id)}
               />
             ))}

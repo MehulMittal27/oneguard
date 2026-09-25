@@ -26,11 +26,13 @@ export function DecisionMark({
   onClick,
   timestamp = 'none',
   compact = false,
+  tagOnly = false,
 }: {
   decision: Decision
   onClick?: () => void
   timestamp?: 'none' | 'time' | 'day-time'
   compact?: boolean
+  tagOnly?: boolean
 }) {
   const isUncertain = decision.decision === 'uncertain'
   const { label, discBg, fg } =
@@ -43,9 +45,10 @@ export function DecisionMark({
     <Tag
       type={onClick ? 'button' : undefined}
       onClick={onClick}
-      className="flex min-h-16 w-full items-center gap-4 rounded-row px-5 py-3 text-left"
+      aria-label={tagOnly ? `${decision.merchant.name}; ${label}; ${formatChf(decision.billing_amount_chf)}` : undefined}
+      className={`flex w-full items-center rounded-row text-left ${tagOnly ? 'min-h-11 justify-start px-3 py-2' : 'min-h-16 gap-4 px-5 py-3'}`}
     >
-      <span
+      {!tagOnly && <span
         className={`flex size-[38px] shrink-0 items-center justify-center rounded-full ${discBg} ${fg}`}
       >
         {isUncertain ? (
@@ -55,10 +58,10 @@ export function DecisionMark({
         ) : (
           <CrossIcon size={18} strokeWidth={2.4} />
         )}
-      </span>
+      </span>}
       <span className="min-w-0 flex-1">
         {/* Merchant name is untrusted merchant text — plain text node only. */}
-        <span className="block truncate text-[15px] font-semibold text-ink">
+        <span className={`${tagOnly ? 'sr-only' : 'block truncate'} text-[15px] font-semibold text-ink`}>
           {decision.merchant.name}
           {timestamp !== 'none' && (
             <span className="font-normal text-ink-muted">
@@ -69,7 +72,7 @@ export function DecisionMark({
             </span>
           )}
         </span>
-        {!compact && <span className="block truncate text-[13px] text-ink-muted">{decision.message}</span>}
+        {!compact && !tagOnly && <span className="block truncate text-[13px] text-ink-muted">{decision.message}</span>}
         <span
           className={`mt-1 inline-flex w-fit max-w-full whitespace-normal break-words rounded-[6px] px-2 py-1 text-[11px] leading-tight font-semibold ${
             decision.decision === 'approved'
@@ -93,12 +96,12 @@ export function DecisionMark({
             : 'Reviewed'}
         </span>
       </span>
-      <span className="shrink-0 text-right">
+      {!tagOnly && <span className="shrink-0 text-right">
         <span className="block text-[15px] font-semibold text-ink tabular-nums">
           {formatChf(decision.billing_amount_chf)}
         </span>
         <span className={`block text-[12px] font-semibold ${fg}`}>{label}</span>
-      </span>
+      </span>}
     </Tag>
   )
 }

@@ -136,11 +136,11 @@ export function Activity({
       </div>
 
       <p className="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
-        Last 7 days · your rules
+        Last 7 days
       </p>
       <section className="grid grid-cols-2 rounded-card border border-hairline bg-surface p-4">
         <div className="pr-3">
-          <p className="flex items-center gap-1.5 text-[12px] font-medium text-ink-muted">
+          <p className="flex items-center gap-1.5 text-[12px] font-medium text-approved">
             <ShieldIcon size={15} strokeWidth={2} /> Amount safeguarded
           </p>
           <p className="mt-2 font-display text-[32px] leading-none font-bold text-approved tabular-nums">
@@ -183,9 +183,8 @@ export function Activity({
               role="tab"
               aria-selected={isActive}
               onClick={() => setFilter(id)}
-              className={`inline-flex min-h-11 shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-xl border-2 px-1.5 text-[11px] transition-colors ${
-                isActive ? `${style.active} font-semibold` : `${style.rest} font-medium`
-              }`}
+              className={`inline-flex min-h-11 shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-xl border-2 px-1.5 text-[11px] transition-colors ${isActive ? `${style.active} font-semibold` : `${style.rest} font-medium`
+                }`}
             >
               {label}
               <span className="tabular-nums">{counts[id]}</span>
