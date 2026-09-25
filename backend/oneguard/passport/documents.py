@@ -12,6 +12,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
+from oneguard.api.policies import NOTHING_EXTRA_CHECK, REQUESTED_ITEM_CHECK
 from oneguard.engine.explain import RULE_LABELS
 from oneguard.engine.ledger_base import LedgerEntry
 from oneguard.engine.types import Rule
@@ -26,6 +27,8 @@ PASSPORT_LIFETIME = timedelta(days=90)
 _CHECK_KEYS = ("id", "text", "source", "field", "operator", "value", "currency", "scope", "period_days", "on_fail")
 _OPTIONAL_CHECK_KEYS = ("currency", "scope", "period_days")
 _PERMITTED = {"pass": "pass", "fail": "fail", "uncertain": "unknown", "info": "info"}
+_FLAG_CHECKS = {REQUESTED_ITEM_CHECK: ("requested_item", "C5"), NOTHING_EXTRA_CHECK: ("nothing_extra", "C10")}
+"""A check that shows a policy flag: (the flag, the engine's rule id for its result)."""
 PASSPORT_CONTENT_EXCLUDED = ("version", "issued_at", "expires_at", "issuer")
 """What a new version always changes; the rest is compared to decide whether one is due."""
 
@@ -40,6 +43,22 @@ def check(rule: Rule) -> dict[str, Any]:
     return out
 
 
+def passport_checks(confirmed: Iterable[Mapping[str, Any]], rules: Sequence[Rule], flags: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every check the customer confirmed, in their order: a typed rule's field, operator and
+    value, or, for a check that shows a policy flag (the requested item, nothing extra), the
+    flag and its value with no field of its own."""
+    by_id = {r.id: r for r in rules}
+    out: list[dict[str, Any]] = []
+    for c in confirmed:
+        if c["id"] in by_id:
+            out.append(check(by_id[c["id"]]))
+        elif c["id"] in _FLAG_CHECKS:
+            flag = _FLAG_CHECKS[c["id"]][0]
+            out.append({"id": c["id"], "text": c.get("text"), "source": c.get("source"), "field": None,
+                        "operator": None, "value": flags.get(flag), "flag": flag, "on_fail": "decline"})  # fmt: skip
+    return out
+
+
 def passport_body(
     *,
     passport_id: str,
@@ -49,7 +68,7 @@ def passport_body(
     card_id: str,
     mandate_id: str,
     instruction: str,
-    rules: Sequence[Rule],
+    checks: Sequence[Mapping[str, Any]],
     flags: Mapping[str, Any],
     uncertainty_policy: str,
     remembered_confirmations: int,
@@ -69,7 +88,7 @@ def passport_body(
         "card_id": card_id,
         "mandate_id": mandate_id,
         "instruction": instruction,
-        "checks": [check(r) for r in rules],
+        "checks": list(checks),
         "flags": {k: v for k, v in sorted(flags.items()) if v not in (None, False, [], "")},
         "uncertainty_policy": uncertainty_policy,
         "remembered_confirmations": remembered_confirmations,
@@ -105,6 +124,8 @@ def permitted(evidence: Iterable[Mapping[str, Any]], checks: Iterable[Mapping[st
     for c in checks:
         by_label.setdefault(str(c.get("text") or c["id"]), str(c["id"]))
         by_label.setdefault(str(c["id"]), str(c["id"]))
+        if c["id"] in _FLAG_CHECKS:  # the flag's result is labelled by the engine's rule id
+            by_label.setdefault(RULE_LABELS[_FLAG_CHECKS[c["id"]][1]], str(c["id"]))
     for check_id, label in RULE_LABELS.items():
         by_label.setdefault(label, check_id)
     out: list[dict[str, str]] = []

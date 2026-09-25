@@ -37,6 +37,7 @@ from oneguard.passport.documents import (
     PASSPORT_TYPE,
     RECEIPT_TYPE,
     passport_body,
+    passport_checks,
     passport_content,
     receipt_body,
     resolution,
@@ -139,7 +140,8 @@ class PassportBook:
             body = passport_body(
                 passport_id=passport_id, version=version, customer_id=mandate.customer_id,
                 holder_name=holder.persona_name if holder else mandate.customer_id, card_id=mandate.card_id,
-                mandate_id=mandate.mandate_id, instruction=mandate.instruction, rules=rules, flags=flags,
+                mandate_id=mandate.mandate_id, instruction=mandate.instruction,
+                checks=passport_checks(mandate.checks, rules, flags), flags=flags,
                 uncertainty_policy=mandate.uncertainty_policy, remembered_confirmations=int(confirmations),
                 devices=enrolled, issued_at=now, revoked_at=revoked_at, key_id=self.keys.active_key_id,
             )  # fmt: skip
