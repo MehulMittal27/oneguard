@@ -4,13 +4,11 @@ import type { Decision, EvidenceItem, Mandate } from '../../api/types'
 import { CountdownBar } from '../../components/CountdownBar'
 import { DecisionMark } from '../../components/DecisionMark'
 import { CheckIcon, CrossIcon, HelpCircleIcon, InfoIcon } from '../../components/icons/lucide'
-import { OrderCapLeashMeter, PeriodLeashMeter } from '../../components/LeashMeter'
 import { RevokeSheet } from '../../components/RevokeSheet'
 import { SessionBanner } from '../../components/SessionBanner'
 import { formatShortDate } from '../../lib/datetime'
 import { messageWithoutCounterfactual, noteAddsToMessage } from '../../lib/decisionMessage'
 import { formatChf } from '../../lib/money'
-import { limitsFromMandate, spendFromMandate } from '../../lib/spend'
 import { useDecisions } from '../../state/DecisionsContext'
 import { usePolicy } from '../../state/PolicyContext'
 import { DeviceGateCancelled, useDevice } from '../../state/DeviceContext'
@@ -33,17 +31,25 @@ const EVIDENCE_STYLE: Record<EvidenceItem['outcome'], { Icon: typeof CheckIcon; 
   info: { Icon: InfoIcon, iconFg: 'text-ink-muted', border: 'border-hairline' },
 }
 
+const EVIDENCE_SOURCE: Record<NonNullable<EvidenceItem['source']>, string> = {
+  policy: 'Your policy',
+  ledger: 'Spending record',
+  history: 'Purchase history',
+  merchant_text: 'Shop description',
+  model: 'Extra signal',
+}
+
+function humanise(value: string): string {
+  const text = value.replace(/_/g, ' ')
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
 function PendingCard({
   decision,
-  decisions,
   mandate,
   onResolve,
 }: {
   decision: Decision
-  // Every decision on this card, so the "If you approve" preview reads the
-  // same live totals CardDetail's own LeashMeter does — not a duplicate
-  // calculation.
-  decisions: Decision[]
   mandate: Mandate | undefined
   onResolve: (decision: 'approve' | 'decline') => Promise<void>
 }) {
@@ -52,6 +58,10 @@ function PendingCard({
   const [revoking, setRevoking] = useState(false)
   const { revokePolicyForCard } = usePolicy()
   const { withDevice } = useDevice()
+  const orderedEvidence = [...decision.evidence].sort((a, b) => {
+    const rank = { fail: 0, uncertain: 1, pass: 2, info: 3 } as const
+    return rank[a.outcome] - rank[b.outcome]
+  })
 
   async function handle(answer: 'approve' | 'decline') {
     setResolving(true)
@@ -67,16 +77,6 @@ function PendingCard({
   }
 
   // A revoked mandate has no live limit to preview against.
-  const { perOrder, period } =
-    mandate && mandate.status === 'active' ? limitsFromMandate(mandate) : { perOrder: null, period: null }
-  // Ledger-first: `usage` when the engine sent it, the client sum only in mock mode.
-  const spend = period
-    ? spendFromMandate(mandate, decisions, decision.card_id, period.days)
-    : null
-  const cardDecisions = decisions
-    .filter((d) => d.card_id === decision.card_id)
-    .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))
-
   return (
     <div className="rounded-card border-2 border-asked-border bg-surface p-5">
       {/* Why the engine is being careful, above the purchase it is being careful
@@ -157,8 +157,16 @@ function PendingCard({
       */}
       <div className="mt-3 rounded-row border border-asked-border bg-asked-tint px-4 py-3">
         <p className="text-[11px] font-semibold tracking-[0.08em] text-asked-ink uppercase">
-          Why your rules are unsure
+          Why this needs your answer
         </p>
+        {decision.merchant_meta && (
+          <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 border-t border-asked-border/60 pt-2 text-[11px]">
+            <div><dt className="text-ink-muted">Category</dt><dd className="font-medium text-ink">{humanise(decision.merchant_meta.category)}</dd></div>
+            <div><dt className="text-ink-muted">Country</dt><dd className="font-medium text-ink">{decision.merchant_meta.country}</dd></div>
+            <div><dt className="text-ink-muted">Known on this card</dt><dd className="font-medium text-ink">{decision.merchant_meta.familiar ? 'Yes' : 'No'}</dd></div>
+            <div><dt className="text-ink-muted">Prior approvals</dt><dd className="font-medium text-ink">{decision.merchant_meta.prior_approvals_on_card} on this card · {decision.merchant_meta.prior_approvals_other_cards} on others</dd></div>
+          </dl>
+        )}
         <p className="mt-1 text-[13px] font-medium text-asked-ink">
           {messageWithoutCounterfactual(decision.message, decision.counterfactual)}
         </p>
@@ -170,12 +178,12 @@ function PendingCard({
         )}
       </div>
 
-      {decision.evidence.length > 0 && (
+      {orderedEvidence.length > 0 && (
         <div className="mt-3 flex flex-col gap-2">
           <p className="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
-            What your rules checked
+            Checks · failed, uncertain, passed
           </p>
-          {decision.evidence.map((item, index) => {
+          {orderedEvidence.map((item, index) => {
             const style = EVIDENCE_STYLE[item.outcome] ?? EVIDENCE_STYLE.info
             return (
               <div
@@ -188,30 +196,13 @@ function PendingCard({
                 <div>
                   <p className="text-[14px] font-medium text-ink">{item.rule}</p>
                   <p className="mt-0.5 text-[12px] text-ink-muted">{item.detail}</p>
+                  {item.source && (
+                    <p className="mt-1 text-[11px] text-ink-muted">{EVIDENCE_SOURCE[item.source] ?? 'Source'}</p>
+                  )}
                 </div>
               </div>
             )
           })}
-        </div>
-      )}
-
-      {(period || perOrder) && (
-        <div className="mt-3 rounded-row border border-hairline bg-surface-sunken p-4">
-          <p className="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
-            If you approve
-          </p>
-          <div className="mt-2">
-            {period ? (
-              <PeriodLeashMeter
-                limitChf={period.limitChf}
-                spentChf={spend?.spentChf ?? 0}
-                pendingChf={spend?.pendingChf ?? 0}
-                days={period.days}
-              />
-            ) : perOrder ? (
-              <OrderCapLeashMeter capChf={perOrder} decisions={cardDecisions} />
-            ) : null}
-          </div>
         </div>
       )}
 
@@ -416,7 +407,6 @@ export function Approvals({
           <PendingCard
             key={focused.authorization_id}
             decision={focused}
-            decisions={decisions}
             mandate={policiesByCard[focused.card_id]}
             onResolve={(answer) => resolve(focused.authorization_id, answer)}
           />
@@ -454,6 +444,7 @@ export function Approvals({
               <DecisionMark
                 key={decision.authorization_id}
                 decision={decision}
+                compact
                 onClick={() => setViewingId(decision.authorization_id)}
               />
             ))}

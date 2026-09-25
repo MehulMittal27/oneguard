@@ -17,7 +17,6 @@ import { messageWithoutCounterfactual } from '../../lib/decisionMessage'
 import { getInitials } from '../../lib/initials'
 import { formatChf } from '../../lib/money'
 import { sameChecks } from '../../lib/policyReview'
-import { reasonLabel } from '../../lib/reasonCodes'
 import { useCustomer } from '../../state/CustomerContext'
 import { useDecisions } from '../../state/DecisionsContext'
 import { usePolicy } from '../../state/PolicyContext'
@@ -71,15 +70,6 @@ const RELATION_LABEL: Record<DecisionRelation, string> = {
   duplicate_of: 'Duplicate of',
   retry_of: 'Retry of',
   split_of: 'Split of',
-}
-
-// 'unknown' and 'not_applicable' are both real answers, never blank or "no"
-// (data_dictionary.md) — each gets its own honest label.
-const RETURNABLE_LABEL: Record<Decision['order_returnable'], string> = {
-  true: 'Yes',
-  false: 'No',
-  unknown: 'Not stated by the shop',
-  not_applicable: 'Not applicable',
 }
 
 /**
@@ -179,7 +169,6 @@ export function DecisionDetail({
         (d.decision === 'stopped' || d.decision === 'uncertain'),
     )
     .sort((a, b) => b.occurred_at.localeCompare(a.occurred_at))
-    .slice(0, 3)
 
   // A still-pending uncertain purchase is actionable, not just viewable —
   // route straight to where it can actually be answered.
@@ -212,7 +201,9 @@ export function DecisionDetail({
           </span>
           <div className="min-w-0">
             <p className="truncate text-[15px] font-semibold text-ink">{signedInAs.name}</p>
-            <p className="truncate text-[13px] text-ink-muted">Card {decision.card_id}</p>
+            <p className="truncate text-[13px] text-ink-muted">
+              Card {decision.card_id} · {signedInAs.home_region}
+            </p>
           </div>
         </div>
       )}
@@ -237,12 +228,17 @@ export function DecisionDetail({
           ) : (
             <CrossIcon size={18} strokeWidth={2.4} />
           )}
-          {banner.headline}
+          {isManipulated && decision.decision === 'stopped'
+            ? 'Stopped · manipulation attempt'
+            : banner.headline}
         </p>
-        {/* Merchant name is untrusted merchant text — plain text node only. */}
-        <p className="mt-3 text-[17px] font-bold text-ink">{decision.merchant.name}</p>
         <p className="font-display text-[34px] leading-tight font-bold text-ink tabular-nums">
           {formatChf(decision.billing_amount_chf)}
+        </p>
+        {/* Merchant and item names are untrusted text — render as text nodes. */}
+        <p className="mt-1 text-[15px] font-semibold text-ink">
+          {decision.merchant.name}
+          {decision.items.length > 0 && ` · ${decision.items.map((item) => `${item.item_name}${item.quantity > 1 ? ` × ${item.quantity}` : ''}`).join(', ')}`}
         </p>
         <p className="mt-1 text-[13px] text-ink-muted">
           {formatShortDate(decision.occurred_at)} · {formatTime(decision.occurred_at)}
@@ -273,43 +269,17 @@ export function DecisionDetail({
           {/* The codes the engine actually emitted, in the customer's words. One
               label map for the whole app (hard rule 9); an unknown code gets the
               neutral line rather than its own id. */}
-          {decision.reason_codes.length > 0 && (
-            <ul className="mt-3 flex flex-wrap gap-1.5">
-              {decision.reason_codes.map((code) => (
-                <li
-                  key={code}
-                  className="rounded-pill bg-surface-sunken px-2.5 py-1 text-[12px] text-ink-soft"
-                >
-                  {reasonLabel(code)}
-                </li>
-              ))}
-            </ul>
-          )}
         </div>
 
-        <div className="mt-4 flex gap-6 border-t border-hairline pt-4 text-[13px]">
-          <div>
-            <p className="text-ink-muted">Returnable</p>
-            <p className="mt-0.5 font-medium text-ink">
-              {RETURNABLE_LABEL[decision.order_returnable]}
-            </p>
-          </div>
-          {decision.delivery_by && (
-            <div>
-              <p className="text-ink-muted">Delivery by</p>
-              <p className="mt-0.5 font-medium text-ink">
-                {formatShortDate(decision.delivery_by)}
-              </p>
-            </div>
-          )}
-        </div>
       </div>
 
       {decision.injection_flag && (
         <div className="rounded-card border-2 border-dashed border-stopped-border bg-surface p-5">
-          <span className="inline-flex items-center rounded-pill bg-stopped-tint px-3 py-1 text-[13px] font-medium text-stopped">
-            Untrusted shop text
-          </span>
+          <p className="mb-3 font-display text-[20px] font-bold text-ink">What the shop tried to say</p>
+          <div className="flex items-center justify-between gap-2">
+            <span className="inline-flex items-center rounded-pill bg-stopped-tint px-3 py-1 text-[13px] font-medium text-stopped">Untrusted shop text</span>
+            <span className="text-[12px] font-semibold text-ink-muted">Plain text only</span>
+          </div>
           <div className="mt-3 flex flex-col gap-3">
             {decision.items.map((item, index) => (
               <p key={index} className="text-[14px] text-ink-soft">
@@ -319,8 +289,7 @@ export function DecisionDetail({
             ))}
           </div>
           <p className="mt-3 text-[13px] text-ink-muted">
-            We read this text for facts only — any instructions inside it are ignored.{' '}
-            {decision.injection_flag.reason}
+            Shop text is untrusted. Only your policy decides what can be approved.
           </p>
         </div>
       )}
@@ -329,9 +298,14 @@ export function DecisionDetail({
 
       <section className="flex flex-col gap-3">
         <p className="text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
-          What decided it
+          {isManipulated ? 'What decided it' : 'What was checked'}
         </p>
-        {decision.evidence.map((item, index) => {
+        {[...decision.evidence]
+          .sort((a, b) => {
+            const order = { fail: 0, uncertain: 1, pass: 2, info: 3 } as const
+            return order[a.outcome] - order[b.outcome]
+          })
+          .map((item, index) => {
           const style = EVIDENCE_STYLE[item.outcome] ?? EVIDENCE_STYLE.info
           return (
             <div
@@ -347,10 +321,11 @@ export function DecisionDetail({
               </div>
             </div>
           )
-        })}
-        <p className="text-[12px] text-ink-muted">
-          Decided by your own rules — not by us, and not by the shop.
-        </p>
+          })}
+        <div className="text-[12px] text-ink-muted">
+          <p className="font-semibold text-ink">Decided by your rules</p>
+          <p className="mt-1">The checks above show the facts used for this decision.</p>
+        </div>
       </section>
 
       <section>
@@ -371,11 +346,7 @@ export function DecisionDetail({
                   Revoked
                 </span>
               )}
-              <span className="text-[13px] text-ink-muted">
-                {mandate.status === 'revoked'
-                  ? `Card ${decision.card_id} · tap to view or add a new policy`
-                  : `Card ${decision.card_id} · tap to manage or revoke`}
-              </span>
+              <span className="text-[13px] font-semibold text-ink-muted">View policy · Card {decision.card_id}</span>
             </span>
             {mandate.status === 'revoked' && (
               <span className="text-[12px] text-ink-muted">This policy was later revoked.</span>
@@ -426,7 +397,7 @@ export function DecisionDetail({
         </section>
       )}
 
-      {related.length > 0 && (
+      {isManipulated && related.length > 0 && (
         <section>
           <p className="mb-3 text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
             Also caught on this card
@@ -439,14 +410,36 @@ export function DecisionDetail({
         </section>
       )}
 
+      {!isManipulated && (
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={onBack}
+            className="min-h-14 rounded-row border-2 border-ink text-[14px] font-semibold text-ink"
+          >
+            Back to {backLabel.toLowerCase()}
+          </button>
+          <button
+            type="button"
+            onClick={() => onViewPolicy(decision.card_id)}
+            className="min-h-14 rounded-row bg-ink text-[14px] font-semibold text-on-ink"
+          >
+            View policy
+          </button>
+        </div>
+      )}
+
       {isManipulated && signedInAs && (
-        <button
-          type="button"
-          onClick={onGoHome}
-          className="h-14 rounded-row bg-ink text-[16px] font-semibold text-on-ink"
-        >
-          Back to {signedInAs.name}&apos;s Home
-        </button>
+        <>
+          <p className="text-center text-[12px] text-ink-muted">Illustrative decisions on synthetic data.</p>
+          <button
+            type="button"
+            onClick={onGoHome}
+            className="h-14 rounded-row bg-ink text-[16px] font-semibold text-on-ink"
+          >
+            Open {signedInAs.name}&apos;s Home
+          </button>
+        </>
       )}
     </div>
   )

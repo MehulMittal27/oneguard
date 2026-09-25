@@ -1,5 +1,7 @@
 import type { Decision, UncertainOutcome } from '../api/types'
 import { formatChf } from '../lib/money'
+import { decisionReasonLabel } from '../lib/reasonCodes'
+import { formatShortDate, formatTime } from '../lib/datetime'
 import { CheckIcon, CrossIcon, HelpCircleIcon } from './icons/lucide'
 
 const STYLE: Record<'approved' | 'stopped', { label: string; discBg: string; fg: string }> = {
@@ -22,9 +24,13 @@ const UNCERTAIN_STYLE: Record<UncertainOutcome, { label: string; discBg: string;
 export function DecisionMark({
   decision,
   onClick,
+  timestamp = 'none',
+  compact = false,
 }: {
   decision: Decision
   onClick?: () => void
+  timestamp?: 'none' | 'time' | 'day-time'
+  compact?: boolean
 }) {
   const isUncertain = decision.decision === 'uncertain'
   const { label, discBg, fg } =
@@ -54,8 +60,38 @@ export function DecisionMark({
         {/* Merchant name is untrusted merchant text — plain text node only. */}
         <span className="block truncate text-[15px] font-semibold text-ink">
           {decision.merchant.name}
+          {timestamp !== 'none' && (
+            <span className="font-normal text-ink-muted">
+              {' · '}
+              {timestamp === 'time'
+                ? formatTime(decision.occurred_at)
+                : `${formatShortDate(decision.occurred_at).split(' ')[0]} ${formatTime(decision.occurred_at)}`}
+            </span>
+          )}
         </span>
-        <span className="block truncate text-[13px] text-ink-muted">{decision.message}</span>
+        {!compact && <span className="block truncate text-[13px] text-ink-muted">{decision.message}</span>}
+        <span
+          className={`mt-1 inline-flex w-fit max-w-full whitespace-normal break-words rounded-[6px] px-2 py-1 text-[11px] leading-tight font-semibold ${
+            decision.decision === 'approved'
+              ? 'bg-approved-tint text-approved'
+              : decision.decision === 'stopped'
+                ? 'bg-stopped-tint text-stopped'
+                : decision.uncertain_outcome === 'approved'
+                  ? 'bg-approved-tint text-approved'
+                  : decision.uncertain_outcome === 'declined'
+                    ? 'bg-stopped-tint text-stopped'
+                    : decision.uncertain_outcome === 'pending'
+                      ? 'bg-asked-tint text-asked'
+                      : 'bg-surface-expired text-ink-muted'
+          }`}
+        >
+          {decision.reason_codes.length > 0
+            ? decisionReasonLabel(
+                decision.reason_codes[0],
+                decision.evidence.map((item) => item.detail),
+              )
+            : 'Reviewed'}
+        </span>
       </span>
       <span className="shrink-0 text-right">
         <span className="block text-[15px] font-semibold text-ink tabular-nums">

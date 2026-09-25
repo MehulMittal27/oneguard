@@ -7,6 +7,7 @@ import { ShieldIcon } from '../../components/icons/lucide'
 import { StatusBar } from '../../components/StatusBar'
 import { splitSignInCustomers } from '../../lib/signInCustomers'
 import { useCustomer } from '../../state/CustomerContext'
+import visecaLogo from '../../assets/viseca-logo.svg'
 
 const CORD_STEPS = ['Agent proposes', 'Your rules decide', 'Money moves, or not']
 const MAX_VISIBLE_CUSTOMERS = 4
@@ -59,13 +60,16 @@ export function SignIn() {
           <StatusBar tone="ink" />
           <div className="scrollbar-none flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-8 pt-4 pb-9 sm:pt-5">
             <header className="flex flex-col gap-4">
-              <div className="flex items-center gap-4">
-                <span className="flex size-[34px] items-center justify-center rounded-tile bg-ink text-on-ink">
-                  <ShieldIcon size={20} strokeWidth={1.8} />
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <span className="flex size-7 items-center justify-center rounded-full bg-gradient-to-br from-[#fff0bd] to-[#ffc45b] text-[#e0561b]">
+                    <ShieldIcon size={20} strokeWidth={1.8} />
+                  </span>
+                  <span className="text-[12px] font-bold tracking-[0.08em] text-ink-soft uppercase">
+                    One Guard
+                  </span>
                 </span>
-                <p className="text-[11px] font-semibold tracking-[0.09em] text-ink-soft uppercase">
-                  OneGuard
-                </p>
+                <img src={visecaLogo} alt="Viseca" className="h-5 w-auto" />
               </div>
               <h1 className="font-display text-[34px] leading-[1.05] font-bold tracking-[-0.02em] text-ink">
                 Your AI agent shops.
@@ -136,9 +140,6 @@ export function SignIn() {
               >
                 {selected ? `Continue as ${selected.name}` : 'Continue'}
               </button>
-              <p className="text-center text-[12px] text-ink-muted">
-                Demo sign-in · synthetic data · no real money
-              </p>
               {/* The same line the operator console carries at its right edge. */}
               <p className="-mt-2 flex items-center justify-center gap-2 text-[12px] text-ink-muted">
                 <ShieldIcon size={13} strokeWidth={2} />

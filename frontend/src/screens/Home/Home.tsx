@@ -4,14 +4,10 @@ import type { Account, Decision } from '../../api/types'
 import { AccountMenu } from '../../components/AccountMenu'
 import { CountdownBar } from '../../components/CountdownBar'
 import { DecisionMark } from '../../components/DecisionMark'
-import { EarlierRuns } from '../../components/EarlierRuns'
-import { OverviewHero } from '../../components/OverviewHero'
 import { PendingDevicesCard } from '../../components/PendingDevicesCard'
-import { AccountsIcon, BackChevronIcon, BellIcon, PlusIcon } from '../../components/icons/lucide'
-import { formatShortDate } from '../../lib/datetime'
+import { BackChevronIcon, BellIcon, PlusIcon } from '../../components/icons/lucide'
 import { formatChf } from '../../lib/money'
 import { splitByRun } from '../../lib/runs'
-import { policyUse } from '../../lib/spend'
 import { useCustomer } from '../../state/CustomerContext'
 import { useDecisions } from '../../state/DecisionsContext'
 import { usePolicy } from '../../state/PolicyContext'
@@ -19,11 +15,6 @@ import type { FilterId } from '../Activity/Activity'
 import { DecisionDetail } from '../DecisionDetail/DecisionDetail'
 
 type PolicyStatus = 'loading' | 'error' | 'ready'
-
-/** A period limit's window, worded as the Card detail meter words it. */
-function periodLabel(days: number): string {
-  return days === 7 ? 'This week' : `Last ${days} days`
-}
 
 /**
  * Header (DESIGN.md #2/#10, D-021), `OverviewHero`, "Needs your review" (shown
@@ -79,34 +70,15 @@ export function Home({
         ? 'ready'
         : 'loading'
 
-  // Every card with an active policy, across every account this customer
-  // has — not just their one "primary" card (2 of 4 live customers'
-  // account already has a second card, D-050). A revoked or missing
-  // policy isn't shown here at all; that's what Accounts/Card detail are for.
-  const activePolicies = accounts.flatMap((account) =>
-    account.cards.flatMap((card) => {
-      const mandate = policiesByCard[card.card_id]
-      if (mandate?.status !== 'active') return []
-      return [{ cardId: card.card_id, mandate }]
-    }),
-  )
+  const cardsByAccount = accounts.map((account) => ({
+    account,
+    cards: account.cards.map((card) => ({ card, mandate: policiesByCard[card.card_id] })),
+  }))
 
-  // A card with no live policy is shut to the agent. Listing only the guarded
-  // ones made an unguarded card invisible on Home.
-  const unguardedCards = accounts.flatMap((account) =>
-    account.cards.flatMap((card) => {
-      const mandate = policiesByCard[card.card_id]
-      if (mandate?.status === 'active') return []
-      return [{ cardId: card.card_id, revoked: mandate?.status === 'revoked' }]
-    }),
-  )
-
-  // Each card's newest run; older runs fold under "Earlier runs" (lib/runs.ts),
-  // so a replayed scenario is neither listed nor counted twice.
-  const { current, earlier } = splitByRun(decisions)
+  // Each card's newest run, so replayed older data is not shown twice.
+  const { current } = splitByRun(decisions)
   const byNewest = (a: Decision, b: Decision) => b.occurred_at.localeCompare(a.occurred_at)
   const latest = [...current].sort(byNewest).slice(0, 3)
-  const earlierRuns = earlier.map((run) => ({ ...run, decisions: [...run.decisions].sort(byNewest) }))
 
   // Whichever pending item runs out first, in case more than one is ever
   // waiting at once — our live customers only ever have one, but nothing
@@ -152,13 +124,30 @@ export function Home({
         <div className="flex shrink-0 items-center gap-4">
           <span className="flex items-center gap-1.5 rounded-pill bg-approved-tint px-3 py-1 text-[13px] font-medium text-approved">
             <span className="size-1.5 shrink-0 rounded-full bg-approved" aria-hidden="true" />
-            Testing
+            Sandbox
           </span>
           <AccountMenu customerName={signedInAs.name} onLogout={logout} />
         </div>
       </header>
 
       <div className="flex flex-col gap-7 px-8 pb-9">
+        {(signedInAs.card_id || (accountsStatus === 'ready' && accounts[0]?.cards[0]?.card_id)) && (
+          <button
+            type="button"
+            onClick={() => onAddPolicy(signedInAs.card_id ?? accounts[0].cards[0].card_id)}
+            className="flex min-h-11 items-center gap-4 rounded-card border-2 border-dashed border-border-dashed bg-surface p-5 text-left"
+          >
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-ink text-on-ink">
+              <PlusIcon size={21} strokeWidth={2.4} />
+            </span>
+            <span>
+              <span className="block text-[16px] font-semibold text-ink">Add a spending policy</span>
+              <span className="block text-[13px] text-ink-muted">
+                Set limits, allowed shops, and what needs your OK.
+              </span>
+            </span>
+          </button>
+        )}
         {status === 'loading' && (
           <div className="flex flex-col gap-3" aria-live="polite" aria-busy="true">
             <div className="h-[220px] animate-pulse rounded-hero bg-surface-sunken" />
@@ -183,10 +172,6 @@ export function Home({
           </div>
         )}
 
-        {status === 'ready' && (
-          <OverviewHero decisions={current} onOpenActivity={onOpenActivity} />
-        )}
-
         {status === 'ready' && mostUrgent && (
           <button
             type="button"
@@ -196,9 +181,7 @@ export function Home({
             <span className="flex items-center gap-2 text-asked">
               <BellIcon size={18} strokeWidth={2.2} />
               <span className="text-[15px] font-semibold">
-                {pending.length === 1
-                  ? '1 purchase needs your review'
-                  : `${pending.length} purchases need your review`}
+                Needs your OK
               </span>
             </span>
 
@@ -226,6 +209,7 @@ export function Home({
                 +{pending.length - 1} more waiting
               </span>
             )}
+            <span className="self-center text-[13px] font-semibold text-ink">Review and decide</span>
           </button>
         )}
 
@@ -255,6 +239,7 @@ export function Home({
                   <DecisionMark
                     key={decision.authorization_id}
                     decision={decision}
+                    compact
                     onClick={() => selectDecision(decision)}
                   />
                 ))}
@@ -263,21 +248,11 @@ export function Home({
           </section>
         )}
 
-        {status === 'ready' && <EarlierRuns runs={earlierRuns} onSelect={selectDecision} />}
-
         <section className="flex flex-col gap-3">
-          {/* The heading belongs to the list under it: with nothing active it
-              labelled either empty space or the "Closed to your agent" group,
-              which is the opposite of what it says. */}
-          {activePolicies.length > 0 && (
-            <p className="font-display text-[20px] font-bold text-ink">Active policies</p>
-          )}
+          <p className="font-display text-[20px] font-bold text-ink">Policies by card</p>
 
           {policiesSection === 'loading' && (
-            <div className="flex flex-col gap-3" aria-live="polite" aria-busy="true">
-              <div className="h-16 animate-pulse rounded-row bg-surface-sunken" />
-              <span className="sr-only">Loading policies</span>
-            </div>
+            <div className="h-24 animate-pulse rounded-card bg-surface-sunken" aria-label="Loading policies" />
           )}
 
           {policiesSection === 'error' && (
@@ -299,124 +274,61 @@ export function Home({
             </div>
           )}
 
-          {policiesSection === 'ready' &&
-            activePolicies.length === 0 &&
-            unguardedCards.length === 0 && (
-              <p className="text-[15px] text-ink-muted">No active policies yet.</p>
-            )}
-
-          {policiesSection === 'ready' && activePolicies.length > 0 && (
-            <div className="scrollbar-none max-h-72 overflow-y-auto rounded-card border border-hairline bg-surface p-2">
-              <div className="flex flex-col gap-1">
-                {/* Card and date, then through to Card detail where Manage and
-                    Revoke live. The instruction text used to lead this row — long,
-                    variable, and nothing the customer could act on here. */}
-                {activePolicies.map(({ cardId, mandate }) => {
-                  const use = policyUse(mandate, current, cardId)
-                  const fill = use.period ? Math.min(1, use.spentChf / use.period.limitChf) : null
+          {policiesSection === 'ready' && cardsByAccount.length > 0 && (
+            <div className="flex flex-col gap-3">
+              {cardsByAccount.flatMap(({ account, cards }) =>
+                cards.map(({ card, mandate }) => {
+                  const active = mandate?.status === 'active'
+                  const revoked = mandate?.status === 'revoked'
+                  const policyTitle = active
+                    ? mandate.checks.find((check) => check.kind === 'item')?.text ?? `Card ${card.card_id}`
+                    : card.card_purpose.replace(/_/g, ' ')
                   return (
-                    <button
-                      key={cardId}
-                      type="button"
-                      onClick={() => onViewPolicy(cardId)}
-                      className="flex min-h-16 w-full items-center gap-4 rounded-row px-4 py-3 text-left"
-                    >
-                      <span className="flex size-9.5 shrink-0 items-center justify-center rounded-full bg-approved-tint text-approved">
-                        <AccountsIcon size={20} strokeWidth={1.8} />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="flex items-baseline gap-2">
-                          <span className="shrink-0 text-[15px] font-semibold text-ink">
-                            Card {cardId}
+                    <div key={card.card_id} className="rounded-card border border-hairline bg-surface p-4">
+                      <button
+                        type="button"
+                        onClick={() => (active || revoked ? onViewPolicy(card.card_id) : onAddPolicy(card.card_id))}
+                        className="flex w-full items-start justify-between gap-3 text-left"
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate text-[16px] font-semibold text-ink">
+                            {policyTitle}
                           </span>
-                          <span className="truncate text-[12px] text-ink-muted">
-                            Since {formatShortDate(mandate.confirmed_at)}
+                          <span className="mt-0.5 block text-[13px] text-ink-muted">
+                            {card.card_type.replace(/_/g, ' ')} · Card {card.card_id}
+                          </span>
+                          <span className="block text-[12px] text-ink-muted">
+                            {card.card_purpose.replace(/_/g, ' ')} card · {account.account_purpose.replace(/_/g, ' ')} account · {account.account_id}
                           </span>
                         </span>
-                        {/* The policy's use, from C3's `usage` (re-read after every
-                            decisions poll) and the newest run's decisions, so it
-                            moves as each decision lands. */}
-                        <span className="mt-0.5 block truncate text-[13px] text-ink-soft tabular-nums">
-                          {use.period
-                            ? `${formatChf(use.spentChf)} of ${formatChf(use.period.limitChf)}`
-                            : `${formatChf(use.spentChf)} spent`}
+                        <span className={`shrink-0 rounded-[8px] px-2.5 py-1 text-[12px] font-semibold ${active ? 'bg-approved-tint text-approved' : revoked ? 'bg-surface-expired text-ink-muted' : 'bg-asked-tint text-asked'}`}>
+                          {active ? 'Active' : revoked ? 'Revoked' : 'No policy'}
                         </span>
-                        {fill !== null && (
-                          <span className="mt-1.5 block h-1.5 overflow-hidden rounded-meter bg-surface-active">
-                            <span
-                              className="block h-full rounded-meter bg-leash-fill"
-                              style={{ width: `${fill * 100}%` }}
-                            />
-                          </span>
-                        )}
-                        <span className="mt-0.5 block truncate text-[12px] text-ink-muted">
-                          {use.period ? periodLabel(use.period.days) : 'This run'} ·{' '}
-                          {use.approved === 1 ? '1 purchase' : `${use.approved} purchases`}
+                        <span className="shrink-0 rotate-180 text-ink-muted" aria-hidden="true">
+                          <BackChevronIcon size={18} strokeWidth={2} />
                         </span>
-                        {use.pendingChf > 0 && (
-                          <span className="block truncate text-[12px] text-asked tabular-nums">
-                            {formatChf(use.pendingChf)} waiting for you
+                      </button>
+                      {active ? (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {mandate.checks.map((check) => (
+                            <span key={check.id} className="rounded-pill bg-surface-sunken px-3 py-1.5 text-[12px] text-ink-soft">
+                              {check.text}
+                            </span>
+                          ))}
+                          <span className="rounded-pill bg-surface-sunken px-3 py-1.5 text-[12px] text-ink-soft">
+                            {mandate.uncertainty_policy === 'decline' ? 'Block when unsure' : mandate.uncertainty_policy === 'approve' ? 'Approve when unsure' : 'Ask when unsure'}
                           </span>
-                        )}
-                      </span>
-                      <span className="rotate-180 shrink-0 text-ink-muted">
-                        <BackChevronIcon size={18} strokeWidth={2} />
-                      </span>
-                    </button>
+                        </div>
+                      ) : null}
+                    </div>
                   )
-                })}
-              </div>
+                }),
+              )}
             </div>
           )}
 
-          {/* Their own group, so "active" keeps meaning active. No date — there
-              is no policy to have started — and they lead to writing one. */}
-          {policiesSection === 'ready' && unguardedCards.length > 0 && (
-            <div className="rounded-card border border-hairline bg-surface p-2">
-              <p className="px-4 pt-2 pb-1 text-[11px] font-semibold tracking-[0.08em] text-ink-muted uppercase">
-                Closed to your agent
-              </p>
-              <div className="flex flex-col gap-1">
-                {unguardedCards.map(({ cardId, revoked }) => (
-                  <button
-                    key={cardId}
-                    type="button"
-                    // A card that never had a policy has no Card detail to show —
-                    // routing there left the customer staring at "Nothing found for
-                    // card" — so it goes straight into the New policy flow, the same
-                    // path Accounts takes. A revoked card does have a mandate in
-                    // state (D-044), so it still opens Card detail, where its old
-                    // checks and its own "Add policy" button both live.
-                    onClick={() => (revoked ? onViewPolicy(cardId) : onAddPolicy(cardId))}
-                    className="flex min-h-16 w-full items-center gap-4 rounded-row px-4 py-3 text-left"
-                  >
-                    <span className="flex size-9.5 shrink-0 items-center justify-center rounded-full bg-asked-tint text-asked">
-                      <AccountsIcon size={20} strokeWidth={1.8} />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[15px] font-semibold text-ink">
-                        Card {cardId}
-                      </span>
-                      <span className="block truncate text-[13px] text-ink-muted">
-                        {revoked ? 'Policy revoked' : 'No policy yet'}
-                      </span>
-                    </span>
-                    <span className="flex shrink-0 items-center gap-1 text-[13px] font-semibold text-ink">
-                      {revoked ? (
-                        <span className="rotate-180 text-ink-muted">
-                          <BackChevronIcon size={18} strokeWidth={2} />
-                        </span>
-                      ) : (
-                        <>
-                          <PlusIcon size={14} strokeWidth={2.4} />
-                          Add policy
-                        </>
-                      )}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
+          {policiesSection === 'ready' && cardsByAccount.length === 0 && (
+            <p className="text-[15px] text-ink-muted">No cards are available yet.</p>
           )}
         </section>
       </div>
