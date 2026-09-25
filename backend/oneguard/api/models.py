@@ -266,6 +266,11 @@ class PolicyApplied(ApiModel):
     checks: list[RuleCheck]
 
 
+OPERATOR_ONLY_EVIDENCE = frozenset({"ledger_mismatch"})
+"""Evidence rules C6 sends only with ``?operator=1`` (api-contract §3.4): they stay in the
+stored decision and the decision posted to Viseca, but the customer never sees them."""
+
+
 class Decision(ApiModel):
     """One purchase decision. Only the combinations of §3.1a are valid."""
 
@@ -413,7 +418,7 @@ class AccountsResponse(ApiModel):
 
 
 class DecisionsResponse(ApiModel):
-    """C6, newest first."""
+    """C6, newest first; ``OPERATOR_ONLY_EVIDENCE`` rows only with ``?operator=1``."""
 
     decisions: list[Decision]
 

@@ -1408,6 +1408,30 @@ class Rephrases:
         return {"message": f"Quick note: {template[0].lower()}{template[1:]}"}
 
 
+def test_ledger_mismatch_rows_reach_the_operator_only(db_url: str) -> None:
+    """A reconciliation row stays in the stored and posted decision; C6 sends it only
+    with ``?operator=1`` (the operator console), never to the customer's app."""
+
+    async def scenario() -> None:
+        async with running(db_url, fake=FakeViseca(fast(context_spend_offset=5.0))) as run:
+            (row,) = await live_run(run, "SCEN0000", n=1)
+            assert [e["rule"] for e in row["evidence"]] == ["test_amount"]
+            r = await run.get("/api/customers/CU0001/decisions", params={"operator": "1"})
+            assert r.status_code == 200, r.text
+            (operator_row,) = r.json()["decisions"]
+            mismatch = [e for e in operator_row["evidence"] if e["rule"] == "ledger_mismatch"]
+            assert mismatch == [{
+                "rule": "ledger_mismatch", "outcome": "info", "source": "ledger",
+                "detail": "Viseca counts CHF 5.00 approved in this period; our ledger counts CHF 0.00.",
+            }]
+            assert {k: v for k, v in operator_row.items() if k != "evidence"} == \
+                {k: v for k, v in row.items() if k != "evidence"}
+            (auth,) = run.fake.all_auths()
+            assert any(e["rule"] == "ledger_mismatch" for e in auth.decisions[0]["evidence"])
+
+    asyncio.run(scenario())
+
+
 def test_d5_switches_tier3_rewrites_on_and_off(db_url: str) -> None:
     """With the models on, C6 shows the template first and the rewrite on a later poll
     (``explanation_source: model``); D5 off stops rewrites of later decisions. The worker

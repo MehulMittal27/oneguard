@@ -48,7 +48,7 @@ The frontend ignores unknown fields, so additions are safe. Removing or renaming
 |---|---|---|---|---|---|
 | C12 | GET | `/api/customers` | — | `{ customers: Customer[] }` | |
 | C10 | GET | `/api/customers/{customer_id}/accounts` | — | `{ accounts: Account[] }` | 404 |
-| C6 | GET | `/api/customers/{customer_id}/decisions` | — | `{ decisions: Decision[] }` newest first | 404 |
+| C6 | GET | `/api/customers/{customer_id}/decisions[?operator=1]` | — | `{ decisions: Decision[] }` newest first; operator-only evidence only with `?operator=1` (§3.4) | 404 |
 | C1 | POST | `/api/cards/{card_id}/policy-drafts` | `{ instruction }` **or** `{ form: FormInput }` | `PolicyDraft` | 404 card · 422 neither/both · 504 compiler timeout |
 | C2 | POST | `/api/policy-drafts/{draft_id}/confirm` | `{ checks: RuleCheck[], uncertainty_policy, open_questions }` | `Mandate` | 404 draft · 409 draft already confirmed · 422 unknown check id · 409 `lint_failed` (see §3.2) |
 | C3 | GET | `/api/cards/{card_id}/policy` | — | `{ mandate: Mandate \| null }` | 404 card |
@@ -361,7 +361,10 @@ fields, never in place of them. Both default to unknown, and unknown is never a 
 - The engine reconciles `context.approved_spend_in_period_chf` from Viseca against its own
   ledger on every event, and each decision against the platform's event feed
   (`GET /v1/events?since=<cursor>`, advancing with the returned `next_cursor`) as well as
-  against `context`; either mismatch is logged as an `info` evidence row.
+  against `context`; either mismatch is logged as an `info` evidence row. `ledger_mismatch`
+  rows are **operator-only**: kept in the stored decision and the decision posted to
+  Viseca, sent by C6 only with `?operator=1` (the operator console passes it); the
+  customer's app never sees them (`api/models.py` `OPERATOR_ONLY_EVIDENCE`).
 - `Decision.evidence` may carry a W6 row (rules.md §8): the cart line, its unit price in CHF
   and the catalogue range `items.unit_price_min_chf`–`items.unit_price_max_chf`.
 
