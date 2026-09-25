@@ -139,6 +139,11 @@ export function SignIn() {
               <p className="text-center text-[12px] text-ink-muted">
                 Demo sign-in · synthetic data · no real money
               </p>
+              {/* The same line the operator console carries at its right edge. */}
+              <p className="-mt-2 flex items-center justify-center gap-2 text-[12px] text-ink-muted">
+                <ShieldIcon size={13} strokeWidth={2} />
+                Powered by OneGuard
+              </p>
             </div>
           </div>
         </div>

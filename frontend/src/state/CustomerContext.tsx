@@ -3,6 +3,8 @@ import type { Customer } from '../api/types'
 
 export interface CustomerContextValue {
   signedInAs: Customer | null
+  // True while a `?customer=` deep link is being resolved (lib/deepLink.ts).
+  signingIn: boolean
   continueAs: (customer: Customer) => void
   logout: () => void
 }

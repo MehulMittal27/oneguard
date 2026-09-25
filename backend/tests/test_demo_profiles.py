@@ -215,6 +215,39 @@ def test_each_served_scenario_binds_its_own_customer_and_only_served_ones_are_li
     asyncio.run(scenario())
 
 
+def test_d9_lists_every_scenario_grouped_by_customer_with_its_card(db_url: str) -> None:  # noqa: F811
+    """D9 (the operator console's picker): the pack's scenarios and the served ones, each with
+    its purchase count and the customer and card it runs on; unnamed ones last."""
+
+    async def scenario() -> None:
+        async with running(db_url, fake=two_profiles()) as run:
+            r = await run.get("/api/scenarios")
+            assert r.status_code == 200, r.text
+            listed = r.json()["scenarios"]
+            by_id = {s["scenario_id"]: s for s in listed}
+            assert by_id["SCEN9001"] == {
+                "scenario_id": "SCEN9001",
+                "name": by_id["SCEN9001"]["name"],
+                "event_count": by_id["SCEN9001"]["event_count"],
+                "instruction": by_id["SCEN9001"]["instruction"],
+                "customer_id": "CU9001",
+                "customer_name": "Test Served",
+                "card_id": "CA9001",
+            }
+            assert (by_id["SCEN0004"]["customer_id"], by_id["SCEN0004"]["card_id"]) == ("CU0019", "CA0039")
+            assert by_id["SCEN0004"]["customer_name"] == "Oliver Graf" and by_id["SCEN0004"]["event_count"] == 11
+            d8 = await scenarios(run)
+            assert by_id["SCEN0004"]["instruction"] == d8["SCEN0004"]["cardholder_instruction"]
+            assert set(by_id) == set(d8)
+            # grouped: one customer's scenarios are consecutive; SCEN9002 (no card yet) is last
+            assert listed[-1]["scenario_id"] == "SCEN9002" and listed[-1]["customer_id"] is None
+            order = [s["customer_id"] for s in listed]
+            assert all(order.index(c) + order.count(c) - 1 == len(order) - 1 - order[::-1].index(c) for c in order)
+            assert by_id["SCEN0000"]["customer_id"] == by_id["SCEN0001"]["customer_id"] == "CU0001"
+
+    asyncio.run(scenario())
+
+
 @pytest.fixture
 def no_local_worker(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Fails any worker demo-live would build, and counts every worker built meanwhile."""
@@ -432,6 +465,14 @@ def test_demo_offline_restarts_the_servers_replay(db_url: str, no_local_worker: 
             assert code == 0, lines
             assert lines == [f"Replay of SCEN0000 on card CA0001 started at {API}: 1 purchase, 0 ms apart."]
             assert (await run.get("/api/dev/replay")).json()["scenario_id"] == "SCEN0000"
+
+            # no --card (`make demo-offline SCEN=…`): the scenario's own card, from D9
+            lines.clear()
+            code = await demo.offline(
+                "SCEN0001", api_base=API, speed_ms=0, transport=httpx.ASGITransport(app=run.app), out=lines.append
+            )
+            assert code == 0, lines
+            assert lines == [f"Replay of SCEN0001 on card CA0001 started at {API}: 10 purchases, 0 ms apart."]
         assert no_local_worker == []
 
     asyncio.run(scenario())

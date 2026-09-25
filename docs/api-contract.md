@@ -92,6 +92,7 @@ rollout). `403 forbidden` when `ONEGUARD_ENV=prod`.
 | D6 | GET | `/api/dev/ledger/{card_id}` | — | `LedgerSnapshot` — the engine's own state, for the "reproduce this decision" view |
 | D7 | GET | `/api/dev/runs/current` | — | `LiveRun` or `ReplayStatus` — the newest run (live or replay, by the real time it started) with the counters D4 / D1 show; 404 when none. Starts nothing |
 | D8 | GET | `/api/dev/scenarios` | — | `{ scenarios: Scenario[] }` — every scenario in the store's catalogue, whether the platform serves it now, the customer and card it runs on when known, and a run of it still in progress. Reads only |
+| D9 | GET | `/api/scenarios` | - | `{ scenarios: ScenarioSummary[] }`: the operator console's picker (`/ops`): every scenario in the store's catalogue (the pack's and the served ones) with its purchase count and the customer and card it runs on (the stored platform binding, else the pack's; null when nothing names one yet), grouped by customer (by name), unnamed ones last. Reads the store only: no platform call |
 
 D3 requires an active mandate on the card (409 otherwise). While `ONEGUARD_ALLOW_RUNS=false` D3 starts nothing and
 answers 409 `runs_disabled` (unset: runs allowed); `make demo-live` refuses the same way. While the worker still follows
@@ -249,15 +250,25 @@ Evidence  { rule: string,                     // which check or signal
             detail: string,                   // the fact, with the number
             source?: 'policy' | 'ledger' | 'history' | 'merchant_text' | 'model' }   // NEW
 
-ReplayStatus { scenario_id, card_id, delivered, total, running: boolean, next_at: string|null }
+ReplayStatus { scenario_id, card_id, delivered, total, running: boolean, next_at: string|null,
+               ledger_run_id?: string,          // NEW: the run_id this replay's C6 decisions carry
+               started_at?: string,             // NEW: when it started, REAL clock
+               decided?: number,                // NEW: purchases decided so far
+               customer_id?: string, customer_name?: string }         // NEW: who holds card_id
 LiveRun      { run_id, scenario_id, card_id, mandate_id, state: 'starting'|'running'|'done'|'error',
                delivered, decided, pending_human, total, worker_ok: boolean, last_error: string|null,
-               customer_id?: string, customer_name?: string }         // NEW: who holds card_id
+               customer_id?: string, customer_name?: string,          // NEW: who holds card_id
+               ledger_run_id?: string,          // NEW: the run_id this run's C6 decisions carry (run_id is the platform's)
+               started_at?: string }            // NEW: when it started, REAL clock
+                                                // (a D7 body with run_id is a LiveRun; without, a ReplayStatus)
 Scenario     { scenario_id, scenario_name, cardholder_instruction,    // NEW (D8)
                served: boolean,                                       // the platform serves it now
                profile: { customer_id, name, card_id, profile_id: string|null,
                           source: 'pack'|'bootstrap'|'run'|'authorization' } | null,   // null: not run yet
                active_run_id: string | null }                         // a run of it in progress (D3's run_active)
+ScenarioSummary { scenario_id, name, event_count: number,             // NEW (D9)
+                  instruction,                                         // the cardholder instruction, verbatim
+                  customer_id: string|null, customer_name: string|null, card_id: string|null }
 LedgerSnapshot { card_id, mandate_id, entries: [{ authorization_id, occurred_at, decision,
                  counted_chf, note }], period_spent_chf, frozen: boolean }
 
@@ -589,7 +600,10 @@ fixtures to it.
 16. Operator strip (`?demo=1`, operator only): reads D5 GET on each poll and labels the toggle with what the server reports (on, off, live only, replay only), never an assumed "on"; D1's 404 reads as "no replay yet", not as the backend being unreachable.
 17. `Decision.policy_applied` - DecisionDetail's "Policy applied" shows these checks (the rules that decided), with a note when they are the platform mandate's rules or differ from the card's current policy (another mandate id and other checks: a D3 move keeps the checks under a new id); the card link (manage / revoke) stays. Absent: the card's current policy, as before.
 18. Home follows each poll: `OverviewHero` counts the same decisions as Activity's filter chips (each card's newest run, `lib/runs.ts` `countDecisions`, no simulated-day window), and each "Active policies" row shows its `Mandate.usage` (re-read by C3 after every decisions poll): "CHF x of CHF y" with a bar and "This week · n purchases" for a period limit, "CHF x spent" and "This run · n purchases" without one, plus what is waiting.
-19. Passport (§1.3, §3.10, docs/passport.md): `lib/deviceKey.ts` (a non-extractable P-256 key in IndexedDB, `signedFetch` for C2, C4, C5, C8, P8, P9; a `device_not_enrolled` answer opens enrolment); NewPolicy confirm enrols this device first (the card's first device silently, otherwise "This device isn't approved for this card yet"), and a card's first passport (`Mandate.passport.version == 1`, none before) gets step 3 "Your passport is issued" with the first-passport animation; CardDetail gains a Passport section (QR, version, devices with Approve / Remove, Verify); Home shows "Devices waiting for your approval"; DecisionDetail shows "What your agent was told" (`would_approve_if`, in words from `counterfactual`) and "Receipt · Verify"; a `/verify` page for the QR link. Mock fixtures gain a passport, two devices and a receipt.
+19. Operator console at `/ops` (desktop, operator only, never linked from the phone UI): a separate page of the same build (`src/ops/`), reading `/healthz`, D2, D3, D5, D7, D9, C6 (with `?operator=1`, §3.4) and C3's card, plus the passport endpoints (§1.3): the card's passport line (version, checks, devices, QR) is checked with P5, and each decision with a `receipt_id` has its receipt (P4) checked with P5. It follows D7: whatever run started last, from any source, is the one it shows. Its "Judging run (live)" (D3) is disabled, with the reason on the button and under it, while `/healthz` shows the worker off (`worker.configured` false) or not polling (`worker.state` other than `polling`), or has not answered. It never answers a step-up and never enrols, approves or removes a device; the customer does that on the phone.
+20. Phone UI deep links, both read once at load: `?customer=<customer_id>` signs in as that customer and skips the picker (session only, nothing stored; an unknown id shows the picker); `?embed=1` draws the phone UI without `DeviceFrame`'s bezel, for the console's embedded phone (an iframe of `/?customer=<id>&embed=1`, 390×844).
+21. Sign-in footer: "Powered by OneGuard" (small), the same line the console carries.
+22. Passport (§1.3, §3.10, docs/passport.md): `lib/deviceKey.ts` (a non-extractable P-256 key in IndexedDB, `signedFetch` for C2, C4, C5, C8, P8, P9; a `device_not_enrolled` answer opens enrolment); NewPolicy confirm enrols this device first (the card's first device silently, otherwise "This device isn't approved for this card yet"), and a card's first passport (`Mandate.passport.version == 1`, none before) gets step 3 "Your passport is issued" with the first-passport animation; CardDetail gains a Passport section (QR, version, devices with Approve / Remove, Verify); Home shows "Devices waiting for your approval"; DecisionDetail shows "What your agent was told" (`would_approve_if`, in words from `counterfactual`) and "Receipt · Verify"; a `/verify` page for the QR link. Mock fixtures gain a passport, two devices and a receipt.
 
 No customer endpoint changes. No screen removals. Tighten UI stays dormant.
 

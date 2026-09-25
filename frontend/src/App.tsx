@@ -149,7 +149,8 @@ function SignedInShell() {
 }
 
 function Shell() {
-  const { signedInAs } = useCustomer()
+  const { signedInAs, signingIn } = useCustomer()
+  if (signingIn) return <div className="h-screen bg-ground" aria-busy="true" />
   return signedInAs ? <SignedInShell /> : <SignIn />
 }
 
