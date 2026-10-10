@@ -8,8 +8,8 @@ OneGuard is the leash: you write your rules in plain words, and every purchase t
 proposes is **approved**, **stopped with a reason**, or **sent to your phone** to decide.
 No AI makes the decision; your rules do.
 
-**Live app:** https://oneguard.fly.dev · **Operator console:** https://oneguard.fly.dev/ops ·
-**Every check explained:** [POLICY-GUIDE.md](POLICY-GUIDE.md)
+**Every check explained:** [POLICY-GUIDE.md](POLICY-GUIDE.md) · The hosted app from the event
+is retired; run it locally (see below), operator console at `/ops`.
 
 ## The value in numbers
 
@@ -194,8 +194,9 @@ make replay SCEN=SCEN0004            # offline replay, prints the decision table
 make dev                             # backend :8000 + frontend :5173 (proxy /api)
 ```
 
-Deployment: Fly.io (performance-2x, lhr), Supabase Postgres, one worker with a database lock, Laya
-loaded at startup; see `docs/architecture.md` § Deployment.
+Deployment: none. The cloud deployment used for the event is retired and its app deleted; the
+server runs locally (`make serve`, or `make image` for the container). See
+`docs/architecture.md` § Deployment.
 
 Frontend only (no backend needed in mock mode):
 
@@ -204,8 +205,8 @@ cp frontend/.env.example frontend/.env   # VITE_USE_MOCKS=true serves fixtures, 
 cd frontend && npm install && npm run dev
 ```
 
-Live run (event day): `make demo-live SCEN=SCEN0135` has the cloud app
-(`https://oneguard.fly.dev`; another with `ONEGUARD_API_URL=http://localhost:8000`) compile and
+Live run (event day): `make demo-live SCEN=SCEN0135` has the server at
+`http://localhost:8000` (another with `ONEGUARD_API_URL=<server url>`) compile and
 confirm the scenario's instruction, start the Viseca run and decide it; the terminal prints
 `Sign in as <name> (<customer id>, card <card id>)` and follows the decisions (default
 `SCEN0101`). The scenarios the sandbox serves, and their customers, are in

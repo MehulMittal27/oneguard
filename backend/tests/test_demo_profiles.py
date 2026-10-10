@@ -446,7 +446,7 @@ def test_a_non_oneguard_answer_counts_as_no_server(no_local_worker: list[str]) -
     assert code == 1 and lines[0].startswith(f"No OneGuard server answers at {API}/healthz")
 
 
-def test_the_server_defaults_to_the_cloud_app(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_server_defaults_to_the_local_app(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[str] = []
 
     async def live(scenario_id: str, *, api_base: str, **_: Any) -> int:
@@ -456,9 +456,9 @@ def test_the_server_defaults_to_the_cloud_app(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(demo, "live", live)
     monkeypatch.delenv(demo.API_ENV, raising=False)
     assert demo.main(["--scenario", "SCEN0101"]) == 0
-    monkeypatch.setenv(demo.API_ENV, "http://localhost:8000/")
+    monkeypatch.setenv(demo.API_ENV, "http://oneguard.test:9000/")
     assert demo.main(["--scenario", "SCEN0101"]) == 0
-    assert seen == ["https://oneguard.fly.dev", "http://localhost:8000"]
+    assert seen == ["http://localhost:8000", "http://oneguard.test:9000"]
 
 
 def test_demo_offline_restarts_the_servers_replay(db_url: str, no_local_worker: list[str]) -> None:  # noqa: F811

@@ -40,7 +40,7 @@ import httpx
 from oneguard.passport.signer import DeviceKey
 
 API_ENV = "ONEGUARD_API_URL"
-DEFAULT_API = "https://oneguard.fly.dev"
+DEFAULT_API = "http://localhost:8000"
 TIMEOUT_S = 30.0
 
 

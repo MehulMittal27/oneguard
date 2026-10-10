@@ -1,10 +1,10 @@
 """``make demo-live SCEN=<scenario id>`` and ``make demo-offline``: drive the OneGuard server
 that decides, never decide here.
 
-The server at ``--api`` (``ONEGUARD_API_URL``, default the cloud app) is the one decider: its
-worker polls Viseca. This command only drives the server's API and reads it. It starts
-nothing, and no worker, unless that server answers ``/healthz``: a second decider next to
-the cloud app would poll the same team's requests (docs/decisions.md).
+The server at ``--api`` (``ONEGUARD_API_URL``, default the local ``make serve``) is the one
+decider: its worker polls Viseca. This command only drives the server's API and reads it. It
+starts nothing, and no worker, unless that server answers ``/healthz``: a second decider next
+to that server would poll the same team's requests (docs/decisions.md).
 
 demo-live:
 
@@ -68,7 +68,7 @@ log = logging.getLogger(__name__)
 
 API_ENV = "ONEGUARD_API_URL"
 DEVICE_KEY_ENV = "ONEGUARD_DEVICE_KEY"
-DEFAULT_API = "https://oneguard.fly.dev"
+DEFAULT_API = "http://localhost:8000"
 API_TIMEOUT_S = 30.0
 """C1 compiles within 10 s and D3 waits up to 15 s on the platform; a slow network on top."""
 HEALTH_TIMEOUT_S = 10.0

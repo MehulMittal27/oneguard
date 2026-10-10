@@ -64,7 +64,7 @@ oneguard/
 - One database per environment via ONEGUARD_DATABASE_URL (docs/database.md). One transaction per decision.
 - Viseca key from `VISECA_API_KEY`; base URL from `VISECA_BASE_URL`; both server-side.
 - One worker polls per store: the worker lease (docs/database.md §5.1, `store/lease.py`).
-  A second process on the same store (a laptop `make serve` next to Fly) stays in `standby` and does not poll, recover step-ups or read the feed;
+  A second process on the same store (a second `make serve` next to the first) stays in `standby` and does not poll, recover step-ups or read the feed;
   it takes over when the holder stops. The sandbox serves each request to whoever polls
   first, so two workers would decide the same team's requests twice (docs/decisions.md).
 - Worker (`oneguard/viseca/worker.py`, `VisecaWorker`): on start reads `/v1/bootstrap`
@@ -121,10 +121,10 @@ oneguard/
   request is fully handled (decision posted and recorded, `events_raw` and `runs` rows
   committed).
 - Viseca call logging is off by default. With `ONEGUARD_LOG_VISECA_CALLS=true` (debugging
-  only; unset in `fly.toml`) every call is summarised in `viseca_calls` (no key, bodies
+  only) every call is summarised in `viseca_calls` (no key, bodies
   ≤ 4 KB) by `oneguard/viseca/client.py` (`call_sink`); nothing reads the table to decide or
   to report health, and each call is still logged at DEBUG. `make demo-live SCEN=…` (`oneguard/viseca/demo.py`) starts
-  one scenario through the server at `ONEGUARD_API_URL` (default `https://oneguard.fly.dev`; C1,
+  one scenario through the server at `ONEGUARD_API_URL` (default `http://localhost:8000`; C1,
   C2, D3), prints whom to sign in as and follows the run read-only: the server's worker
   decides. `make demo-offline SCEN=…` restarts that server's offline replay (D2). Both probe
   `/healthz` first; with no OneGuard server answering they exit 1 and start nothing: no run,
@@ -132,7 +132,11 @@ oneguard/
 
 ## Deployment (Plan C)
 
-One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
+Retired. For the event the app ran as one container in the cloud (one `performance-2x`
+machine with 4 GB in London, Supabase Postgres, secrets set on the host). That app has been
+deleted, and its deploy config and the `make deploy` / `make logs` targets were removed with
+it; nothing is deployed. The server now runs locally (`make serve`, or the image below), and
+the history of the cloud setup is in `docs/decisions.md`.
 
 - `Dockerfile`: a node stage builds `frontend/dist` (only when `frontend/package.json` is in
   the context) with `VITE_API_BASE_URL=/api` and `VITE_USE_MOCKS=false`; the runtime stage is
@@ -144,27 +148,17 @@ One container on Fly (`https://oneguard.fly.dev`), app `oneguard`.
   (for `bench_engine.py --laya` on the machine) and `frontend/dist` copied in, run as a
   non-root user; `uvicorn oneguard.api.app:app` listens on `$PORT` (8080);
   `ONEGUARD_SOFT_SIGNALS=laya` and `ONEGUARD_ENV=prod` are the image defaults.
-- `fly.toml`: region `lhr` (nearest Supabase in eu-west-1), one `performance-2x` machine with
-  4 GB (Laya soft signals; the model is ~2 GB resident, docs/benchmark.md §3), never auto-stopped
-  (the worker polls from inside the app), no volume: state lives in Supabase via
-  `ONEGUARD_DATABASE_URL`. Health check `GET /healthz`, 120 s grace. Deploy strategy
-  `immediate`: with one machine a rolling deploy only waits on the health check, and the
-  new machine polls as soon as the app is up (with Laya on, the model loads in the
-  background).
-- Fly secrets: `VISECA_API_KEY`, `OPENAI_API_KEY`, `ONEGUARD_DATABASE_URL`,
+- Environment: `VISECA_API_KEY`, `OPENAI_API_KEY`, `ONEGUARD_DATABASE_URL`,
   `ONEGUARD_LLM_PROVIDER`, `ONEGUARD_OPERATOR_TOKEN` (the operator gate on `/api/dev/*`,
-  api-contract §1.2: unset in production, every operator call answers 503); temporarily `ONEGUARD_ALLOW_RUNS=false`
-  (D3 and `make demo-live` refuse to start a run while it is set). Set with `fly secrets`, never in files.
-  `ONEGUARD_SOFT_SIGNALS=laya` and `ONEGUARD_SIGNAL_BUDGET_MS=1500` are set as secrets
-  (decisions.md 2026-09-25: keywords missed two live injections; at 975 ms Laya went over
+  api-contract §1.2: unset in production, every operator call answers 503), set in the
+  environment, never in files; `ONEGUARD_ALLOW_RUNS=false`
+  makes D3 and `make demo-live` refuse to start a run while it is set.
+  `ONEGUARD_SOFT_SIGNALS=laya` with `ONEGUARD_SIGNAL_BUDGET_MS=1500` is the setting the event
+  ended on (decisions.md 2026-09-25: keywords missed two live injections; at 975 ms Laya went over
   budget on nearly every SCEN0135 decision, so the model now reads only the lines the keywords
   did not flag that have at least 6 words, and the budget is 1500 ms). Past the budget the
-  keyword answer stands. Back to keywords: `fly secrets set ONEGUARD_SOFT_SIGNALS=keywords` (no rebuild).
-- Rollback: every deploy is tagged in `registry.fly.io/oneguard`; `fly image show -a oneguard`
-  before a deploy names the running one, and `fly deploy -a oneguard --image <that ref>` puts
-  it back.
-- Makefile: `make deploy` (`fly deploy -a oneguard --ha=false`), `make logs`, `make image`
-  (the same image locally), `make demo-live SCEN=…`, `make demo-offline`, `make seed`,
+  keyword answer stands. Back to keywords: `ONEGUARD_SOFT_SIGNALS=keywords` (no rebuild).
+- Makefile: `make image` (the container image), `make demo-live SCEN=…`, `make demo-offline`, `make seed`,
   `make reset-db` (refused when `ONEGUARD_ENV=prod`), `make matrix` (regenerates
   `docs/replay-matrix.md`; `tests/test_replay_matrix.py` fails when it is stale).
 - App start (`oneguard/api/app.py` lifespan): `init_db` (creates missing tables, never drops),

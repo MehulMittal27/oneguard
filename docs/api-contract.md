@@ -66,7 +66,7 @@ on the card, before anything is read for the change or applied.
 |---|---|---|---|---|---|
 | P1 | GET | `/api/passport/keys` | — | `{ keys: PublicKey[] }` the active key first | |
 | P2 | GET | `/api/cards/{card_id}/passport` | — | `Passport`: the latest version of the card's current policy's passport, with `versions` | 404 card, or no passport (no policy confirmed yet) |
-| P3 | GET | `/api/cards/{card_id}/passport/qr.svg` | — | `image/svg+xml`: a QR code of `<ONEGUARD_PUBLIC_URL>/verify?passport=<passport_id>&v=<version>` (default `https://oneguard.fly.dev`) | 404 as P2 |
+| P3 | GET | `/api/cards/{card_id}/passport/qr.svg` | — | `image/svg+xml`: a QR code of `<ONEGUARD_PUBLIC_URL>/verify?passport=<passport_id>&v=<version>` (default `http://localhost:8000`) | 404 as P2 |
 | P4 | GET | `/api/authorizations/{authorization_id}/receipt` | — | `Receipt` (signed on the spot when the background sweep has not reached the decision yet) | 404 |
 | P5 | POST | `/api/verify` | `{ document, signature, key_id }` **or** `{ passport_id, version? }` **or** `{ receipt_id }` | `VerifyResult` | 404 unknown stored id · 422 not exactly one form |
 | P6 | GET | `/api/cards/{card_id}/devices` | — | `{ devices: Device[] }` enrolled first, then pending, then removed; each enrolled one with its `role` | 404 card |
@@ -85,7 +85,7 @@ rollout). `403 forbidden` when `ONEGUARD_ENV=prod`. Behind the operator gate lik
 
 **Operator gate (NEW).** When `ONEGUARD_ENV=prod` (the image default) every `/api/dev/*`
 route needs the header `X-OneGuard-Operator` equal to the server's `ONEGUARD_OPERATOR_TOKEN`
-(a Fly secret), compared in constant time, before anything else runs: missing or wrong is
+(a server-side secret), compared in constant time, before anything else runs: missing or wrong is
 `401 operator_required`, and a production server with no token set answers every
 `/api/dev/*` call `503 operator_unconfigured` rather than serving them open. Off production
 the check is skipped. The token is never logged or echoed. `make demo-live`,
@@ -179,7 +179,7 @@ before), the policy moves there: a copy of the mandate (same Viseca mandate) bec
 original is marked revoked (docs/decisions.md). D4 and D7 name the holder too, from the moment D3 answers (the card of the platform's reply, before the first purchase arrives).
 
 **`make demo-live SCEN=<id>`** never decides: it drives the server at `ONEGUARD_API_URL` (default
-`https://oneguard.fly.dev`): D8 → D7 (an unfinished newest run, or the scenario's `active_run_id`: that run is named,
+`http://localhost:8000`): D8 → D7 (an unfinished newest run, or the scenario's `active_run_id`: that run is named,
 exit 1, nothing changed; `--force` / `make demo-live FORCE=1` skips this and sends D3 `force: true`) → C1 on the scenario's card (unknown:
 `--card`, else the bootstrap profile's) → C2 → D3, prints `Sign in as <name> (<customer_id>, card <card_id>)` from
 D3's reply, then follows D4 and the customer's C6 read-only. **`make demo-offline SCEN=<id>`** calls D2 on the same

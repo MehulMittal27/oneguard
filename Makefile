@@ -23,7 +23,7 @@ reset-db:
 	cd backend && . .venv/bin/activate && python -m oneguard.store.seed --reset
 
 # replay/replay-all/matrix replay the local data pack here; demo-offline and demo-live drive the
-# server at ONEGUARD_API_URL (default the cloud app) and start nothing when it does not answer.
+# server at ONEGUARD_API_URL (default http://localhost:8000) and start nothing when it does not answer.
 # `make replay DB=sqlite:///./oneguard.sqlite` keeps the recorded run (kind = replay) in that store.
 replay: SCEN ?= SCEN0000
 replay:
@@ -50,20 +50,13 @@ demo-offline: SCEN ?= SCEN0000
 demo-offline:
 	cd backend && . .venv/bin/activate && python -m oneguard.viseca.demo --offline --scenario $(SCEN) $(if $(CARD),--card $(CARD))
 
-# The server at ONEGUARD_API_URL (default the cloud app) decides; this only starts and follows the run.
+# The server at ONEGUARD_API_URL (default http://localhost:8000) decides; this only starts and follows the run.
 demo-live: SCEN ?= SCEN0101
 demo-live:
 	cd backend && . .venv/bin/activate && python -m oneguard.viseca.demo --scenario $(SCEN) $(if $(CARD),--card $(CARD)) $(if $(FORCE),--force)
 
-# The image Fly builds (Dockerfile); runs locally with `docker run -p 8080:8080 --env-file .env oneguard`.
+# The container image (Dockerfile); runs locally with `docker run -p 8080:8080 --env-file .env oneguard`.
 image:
 	docker build -t oneguard .
 
-# One machine in lhr (fly.toml); secrets are set on the app with `fly secrets`, never here.
-deploy:
-	fly deploy -a oneguard --ha=false
-
-logs:
-	fly logs -a oneguard
-
-.PHONY: setup test lint check seed reset-db replay replay-all matrix dev build-frontend serve demo-offline demo-live image deploy logs
+.PHONY: setup test lint check seed reset-db replay replay-all matrix dev build-frontend serve demo-offline demo-live image

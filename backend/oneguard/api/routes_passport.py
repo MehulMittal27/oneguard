@@ -30,7 +30,7 @@ from oneguard.store.schema import Passport, Receipt
 router = APIRouter(prefix="/api")
 
 PUBLIC_URL_ENV = "ONEGUARD_PUBLIC_URL"
-DEFAULT_PUBLIC_URL = "https://oneguard.fly.dev"
+DEFAULT_PUBLIC_URL = "http://localhost:8000"
 
 
 def public_url() -> str:
