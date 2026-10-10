@@ -65,7 +65,7 @@ def test_money_is_two_decimals_half_even_and_other_numbers_are_shortest() -> Non
     with pytest.raises(ValueError):
         canonical({"value": float("nan")})
     with pytest.raises(ValueError):
-        canonical({"at": datetime(2026, 9, 25)})  # naive on purpose
+        canonical({"at": datetime.fromisoformat("2026-09-25")})  # naive on purpose
 
 
 # Signatures --------------------------------------------------------------------------------
