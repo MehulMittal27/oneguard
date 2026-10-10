@@ -136,7 +136,7 @@ def test_runtime_tables_round_trip_json_and_utc(engine: Engine) -> None:
 
 def test_naive_datetimes_are_refused(engine: Engine) -> None:
     with pytest.raises(StatementError, match="naive datetime"), session(engine) as s:
-        s.execute(select(AuthorizationHistory).where(AuthorizationHistory.timestamp > datetime(2026, 1, 1)))  # noqa: DTZ001
+        s.execute(select(AuthorizationHistory).where(AuthorizationHistory.timestamp > datetime(2026, 1, 1)))
 
 
 def test_history_index_for_cu0019(history: StoreHistoryIndex) -> None:
